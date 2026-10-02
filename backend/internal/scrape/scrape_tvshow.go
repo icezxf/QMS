@@ -12,6 +12,7 @@ import (
 
 	"qmediasync/internal/baidupan"
 	"qmediasync/internal/db"
+	"qmediasync/internal/douban"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/openlist"
@@ -506,12 +507,28 @@ func (t *tvShowScrapeImpl) GetTvshowRealName(mediaFile *models.ScrapeMediaFile, 
 func (t *tvShowScrapeImpl) GenerateTvShowNfo(mediaFile *models.ScrapeMediaFile, localTempPath string, excludeNoImageActor bool) error {
 	// 解析 TMDB genre
 	nfoPath := filepath.Join(localTempPath, "tvshow.nfo")
+
+	// ===== 查豆瓣评分（替换 TMDB） =====
+	var doubanRating float64
+	if mediaFile.Media.ImdbId != "" {
+		dc := douban.NewClient("")
+		if rating, err := dc.GetTVRatingByImdb(mediaFile.Media.ImdbId); err == nil && rating > 0 {
+			doubanRating = rating
+			helpers.AppLogger.Infof("[豆瓣] 电视剧 %s (IMDb: %s) 豆瓣评分: %.1f",
+				mediaFile.Media.Name, mediaFile.Media.ImdbId, rating)
+		} else if err != nil {
+			helpers.AppLogger.Warnf("[豆瓣] 电视剧 %s 评分查询失败: %v", mediaFile.Media.Name, err)
+		}
+	} else {
+		helpers.AppLogger.Warnf("[豆瓣] 电视剧 %s 无 IMDb ID，跳过豆瓣评分", mediaFile.Media.Name)
+	}
+
 	rates := []helpers.Rating{
 		{
-			Name:  "tmdb",
+			Name:  "douban",
 			Max:   10,
-			Value: mediaFile.Media.VoteAverage,
-			Votes: mediaFile.Media.VoteCount,
+			Value: doubanRating,
+			Votes: 0,
 		},
 	}
 	genres := make([]string, 0)
@@ -534,7 +551,7 @@ func (t *tvShowScrapeImpl) GenerateTvShowNfo(mediaFile *models.ScrapeMediaFile, 
 		}{
 			Rating: rates,
 		},
-		UserRating: mediaFile.Media.VoteAverage,
+		UserRating: doubanRating,
 		Outline:    fmt.Sprintf("<![CDATA[%s]]>", mediaFile.Media.Overview),
 		Plot:       fmt.Sprintf("<![CDATA[%s]]>", mediaFile.Media.Overview),
 		Tagline:    mediaFile.Media.Tagline,
