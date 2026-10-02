@@ -17,15 +17,13 @@ RUN apk add --no-cache ca-certificates git
 
 WORKDIR /app/backend
 COPY backend/go.mod backend/go.sum ./
-# ===== 改动 1：go mod download 忽略错误（go.sum 缺条目时会失败）=====
+# go mod download 可能因 go.sum 不完整而失败，先忽略错误（后面 tidy 会补齐）
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download || true
-# =====================================================================
 COPY backend ./
-# ===== 改动 2：复制完整源码后，用 go mod tidy 补全 go.sum =====
+# 复制完整源码后，用 tidy 补全 go.sum
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod tidy
-# ==============================================================
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=v0.0.0
@@ -44,9 +42,11 @@ FROM alpine:3.20
 ENV TZ=Asia/Shanghai \
     PATH=/app:$PATH
 
-RUN apk add --no-cache ca-certificates tzdata inotify-tools su-exec && \
+# ===== 改动：末尾加 ffmpeg，提供 ffprobe 可执行文件 =====
+RUN apk add --no-cache ca-certificates tzdata inotify-tools su-exec ffmpeg && \
     mkdir -p /app/scripts && \
     chmod 777 /app
+# ===================================================
 
 WORKDIR /app
 COPY --from=backend-builder --chmod=0755 /app/backend/QMediaSync ./QMediaSync
