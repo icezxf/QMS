@@ -12,6 +12,7 @@ import (
 
 	"qmediasync/internal/baidupan"
 	"qmediasync/internal/db"
+	"qmediasync/internal/douban"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/notificationmanager"
@@ -20,7 +21,6 @@ import (
 	"qmediasync/internal/syncstrm"
 	"qmediasync/internal/tmdb"
 	"qmediasync/internal/v115open"
-	"qmediasync/internal/douban"
 )
 
 type movieScrapeImpl struct {
@@ -436,34 +436,6 @@ func (m *movieScrapeImpl) GetMovieUploadFiles(mediaFile *models.ScrapeMediaFile)
 			DestPathId: destPathId,
 		})
 	}
-	// nfoName := m.GetMovieRealName(mediaFile, "", "nfo")
-	// nfoPath := filepath.Join(movieSourcePath, nfoName)
-	// if helpers.PathExists(nfoPath) {
-	// 	file := uploadFile{
-	// 		ID:         fmt.Sprintf("%d", mediaFile.ID),
-	// 		FileName:   nfoName,
-	// 		SourcePath: nfoPath,
-	// 		DestPath:   destPath,
-	// 		DestPathId: destPathId,
-	// 	}
-
-	// 	fileList = append(fileList, file)
-	// }
-	// imageList := []string{"poster.jpg", "clearlogo.jpg", "clearart.jpg", "square.jpg", "logo.jpg", "fanart.jpg", "backdrop.jpg", "background.jpg", "4kbackground.jpg", "thumb.jpg", "banner.jpg", "disc.jpg"}
-	// for _, im := range imageList {
-	// 	name := m.GetMovieRealName(mediaFile, im, "image")
-	// 	sPath := filepath.Join(movieSourcePath, name)
-	// 	if helpers.PathExists(sPath) {
-	// 		file := uploadFile{
-	// 			ID:         fmt.Sprintf("%d", mediaFile.ID),
-	// 			FileName:   name,
-	// 			SourcePath: sPath,
-	// 			DestPath:   destPath,
-	// 			DestPathId: destPathId,
-	// 		}
-	// 		fileList = append(fileList, file)
-	// 	}
-	// }
 	return fileList
 }
 
@@ -626,12 +598,28 @@ func (m *movieScrapeImpl) CreateMediaFromNfo(mediaFile *models.ScrapeMediaFile) 
 func (sm *movieScrapeImpl) GenerateMovieNfo(mediaFile *models.ScrapeMediaFile, localTempPath string, nfoName string, excludeNoImageActor bool) error {
 	// 生成 NFO 文件
 	nfoPath := filepath.Join(localTempPath, nfoName)
+
+	// ===== 查豆瓣评分（替换 TMDB） =====
+	var doubanRating float64
+	if mediaFile.Media.ImdbId != "" {
+		dc := douban.NewClient("")
+		if rating, err := dc.GetRatingByImdb(mediaFile.Media.ImdbId); err == nil && rating > 0 {
+			doubanRating = rating
+			helpers.AppLogger.Infof("[豆瓣] 电影 %s (IMDb: %s) 豆瓣评分: %.1f",
+				mediaFile.Media.Name, mediaFile.Media.ImdbId, rating)
+		} else if err != nil {
+			helpers.AppLogger.Warnf("[豆瓣] 电影 %s 评分查询失败: %v", mediaFile.Media.Name, err)
+		}
+	} else {
+		helpers.AppLogger.Warnf("[豆瓣] 电影 %s 无 IMDb ID，跳过豆瓣评分", mediaFile.Media.Name)
+	}
+
 	rates := []helpers.Rating{
 		{
-			Name:  "tmdb",
+			Name:  "douban",
 			Max:   10,
-			Value: mediaFile.Media.VoteAverage,
-			Votes: mediaFile.Media.VoteCount,
+			Value: doubanRating,
+			Votes: 0,
 		},
 	}
 	// 解析 TMDB genre
@@ -710,7 +698,7 @@ func (sm *movieScrapeImpl) GenerateMovieNfo(mediaFile *models.ScrapeMediaFile, l
 		}{
 			Rating: rates,
 		},
-		UserRating: mediaFile.Media.VoteAverage,
+		UserRating: doubanRating,
 		Outline:    fmt.Sprintf("<![CDATA[%s]]>", mediaFile.Media.Overview),
 		Plot:       fmt.Sprintf("<![CDATA[%s]]>", mediaFile.Media.Overview),
 		Tagline:    mediaFile.Media.Tagline,
