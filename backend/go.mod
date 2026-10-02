@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/aliyun/alibabacloud-oss-go-sdk-v2 v1.6.0
+    github.com/PuerkitoBio/goquery v1.10.3
 	github.com/coocood/freecache v1.2.7
 	github.com/flosch/pongo2/v6 v6.1.0
 	github.com/fsnotify/fsnotify v1.10.1
