@@ -23,6 +23,9 @@ import (
 	emby302https "qmediasync/emby302/util/https"
 	"qmediasync/emby302/util/logs/colors"
 	"qmediasync/emby302/web"
+	// ===== 改动 1：import 加 avscrape =====
+	"qmediasync/internal/avscrape"
+	// =====================================
 	"qmediasync/internal/backup"
 	"qmediasync/internal/controllers"
 	"qmediasync/internal/db"
@@ -493,6 +496,12 @@ func initOthers() {
 
 	// 启动同步任务队列管理器
 	synccron.InitNewSyncQueueManager()
+	// ===== 改动 2：注册 AV 刮削回调（避免 synccron 和 avscrape 循环依赖）=====
+	synccron.AVScanHandler = func(pathID uint) error {
+		scanner := avscrape.NewScanner(db.Db)
+		return scanner.Scan(pathID)
+	}
+	// =====================================================================
 	models.InitEmbyLibraryRefreshCoordinator()
 	syncstrm.InitStrmGenerationWorker()
 	directoryupload.InitDirectoryUploadService()
@@ -574,6 +583,12 @@ func setRouter(r *gin.Engine) {
 
 	r.GET("/proxy-115", controllers.Proxy115)                      // 115 CDN 反代路由
 	r.POST("/api/update-fn-access-path", controllers.UpdateFNPath) // 更新飞牛访问路径
+
+	// ===== 改动 3：注册 AV 刮削路由（内部自己创建 /api/avscrape 分组）=====
+	if err := avscrape.Register(r, db.Db); err != nil {
+		helpers.AppLogger.Errorf("注册 AV 刮削路由失败：%v", err)
+	}
+	// =====================================================================
 
 	// 需要 JWT 验证的 API 路由
 	api := r.Group("/api")
