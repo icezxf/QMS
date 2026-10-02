@@ -57,7 +57,9 @@ jobs:
           GOSUMDB: "off"
           CGO_ENABLED: "0"
         run: |
-          go mod download
+          # ===== 改动：go mod download 改成 go mod tidy =====
+          go mod tidy
+          # ==================================================
           go vet ./...
           go test ./...
           go build -trimpath -tags=nomsgpack -ldflags="-s -w" -o /tmp/QMediaSync .
