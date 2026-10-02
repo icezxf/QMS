@@ -22,6 +22,7 @@ import {
   Upload,
   User,
   UserFilled,
+  VideoCamera,   // ===== 新增 =====
   VideoPlay,
   View,
 } from '@element-plus/icons-vue'
@@ -51,6 +52,7 @@ const iconRegistry: Record<string, Component> = {
   Upload: markRaw(Upload),
   User: markRaw(User),
   UserFilled: markRaw(UserFilled),
+  VideoCamera: markRaw(VideoCamera),   // ===== 新增 =====
   VideoPlay: markRaw(VideoPlay),
   View: markRaw(View),
 }
