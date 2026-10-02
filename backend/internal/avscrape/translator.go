@@ -22,6 +22,11 @@ type Translator struct {
 	GeminiKey   string
 	GeminiModel string
 	HTTP        *http.Client
+	// ===== Google Cloud Translation =====
+	GoogleAPIKey           string
+	GoogleTranslateForTags bool
+	GoogleTranslateForAll  bool
+	// =====================================
 }
 
 func NewTranslator(engine, target string) *Translator {
@@ -52,6 +57,8 @@ func (t *Translator) Translate(text string) (string, error) {
 		result, err = t.googleFree(text)
 	case "mymemory":
 		result, err = t.myMemory(text)
+	case "google_cloud":
+		result, err = t.googleCloudTranslate(text)
 	default:
 		return text, nil
 	}
@@ -261,7 +268,6 @@ func (t *Translator) TranslateResult(r *ScrapeResult) {
 		ph := fmt.Sprintf("__ACTOR_%d__", i)
 		phs = append(phs, actorPh{ph: ph, chineseName: a.Name})
 
-		// 把所有变体（含 aliases 和 主名）替换成占位符
 		variants := append([]string{}, a.Aliases...)
 		variants = append(variants, a.Name)
 		for _, v := range variants {
@@ -277,7 +283,6 @@ func (t *Translator) TranslateResult(r *ScrapeResult) {
 		}
 	}
 
-	// 还原函数
 	restore := func() {
 		for _, p := range phs {
 			r.Title = strings.ReplaceAll(r.Title, p.ph, p.chineseName)
@@ -289,7 +294,15 @@ func (t *Translator) TranslateResult(r *ScrapeResult) {
 		helpers.AppLogger.Infof("[翻译] 已用 %d 个占位符保护演员名", len(phs))
 	}
 
-	// ===== 2. 走翻译流程 =====
+	// ===== 2. Google 全量翻译（如果开启）=====
+	if t.GoogleTranslateForAll && t.GoogleAPIKey != "" {
+		helpers.AppLogger.Infof("[翻译] 使用 Google Cloud 全量翻译")
+		t.translateAllWithGoogle(r)
+		restore()
+		return
+	}
+
+	// ===== 3. 走原引擎（Gemini / DeepL / Bing 等）=====
 	if t.Engine == "gemini" {
 		if err := t.geminiTranslateAll(r); err == nil {
 			restore()
@@ -308,17 +321,132 @@ func (t *Translator) TranslateResult(r *ScrapeResult) {
 		r.Plot = s
 		helpers.AppLogger.Infof("[翻译] 简介 -> %s", truncate(s, 50))
 	}
+
+	// ===== 标签：优先走 Google（如果开启 GoogleTranslateForTags）=====
 	for i, g := range r.Genres {
-		if s, err := t.Translate(g); err == nil && s != "" {
+		var translated string
+		var err error
+		if t.GoogleTranslateForTags && t.GoogleAPIKey != "" {
+			translated, err = t.googleCloudTranslate(g)
+			if err != nil {
+				helpers.AppLogger.Warnf("[翻译] Google 翻标签失败，回退原引擎: %s => %v", g, err)
+				translated, err = t.Translate(g)
+			} else if translated != "" {
+				helpers.AppLogger.Infof("[翻译-Google] 标签 %s -> %s", g, translated)
+			}
+		} else {
+			translated, err = t.Translate(g)
+		}
+		if err == nil && translated != "" {
+			r.Genres[i] = translated
+		}
+	}
+	// ===============================================================
+
+	helpers.AppLogger.Infof("[翻译] 演员名保留 wiki 中文名，跳过机翻")
+
+	// ===== 4. 还原占位符 =====
+	restore()
+}
+
+// ============================================================
+// Google Cloud Translation API Basic (v2)
+// 官方接口，每月 50 万字符免费额度
+// ============================================================
+
+// googleCloudTranslate 调用官方 v2 接口翻译单条文本
+func (t *Translator) googleCloudTranslate(text string) (string, error) {
+	if t.GoogleAPIKey == "" {
+		return text, fmt.Errorf("Google Cloud Translation API Key 未配置")
+	}
+	if strings.TrimSpace(text) == "" {
+		return text, nil
+	}
+
+	endpoint := "https://translation.googleapis.com/language/translate/v2?key=" + url.QueryEscape(t.GoogleAPIKey)
+
+	targetLang := "zh-CN"
+	switch t.Target {
+	case "zh", "zh-CN", "zh-Hans", "":
+		targetLang = "zh-CN"
+	case "zh-Hant", "zh-TW":
+		targetLang = "zh-TW"
+	case "en":
+		targetLang = "en"
+	case "ja":
+		targetLang = "ja"
+	}
+
+	body := map[string]interface{}{
+		"q":      []string{text},
+		"source": "ja",
+		"target": targetLang,
+		"format": "text",
+	}
+	payload, _ := json.Marshal(body)
+
+	req, err := http.NewRequest("POST", endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return text, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := t.HTTP.Do(req)
+	if err != nil {
+		return text, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return text, fmt.Errorf("Google Translate HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+	}
+
+	var out struct {
+		Data struct {
+			Translations []struct {
+				TranslatedText string `json:"translatedText"`
+			} `json:"translations"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return text, fmt.Errorf("Google Translate 解析失败: %w", err)
+	}
+	if len(out.Data.Translations) == 0 {
+		return text, fmt.Errorf("Google Translate 返回为空")
+	}
+
+	result := out.Data.Translations[0].TranslatedText
+	// 处理 HTML 实体（v2 API 有时会返回 &quot; 等）
+	result = strings.ReplaceAll(result, "&quot;", "\"")
+	result = strings.ReplaceAll(result, "&#39;", "'")
+	result = strings.ReplaceAll(result, "&amp;", "&")
+	result = strings.ReplaceAll(result, "&lt;", "<")
+	result = strings.ReplaceAll(result, "&gt;", ">")
+	return result, nil
+}
+
+// translateAllWithGoogle 全部内容用 Google 翻译
+func (t *Translator) translateAllWithGoogle(r *ScrapeResult) {
+	if s, err := t.googleCloudTranslate(r.Title); err == nil && s != "" {
+		r.Title = s
+		helpers.AppLogger.Infof("[翻译-Google] 标题 -> %s", truncate(s, 40))
+	} else if err != nil {
+		helpers.AppLogger.Warnf("[翻译-Google] 标题失败: %v", err)
+	}
+
+	if s, err := t.googleCloudTranslate(r.Plot); err == nil && s != "" {
+		r.Plot = s
+		helpers.AppLogger.Infof("[翻译-Google] 简介 -> %s", truncate(s, 40))
+	} else if err != nil {
+		helpers.AppLogger.Warnf("[翻译-Google] 简介失败: %v", err)
+	}
+
+	for i, g := range r.Genres {
+		if s, err := t.googleCloudTranslate(g); err == nil && s != "" {
 			r.Genres[i] = s
 		}
 	}
-
-	// 演员名不翻：wiki 阶段已经翻好了，机翻容易翻错
-	helpers.AppLogger.Infof("[翻译] 演员名保留 wiki 中文名，跳过机翻")
-
-	// ===== 3. 还原占位符 =====
-	restore()
 }
 
 // ============================================================
