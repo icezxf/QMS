@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"Q115-STRM/internal/helpers"
+	"qmediasync/internal/helpers"
 )
 
 type JavStashClient struct {
