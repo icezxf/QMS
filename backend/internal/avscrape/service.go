@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"Q115-STRM/internal/helpers"
-	"Q115-STRM/internal/models"
+	"qmediasync/internal/helpers"
+	"qmediasync/internal/models"
 
 	"gorm.io/gorm"
 )
