@@ -43,7 +43,6 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		hits, err := mt.Search(code)
 		if err == nil {
 			for _, h := range hits {
-				// 优先用 Search 里存好的 ProviderID（provider/id）
 				providerID := h.ProviderID
 				if providerID == "" {
 					providerID = extractProviderID(h.Source, h.Code)
@@ -100,14 +99,14 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	wikiClient := NewWikiClient()
 	best.Actors = wikiClient.TranslateActorNames(best.Actors)
 
-	// ===== 改动：维基百科补全片商中文名 =====
+	// ===== 维基百科补全片商中文名 =====
 	if best.Studio != "" {
 		// 先试全名
 		if zh, err := wikiClient.GetChineseName(best.Studio); err == nil && zh != "" && zh != best.Studio {
 			helpers.AppLogger.Infof("[维基] 片商 %s → %s", best.Studio, zh)
 			best.Studio = zh
 		} else {
-			// 全名失败，尝试去掉空格后的部分（如 "エスワン ナンバーワンスタイル" → "エスワン"）
+			// 全名失败，尝试去掉空格后的部分
 			shortName := best.Studio
 			if idx := strings.Index(best.Studio, " "); idx > 0 {
 				shortName = best.Studio[:idx]
@@ -124,7 +123,6 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 			}
 		}
 	}
-	// ============================================
 
 	// ===== JavDB 评分 =====
 	if cfg.EnableJavDBRating && cfg.JavDBCookie != "" {
@@ -146,6 +144,11 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		tr.BingRegion = cfg.TranslateBingRegion
 		tr.GeminiKey = cfg.TranslateGeminiKey
 		tr.GeminiModel = cfg.TranslateGeminiModel
+		// ===== Google Cloud Translation =====
+		tr.GoogleAPIKey = cfg.GoogleTranslateAPIKey
+		tr.GoogleTranslateForTags = cfg.GoogleTranslateForTags
+		tr.GoogleTranslateForAll = cfg.GoogleTranslateForAll
+		// ====================================
 		helpers.AppLogger.Infof("[AV刮削] 开始翻译 %s (engine=%s)", code, cfg.TranslateEngine)
 		tr.TranslateResult(best)
 	}
