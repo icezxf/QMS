@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"Q115-STRM/internal/helpers"
+	"qmediasync/internal/helpers"
 )
 
 // dmmPosterURL 根据番号构造 DMM 大竖图 URL（jp.jpg）
