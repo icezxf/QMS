@@ -86,6 +86,44 @@
         <el-input v-model="config.translate_target" placeholder="zh" />
       </el-form-item>
 
+      <!-- ===== 新增：Google Cloud Translation（仅用于特殊术语，节省配额） ===== -->
+      <template v-if="config.enable_translate">
+        <el-divider content-position="left">Google Cloud Translation（可选）</el-divider>
+
+        <el-form-item label="Google API Key">
+          <el-input
+            v-model="config.google_translate_api_key"
+            type="password"
+            show-password
+            placeholder="在 GCP 启用 Cloud Translation API 后创建的 API Key"
+          />
+          <span class="hint">
+            （用于翻译「ギリモザ」这类通用引擎翻不准的日文术语，每月 50 万字符免费）
+          </span>
+        </el-form-item>
+
+        <el-form-item label="标签走 Google">
+          <el-switch
+            v-model="config.google_translate_for_tags"
+            :disabled="!config.google_translate_api_key || config.google_translate_for_all"
+          />
+          <span class="hint">
+            （仅 genre/tag 走 Google，标题和简介仍走主引擎，节省配额）
+          </span>
+        </el-form-item>
+
+        <el-form-item label="全部走 Google">
+          <el-switch
+            v-model="config.google_translate_for_all"
+            :disabled="!config.google_translate_api_key"
+          />
+          <span class="hint">
+            （标题、简介、标签全部走 Google；开启后「标签走 Google」自动失效）
+          </span>
+        </el-form-item>
+      </template>
+      <!-- =============================================================== -->
+
       <el-divider content-position="left">附加标签</el-divider>
 
       <el-form-item label="分辨率标签">
@@ -160,6 +198,12 @@ interface AVConfig {
   translate_gemini_model: string
   translate_target: string
 
+  // ===== Google Cloud Translation =====
+  google_translate_api_key: string
+  google_translate_for_tags: boolean
+  google_translate_for_all: boolean
+  // ====================================
+
   extra_tag_resolution: boolean
   extra_tag_uncensored: boolean
   extra_tag_chinese_sub: boolean
@@ -194,6 +238,12 @@ const config = ref<AVConfig>({
   translate_gemini_key: '',
   translate_gemini_model: 'gemini-3.8-flash',
   translate_target: 'zh',
+
+  // ===== Google Cloud Translation =====
+  google_translate_api_key: '',
+  google_translate_for_tags: false,
+  google_translate_for_all: false,
+  // ====================================
 
   extra_tag_resolution: true,
   extra_tag_uncensored: true,
