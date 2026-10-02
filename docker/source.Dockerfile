@@ -20,6 +20,10 @@ COPY backend/go.mod backend/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 COPY backend ./
+# ===== 新增：自动补全 go.sum 缺失的条目 =====
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod tidy
+# ==========================================
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=v0.0.0
