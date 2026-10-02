@@ -8,7 +8,7 @@ import (
 	"image/jpeg"
 	"image/png"
 
-	"Q115-STRM/internal/helpers"
+	"qmediasync/internal/helpers"
 )
 
 //go:embed 4k.png 5k.png 6k.png 7k.png 8k.png 字幕.png 无码.png 流出.png 破解.png
