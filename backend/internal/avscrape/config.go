@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"Q115-STRM/internal/models"
+	"qmediasync/internal/models"
 
 	"gorm.io/gorm"
 )
