@@ -43,6 +43,12 @@ type Config struct {
 	ExtraTagResolution bool `json:"extra_tag_resolution"`
 	ExtraTagUncensored bool `json:"extra_tag_uncensored"`
 	ExtraTagChineseSub bool `json:"extra_tag_chinese_sub"`
+
+	// ===== Google Cloud Translation API（用于翻译特殊日文术语，如"ギリモザ"）=====
+	GoogleTranslateAPIKey  string `json:"google_translate_api_key"`
+	GoogleTranslateForTags bool   `json:"google_translate_for_tags"` // 仅标签走 Google
+	GoogleTranslateForAll  bool   `json:"google_translate_for_all"`  // 全部走 Google
+	// ==============================================================================
 }
 
 var defaultConfig = Config{
