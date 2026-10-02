@@ -17,9 +17,16 @@ import (
 type SyncTaskType string
 
 const (
-	SyncTaskTypeStrm   SyncTaskType = "strm_sync"
-	SyncTaskTypeScrape SyncTaskType = "scrape_organize"
+	SyncTaskTypeStrm     SyncTaskType = "strm_sync"
+	SyncTaskTypeScrape   SyncTaskType = "scrape_organize"
+	// ===== 改动 1：新增 AV 刮削任务类型 =====
+	SyncTaskTypeAVScrape SyncTaskType = "av_scrape"
+	// =====================================
 )
+
+// ===== 改动 2：AV 扫描回调（由 main.go 注册，避免循环依赖）=====
+var AVScanHandler func(pathID uint) error
+// ==================================================================
 
 func (t SyncTaskType) DisplayName() string {
 	switch t {
@@ -27,6 +34,10 @@ func (t SyncTaskType) DisplayName() string {
 		return "STRM 同步"
 	case SyncTaskTypeScrape:
 		return "刮削整理"
+	// ===== 改动 3：加 AV 类型的显示名 =====
+	case SyncTaskTypeAVScrape:
+		return "AV 刮削"
+	// =====================================
 	default:
 		return string(t)
 	}
@@ -277,6 +288,10 @@ func (q *NewSyncQueuePerType) executeTask(task *NewSyncTask) {
 		q.executeStrmSync(task)
 	case SyncTaskTypeScrape:
 		q.executeScrape(task)
+	// ===== 改动 4：加 AV 任务的执行分支 =====
+	case SyncTaskTypeAVScrape:
+		q.executeAVScrape(task)
+	// ========================================
 	}
 }
 
@@ -404,6 +419,51 @@ func (q *NewSyncQueuePerType) executeScrape(task *NewSyncTask) {
 		})
 	}
 }
+
+// ===== 改动 5：新增 executeAVScrape 方法 =====
+func (q *NewSyncQueuePerType) executeAVScrape(task *NewSyncTask) {
+	avPath := models.GetAVPathByID(task.ID)
+	if avPath == nil {
+		logError("获取 AV 刮削目录失败，ID=%d", task.ID)
+		return
+	}
+
+	if models.SourceType(avPath.SourceType) != q.sourceType {
+		logError("AV 刮削目录类型不匹配：预期=%s，实际=%s", q.sourceType, avPath.SourceType)
+		return
+	}
+
+	if AVScanHandler == nil {
+		logError("AVScanHandler 未注册，跳过 AV 刮削任务")
+		return
+	}
+
+	logInfo("开始执行 AV 刮削任务：ID=%d，目录=%s", task.ID, avPath.SourcePath)
+
+	realtime.BroadcastEvent(realtime.EventScraperTaskStart, map[string]any{
+		"task_id":   task.ID,
+		"path_name": avPath.SourcePath,
+	})
+
+	if err := AVScanHandler(task.ID); err != nil {
+		logError("AV 刮削任务执行失败：ID=%d，错误=%v", task.ID, err)
+		realtime.BroadcastEvent(realtime.EventScraperTaskComplete, map[string]any{
+			"task_id":   task.ID,
+			"path_name": avPath.SourcePath,
+			"success":   false,
+			"error":     err.Error(),
+		})
+		return
+	}
+
+	logInfo("AV 刮削任务执行成功：ID=%d", task.ID)
+	realtime.BroadcastEvent(realtime.EventScraperTaskComplete, map[string]any{
+		"task_id":   task.ID,
+		"path_name": avPath.SourcePath,
+		"success":   true,
+	})
+}
+// ==========================================
 
 func (q *NewSyncQueuePerType) CancelTask(id uint, taskType SyncTaskType) error {
 	q.mutex.Lock()
@@ -575,34 +635,10 @@ func (m *NewSyncQueueManager) getQueue(sourceType models.SourceType) *NewSyncQue
 }
 
 func (m *NewSyncQueueManager) AddSyncTask(task *NewSyncTask) error {
-	// var sourceType models.SourceType
-
-	// switch task.TaskType {
-	// case SyncTaskTypeStrm:
-	// 	syncPath := models.GetSyncPathById(task.ID)
-	// 	if syncPath == nil {
-	// 		return fmt.Errorf("获取同步目录失败：ID=%d", task.ID)
-	// 	}
-	// 	sourceType = syncPath.SourceType
-
-	// case SyncTaskTypeScrape:
-	// 	scrapePath := models.GetScrapePathByID(task.ID)
-	// 	if scrapePath == nil {
-	// 		return fmt.Errorf("获取刮削目录失败：ID=%d", task.ID)
-	// 	}
-	// 	sourceType = scrapePath.SourceType
-
-	// default:
-	// 	return fmt.Errorf("未知的任务类型：%s", task.TaskType)
-	// }
-
 	queue := m.getQueue(task.SourceType)
-	// task := &NewSyncTask{ID: id, TaskType: taskType}
-
 	if err := queue.AddTask(task); err != nil {
 		return err
 	}
-
 	return nil
 }
 
@@ -623,6 +659,15 @@ func (m *NewSyncQueueManager) CancelTask(id uint, taskType SyncTaskType) error {
 			return fmt.Errorf("获取刮削目录失败：ID=%d", id)
 		}
 		sourceType = scrapePath.SourceType
+
+	// ===== 改动 6：Manager 的 CancelTask 加 AV 分支 =====
+	case SyncTaskTypeAVScrape:
+		avPath := models.GetAVPathByID(id)
+		if avPath == nil {
+			return fmt.Errorf("获取 AV 刮削目录失败：ID=%d", id)
+		}
+		sourceType = models.SourceType(avPath.SourceType)
+	// ====================================================
 
 	default:
 		return fmt.Errorf("未知的任务类型：%s", taskType.DisplayName())
@@ -649,6 +694,15 @@ func (m *NewSyncQueueManager) CheckTaskStatus(id uint, taskType SyncTaskType) in
 			return TaskStatusNone
 		}
 		sourceType = scrapePath.SourceType
+
+	// ===== 改动 7：Manager 的 CheckTaskStatus 加 AV 分支 =====
+	case SyncTaskTypeAVScrape:
+		avPath := models.GetAVPathByID(id)
+		if avPath == nil {
+			return TaskStatusNone
+		}
+		sourceType = models.SourceType(avPath.SourceType)
+	// ========================================================
 
 	default:
 		return TaskStatusNone
