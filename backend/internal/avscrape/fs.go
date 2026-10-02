@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"Q115-STRM/internal/models"
+	"qmediasync/internal/models"
 )
 
 // FileEntry 文件条目
