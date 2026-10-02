@@ -20,6 +20,7 @@ import (
 	"qmediasync/internal/syncstrm"
 	"qmediasync/internal/tmdb"
 	"qmediasync/internal/v115open"
+	"qmediasync/internal/douban"
 )
 
 type movieScrapeImpl struct {
