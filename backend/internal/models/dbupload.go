@@ -39,6 +39,9 @@ const (
 	UploadSourceStrm             UploadSource = "strm_sync"
 	UploadSourceScrape           UploadSource = "scrape_organize"
 	UploadSourceDirectoryMonitor UploadSource = "directory_monitor"
+	// ===== 改动 1：新增 AV 刮削来源 =====
+	UploadSourceAV UploadSource = "av_scrape"
+	// =====================================
 )
 
 // UploadResult 是上传任务的最终结果类型。
@@ -535,6 +538,11 @@ func (task *DbUploadTask) finalizeRemoteCompletedUpload() error {
 			scrapeMediaFile.RemoveTmpFiles(task)
 		}
 	}
+	// ===== 改动 2：AV 刮削类型，上传成功后清理本地临时文件 =====
+	if task.Source == UploadSourceAV {
+		cleanupAVUploadTempFile(task.LocalFullPath)
+	}
+	// =====================================================
 	if err := task.complete(); err != nil {
 		return fmt.Errorf("标记上传任务完成失败：%w", err)
 	}
@@ -976,6 +984,46 @@ func AddUploadTaskFromMediaFile(mediaFile *ScrapeMediaFile, scrapePath *ScrapePa
 	return derr
 }
 
+// ===== 改动 3：添加 AV 刮削产生的上传任务 =====
+// 添加 AV 刮削产生的上传任务（走 DbUploadTask 队列，和电影/电视剧共用）
+// remoteFullPath = 远端完整路径（用于同目标去重）
+// remotePathId = 远端父目录（115 是 fileId，OpenList/本地是路径）
+func AddUploadTaskFromAV(accountId uint, sourceType SourceType, fileName, localFullPath, remoteFullPath, remotePathId string) error {
+	stat, err := os.Stat(localFullPath)
+	if err != nil {
+		helpers.AppLogger.Errorf("要上传的 AV 文件 %s 无法获取文件信息：%v", localFullPath, err)
+		return err
+	}
+	size := stat.Size()
+
+	// 检查同目标活跃任务
+	if task := CheckUploadTaskExist(UploadSourceAV, sourceType, accountId, remoteFullPath); task != nil {
+		return activeUploadTaskExistsError(task)
+	}
+
+	task := &DbUploadTask{
+		AccountId:      accountId,
+		SourceType:     sourceType,
+		RemoteFullPath: remoteFullPath,
+		FileName:       fileName,
+		RemotePathId:   uploadRemoteParentID(sourceType, remotePathId),
+		LocalFullPath:  localFullPath,
+		Source:         UploadSourceAV,
+		Status:         UploadStatusPending,
+		FileSize:       size,
+	}
+
+	derr := createUploadTaskWithDB(db.Db, task)
+	if errors.Is(derr, errActiveUploadTaskExists) {
+		return activeUploadTaskExistsError(CheckUploadTaskExist(UploadSourceAV, sourceType, accountId, remoteFullPath))
+	}
+	if derr == nil {
+		publishUploadQueueChanged(task, "created")
+	}
+	return derr
+}
+// ============================================
+
 func GetPendingUploadTasks(limit int, excludedIDs ...uint) []*DbUploadTask {
 	var tasks []*DbUploadTask
 	query := db.Db.Model(&DbUploadTask{}).
@@ -1127,3 +1175,28 @@ func GetUnFinishUploadTaskCountByScrapeMediaId(scrapeMediaFileId uint) int64 {
 		Count(&count)
 	return count
 }
+
+// ===== 改动 4：AV 上传完成后清理本地临时文件 =====
+// cleanupAVUploadTempFile 上传成功后删除本地临时文件，向上清理空目录（最多 3 级，到 tmp/avscrape 为止）
+func cleanupAVUploadTempFile(localFullPath string) {
+	if localFullPath == "" {
+		return
+	}
+	_ = os.Remove(localFullPath)
+	dir := filepath.Dir(localFullPath)
+	stopDir := filepath.Join(helpers.ConfigDir, "tmp", "avscrape")
+	for i := 0; i < 3; i++ {
+		if dir == stopDir || dir == "/" || dir == "." || dir == "" {
+			break
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) > 0 {
+			break
+		}
+		if err := os.Remove(dir); err != nil {
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+// ==================================================
