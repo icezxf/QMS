@@ -117,6 +117,29 @@ const AppDatabaseRepair = createAsyncRouteComponent(
   () => import('@/components/AppDatabaseRepair.vue'),
 )
 
+// ===== 改动 1：AV 刮削组件 =====
+const AppAvLibrary = createAsyncRouteComponent(
+  'AppAvLibrary',
+  () => import('@/components/AppAvLibrary.vue'),
+)
+const AppAvDetail = createAsyncRouteComponent(
+  'AppAvDetail',
+  () => import('@/components/AppAvDetail.vue'),
+)
+const AppAvPaths = createAsyncRouteComponent(
+  'AppAvPaths',
+  () => import('@/components/AppAvPaths.vue'),
+)
+const AppAvTasks = createAsyncRouteComponent(
+  'AppAvTasks',
+  () => import('@/components/AppAvTasks.vue'),
+)
+const AppAvConfig = createAsyncRouteComponent(
+  'AppAvConfig',
+  () => import('@/components/AppAvConfig.vue'),
+)
+// =================================
+
 // 定义路由元信息类型
 declare module 'vue-router' {
   interface RouteMeta {
@@ -414,6 +437,104 @@ const routes: RouteRecordRaw[] = [
       showInMenu: true,
     },
   },
+
+  // ===== 改动 2：AV 刮削路由 =====
+  {
+    path: '/avscrape',
+    name: 'avscrape',
+    redirect: '/avscrape/library',
+    meta: {
+      title: 'AV 刮削',
+      requiresAuth: true,
+      icon: 'VideoCamera',
+      showInMenu: true,
+    },
+  },
+  {
+    path: '/avscrape/library',
+    name: 'av-library',
+    component: AppAvLibrary,
+    meta: {
+      title: 'AV 媒体库',
+      page: {
+        description: '浏览 AV 刮削结果，查看番号、演员和元数据',
+        icon: 'Film',
+        variant: 'management',
+      },
+      requiresAuth: true,
+      parent: 'avscrape',
+      icon: 'Film',
+      showInMenu: true,
+    },
+  },
+  {
+    path: '/avscrape/library/:id',
+    name: 'av-detail',
+    component: AppAvDetail,
+    meta: {
+      title: 'AV 详情',
+      page: {
+        description: '查看作品详情和元数据',
+        icon: 'Film',
+        variant: 'detail',
+      },
+      requiresAuth: true,
+      parent: 'avscrape',
+      showInMenu: false,
+    },
+  },
+  {
+    path: '/avscrape/paths',
+    name: 'av-paths',
+    component: AppAvPaths,
+    meta: {
+      title: 'AV 刮削目录',
+      page: {
+        description: '管理 AV 刮削目录和源路径',
+        icon: 'FolderOpened',
+        variant: 'management',
+      },
+      requiresAuth: true,
+      parent: 'avscrape',
+      icon: 'FolderOpened',
+      showInMenu: true,
+    },
+  },
+  {
+    path: '/avscrape/tasks',
+    name: 'av-tasks',
+    component: AppAvTasks,
+    meta: {
+      title: 'AV 任务记录',
+      page: {
+        description: '查看 AV 刮削任务执行记录',
+        icon: 'List',
+        variant: 'compact',
+      },
+      requiresAuth: true,
+      parent: 'avscrape',
+      icon: 'List',
+      showInMenu: true,
+    },
+  },
+  {
+    path: '/avscrape/config',
+    name: 'av-config',
+    component: AppAvConfig,
+    meta: {
+      title: 'AV 配置',
+      page: {
+        description: '配置 AV 刮削源、翻译和评分服务',
+        icon: 'Setting',
+        variant: 'settings',
+      },
+      requiresAuth: true,
+      parent: 'avscrape',
+      icon: 'Setting',
+      showInMenu: true,
+    },
+  },
+  // =================================
 
   {
     path: '/transfer',
