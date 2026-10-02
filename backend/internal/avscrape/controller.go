@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"Q115-STRM/internal/models"
-	"Q115-STRM/internal/synccron"
+	"qmediasync/internal/models"
+	"qmediasync/internal/synccron"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
