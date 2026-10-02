@@ -7,7 +7,7 @@ import (
 	"image/jpeg"
 	"math"
 
-	"Q115-STRM/internal/helpers"
+	"qmediasync/internal/helpers"
 )
 
 // resizePosterToMin 如果 poster 小于 minW x minH，用双线性插值放大到至少 minW x minH
