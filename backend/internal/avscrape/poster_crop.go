@@ -6,7 +6,7 @@ import (
 	"image/draw"
 	"image/jpeg"
 
-	"Q115-STRM/internal/helpers"
+	"qmediasync/internal/helpers"
 )
 
 // cropPosterFromFanart 从横版图右侧裁剪出 2:3 的竖版海报
