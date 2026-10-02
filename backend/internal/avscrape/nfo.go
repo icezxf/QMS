@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"Q115-STRM/internal/models"
+	"qmediasync/internal/models"
 )
 
 // GenerateNFO 根据 ScrapeResult 生成 NFO 文本
