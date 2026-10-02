@@ -578,10 +578,16 @@ func renderTemplate(tpl string, media *models.AVMedia) string {
 		actorDir = "多人作品"
 	}
 	allActors := strings.Join(names, ", ")
+	// ===== 改动：{actors} 2 人及以上时，前面加一层"多人作品/"父目录 =====
+	allActorsPath := sanitizePath(allActors)
+	if len(names) >= 2 {
+		allActorsPath = "多人作品/" + sanitizePath(allActors)
+	}
+	// ==============================================================
 
 	replacer := strings.NewReplacer(
 		"{actor}", sanitizePath(actorDir),
-		"{actors}", sanitizePath(allActors),
+		"{actors}", allActorsPath,
 		"{number}", sanitizePath(media.Code),
 		"{code}", sanitizePath(media.Code),
 		"{title}", sanitizePath(media.Title),
