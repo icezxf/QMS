@@ -17,13 +17,15 @@ RUN apk add --no-cache ca-certificates git
 
 WORKDIR /app/backend
 COPY backend/go.mod backend/go.sum ./
+# ===== 改动 1：go mod download 忽略错误（go.sum 缺条目时会失败）=====
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+    go mod download || true
+# =====================================================================
 COPY backend ./
-# ===== 新增：自动补全 go.sum 缺失的条目 =====
+# ===== 改动 2：复制完整源码后，用 go mod tidy 补全 go.sum =====
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod tidy
-# ==========================================
+# ==============================================================
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=v0.0.0
