@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"Q115-STRM/internal/helpers"
+	"qmediasync/internal/helpers"
 )
 
 type WikiClient struct {
