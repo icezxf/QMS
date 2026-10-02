@@ -100,6 +100,32 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	wikiClient := NewWikiClient()
 	best.Actors = wikiClient.TranslateActorNames(best.Actors)
 
+	// ===== 改动：维基百科补全片商中文名 =====
+	if best.Studio != "" {
+		// 先试全名
+		if zh, err := wikiClient.GetChineseName(best.Studio); err == nil && zh != "" && zh != best.Studio {
+			helpers.AppLogger.Infof("[维基] 片商 %s → %s", best.Studio, zh)
+			best.Studio = zh
+		} else {
+			// 全名失败，尝试去掉空格后的部分（如 "エスワン ナンバーワンスタイル" → "エスワン"）
+			shortName := best.Studio
+			if idx := strings.Index(best.Studio, " "); idx > 0 {
+				shortName = best.Studio[:idx]
+			}
+			if shortName != best.Studio {
+				if zh, err := wikiClient.GetChineseName(shortName); err == nil && zh != "" && zh != shortName {
+					helpers.AppLogger.Infof("[维基] 片商 %s → %s (截取 %s)", best.Studio, zh, shortName)
+					best.Studio = zh
+				} else {
+					helpers.AppLogger.Infof("[维基] 片商 %s 未找到中文译名", best.Studio)
+				}
+			} else {
+				helpers.AppLogger.Infof("[维基] 片商 %s 未找到中文译名", best.Studio)
+			}
+		}
+	}
+	// ============================================
+
 	// ===== JavDB 评分 =====
 	if cfg.EnableJavDBRating && cfg.JavDBCookie != "" {
 		client := NewJavDBClient(cfg.JavDBCookie)
