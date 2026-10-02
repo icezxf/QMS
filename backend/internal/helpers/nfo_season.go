@@ -20,6 +20,11 @@ type TVShowSeason struct {
 	Year          int      `xml:"year,omitempty"`
 	SeasonNumber  int      `xml:"seasonnumber,omitempty"`
 	DateAdded     string   `xml:"dateadded,omitempty"`
+
+	// ===== 新增：豆瓣季评分 =====
+	Rating     string `xml:"rating,omitempty"`
+	UserRating string `xml:"userrating,omitempty"`
+	// =============================
 }
 
 // ReadSeasonNfo 解析季 NFO，兼容非 UTF-8 编码声明和数值标签格式异常
