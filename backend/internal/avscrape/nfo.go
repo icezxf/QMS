@@ -35,10 +35,16 @@ func GenerateNFO(r *ScrapeResult) string {
 	if r.Runtime > 0 {
 		sb.WriteString(fmt.Sprintf("  <runtime>%d</runtime>\n", r.Runtime))
 	}
+	// ===== 改动：日期截断到 YYYY-MM-DD，兼容 Kodi/Emby 标准 =====
 	if r.ReleaseDate != "" {
-		sb.WriteString(fmt.Sprintf("  <premiered>%s</premiered>\n", r.ReleaseDate))
-		sb.WriteString(fmt.Sprintf("  <releasedate>%s</releasedate>\n", r.ReleaseDate))
+		dateOnly := r.ReleaseDate
+		if len(dateOnly) > 10 {
+			dateOnly = dateOnly[:10]
+		}
+		sb.WriteString(fmt.Sprintf("  <premiered>%s</premiered>\n", dateOnly))
+		sb.WriteString(fmt.Sprintf("  <releasedate>%s</releasedate>\n", dateOnly))
 	}
+	// ==========================================================
 	if r.Director != "" {
 		sb.WriteString(fmt.Sprintf("  <director><![CDATA[%s]]></director>\n", r.Director))
 	}
