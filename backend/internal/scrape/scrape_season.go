@@ -175,7 +175,7 @@ func (t *tvShowScrapeImpl) ScrapeSeasonMedia(mediaFile *models.ScrapeMediaFile) 
 	t.MakeMediaSeasonFromTMDB(mediaFile, seasonDetail)
 	mediaFile.NewSeasonPathName = mediaFile.GetDestSeasonPath()
 
-	// ===== 豆瓣季评分补全（必须在 GenerateSeasonNfo 之前）=====
+	// ===== 豆瓣季评分补全（覆盖 TMDB 的 VoteAverage）=====
 	t.enrichSeasonWithDoubanRating(mediaFile)
 	// ===== 结束 =====
 
@@ -205,29 +205,14 @@ func (t *tvShowScrapeImpl) ScrapeSeasonMedia(mediaFile *models.ScrapeMediaFile) 
 	return nil
 }
 
-// enrichSeasonWithDoubanRating 用豆瓣评分覆盖该季的评分
+// enrichSeasonWithDoubanRating 用豆瓣评分覆盖该季的 VoteAverage
+// 简化版：只用「剧名+季号」搜索豆瓣季条目（QMS 的 tmdb 没有 GetTvSeasonExternalIds）
 func (t *tvShowScrapeImpl) enrichSeasonWithDoubanRating(mediaFile *models.ScrapeMediaFile) {
 	if mediaFile.MediaSeason == nil || mediaFile.Media == nil {
 		return
 	}
 
 	doubanClient := douban.NewClient("")
-
-	// 优先：季独立 IMDb ID（欧美剧如果 TMDB 有返回，最精准）
-	externalIds, eerr := t.tmdbClient.GetTvSeasonExternalIds(mediaFile.TmdbId, mediaFile.SeasonNumber)
-	if eerr == nil && externalIds != nil && externalIds.ImdbId != "" {
-		rating, err := doubanClient.GetTVRatingByImdb(externalIds.ImdbId)
-		if err == nil && rating > 0 {
-			oldRating := mediaFile.MediaSeason.VoteAverage
-			mediaFile.MediaSeason.VoteAverage = rating
-			mediaFile.MediaSeason.Save()
-			helpers.AppLogger.Infof("[豆瓣] 季评分已更新(IMDb): %s 第 %d 季 (%.1f -> %.1f)",
-				mediaFile.Name, mediaFile.SeasonNumber, oldRating, rating)
-			return
-		}
-	}
-
-	// 回退：用「剧名+季号」搜索豆瓣季条目
 	rating, err := doubanClient.GetSeasonRatingByTitle(
 		mediaFile.Media.Name,
 		mediaFile.Media.OriginalName,
@@ -237,12 +222,11 @@ func (t *tvShowScrapeImpl) enrichSeasonWithDoubanRating(mediaFile *models.Scrape
 		helpers.AppLogger.Warnf("[豆瓣] 搜索季评分失败: %v, 剧集: %s 季 %d", err, mediaFile.Name, mediaFile.SeasonNumber)
 		return
 	}
-
 	if rating > 0 {
 		oldRating := mediaFile.MediaSeason.VoteAverage
 		mediaFile.MediaSeason.VoteAverage = rating
 		mediaFile.MediaSeason.Save()
-		helpers.AppLogger.Infof("[豆瓣] 季评分已更新(搜索): %s 第 %d 季 (%.1f -> %.1f)",
+		helpers.AppLogger.Infof("[豆瓣] 季评分已更新: %s 第 %d 季 (%.1f -> %.1f)",
 			mediaFile.Name, mediaFile.SeasonNumber, oldRating, rating)
 	} else {
 		helpers.AppLogger.Infof("[豆瓣] 未找到季评分: %s 第 %d 季", mediaFile.Name, mediaFile.SeasonNumber)
@@ -250,10 +234,12 @@ func (t *tvShowScrapeImpl) enrichSeasonWithDoubanRating(mediaFile *models.Scrape
 }
 
 func (sm *tvShowScrapeImpl) GenerateSeasonNfo(mediaFile *models.ScrapeMediaFile) error {
+	// ===== 从 MediaSeason.VoteAverage 读取评分（已被 enrichSeasonWithDoubanRating 覆盖）=====
 	ratingStr := ""
 	if mediaFile.MediaSeason.VoteAverage > 0 {
 		ratingStr = fmt.Sprintf("%.1f", mediaFile.MediaSeason.VoteAverage)
 	}
+
 	season := &helpers.TVShowSeason{
 		Title:         mediaFile.MediaSeason.SeasonName,
 		OriginalTitle: mediaFile.MediaSeason.SeasonName,
