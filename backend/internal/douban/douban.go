@@ -11,21 +11,15 @@ import (
 	"sync"
 	"time"
 
-	"Q115-STRM/internal/helpers"
+	"qmediasync/internal/helpers"
 )
 
 const (
-	// 全局请求间隔
 	minRequestInterval = 2 * time.Second
-	// 缓存有效期 2 天
-	cacheTTL = 48 * time.Hour
-	// 官方 App API Key（用于电影/季评分查询）
-	defaultApiKey = "0ab215a8b1977939201640fa14c66bab"
-	// 第三方聚合 API（用于电视剧评分查询）
-	tvApiHost = "https://douban-idatabase.kfstorm.com"
+	cacheTTL           = 48 * time.Hour
+	defaultApiKey      = "0ab215a8b1977939201640fa14c66bab"
+	tvApiHost          = "https://douban-idatabase.kfstorm.com"
 )
-
-// ==================== 全局限速 ====================
 
 var (
 	rateMu          sync.Mutex
@@ -41,8 +35,6 @@ func globalRateLimit() {
 	}
 	lastRequestTime = time.Now()
 }
-
-// ==================== 缓存 ====================
 
 type cacheEntry struct {
 	rating float64
@@ -71,7 +63,6 @@ func setCache(key string, rating float64) {
 	ratingCache[key] = cacheEntry{rating: rating, expire: time.Now().Add(cacheTTL)}
 }
 
-// 后台定期清理过期缓存，避免长期运行缓慢累积
 func init() {
 	go func() {
 		ticker := time.NewTicker(30 * time.Minute)
@@ -88,9 +79,6 @@ func init() {
 	}()
 }
 
-// ==================== API 响应结构 ====================
-
-// 官方电影 API 响应
 type doubanMovieApiResponse struct {
 	Rating struct {
 		Average string `json:"average"`
@@ -100,7 +88,6 @@ type doubanMovieApiResponse struct {
 	Code  int    `json:"code"`
 }
 
-// 第三方聚合 API 响应
 type doubanTvApiItem struct {
 	DoubanID    string  `json:"douban_id"`
 	ImdbID      string  `json:"imdb_id"`
@@ -108,8 +95,6 @@ type doubanTvApiItem struct {
 	Year        int     `json:"year"`
 	Rating      float64 `json:"rating"`
 }
-
-// ==================== Client ====================
 
 type Client struct {
 	httpClient *http.Client
@@ -128,8 +113,6 @@ func NewClient(apiKey string) *Client {
 		apiKey:     apiKey,
 	}
 }
-
-// ==================== 电影查询（官方 API，通过 IMDb ID） ====================
 
 // GetRatingByImdb 通过 IMDb ID 获取电影豆瓣评分
 func (c *Client) GetRatingByImdb(imdbId string) (float64, error) {
@@ -189,8 +172,6 @@ func (c *Client) GetRatingByImdb(imdbId string) (float64, error) {
 	return rating, nil
 }
 
-// ==================== 电视剧查询（第三方聚合 API，通过 IMDb ID） ====================
-
 // GetTVRatingByImdb 通过 IMDb ID 获取电视剧豆瓣评分
 func (c *Client) GetTVRatingByImdb(imdbId string) (float64, error) {
 	if strings.TrimSpace(imdbId) == "" {
@@ -240,8 +221,6 @@ func (c *Client) GetTVRatingByImdb(imdbId string) (float64, error) {
 	return rating, nil
 }
 
-// ==================== 季评分（搜索方案） ====================
-
 // GetSeasonRatingByTitle 通过「剧名+季号」搜索豆瓣季条目，获取该季评分
 func (c *Client) GetSeasonRatingByTitle(title string, originalTitle string, seasonNumber int) (float64, error) {
 	if strings.TrimSpace(title) == "" && strings.TrimSpace(originalTitle) == "" {
@@ -255,7 +234,6 @@ func (c *Client) GetSeasonRatingByTitle(title string, originalTitle string, seas
 
 	seasonStr := seasonNumberToChinese(seasonNumber)
 
-	// 依次尝试中文名、原始名
 	candidates := make([]string, 0, 2)
 	if title != "" {
 		candidates = append(candidates, fmt.Sprintf("%s %s", title, seasonStr))
@@ -281,7 +259,6 @@ func (c *Client) GetSeasonRatingByTitle(title string, originalTitle string, seas
 	return 0, nil
 }
 
-// searchSeasonId 用豆瓣搜索建议接口按「关键词」搜索，返回标题包含季号的条目 ID
 func (c *Client) searchSeasonId(keyword string, seasonStr string) string {
 	globalRateLimit()
 
@@ -305,7 +282,6 @@ func (c *Client) searchSeasonId(keyword string, seasonStr string) string {
 		return ""
 	}
 
-	// subject_suggest 返回的是数组
 	var results []struct {
 		ID    string `json:"id"`
 		Title string `json:"title"`
@@ -316,7 +292,6 @@ func (c *Client) searchSeasonId(keyword string, seasonStr string) string {
 		return ""
 	}
 
-	// 匹配标题里包含季号
 	for _, item := range results {
 		if strings.Contains(item.Title, seasonStr) {
 			return item.ID
@@ -325,7 +300,6 @@ func (c *Client) searchSeasonId(keyword string, seasonStr string) string {
 	return ""
 }
 
-// fetchRatingById 用官方 App API 按豆瓣 ID 查询评分
 func (c *Client) fetchRatingById(sid string) (float64, error) {
 	globalRateLimit()
 
@@ -362,7 +336,6 @@ func (c *Client) fetchRatingById(sid string) (float64, error) {
 	return result.Rating.Average, nil
 }
 
-// seasonNumberToChinese 数字季号转中文
 func seasonNumberToChinese(n int) string {
 	m := map[int]string{
 		1: "第一季", 2: "第二季", 3: "第三季", 4: "第四季", 5: "第五季",
