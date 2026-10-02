@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"qmediasync/internal/db"
+)
 
 // AVSettings AV 模块的键值对配置表
 type AVSettings struct {
@@ -64,4 +68,15 @@ type AVPath struct {
 	LastScanAt   time.Time `json:"last_scan_at"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// ===== 新增：给 synccron 用的辅助查询函数 =====
+
+// GetAVPathByID 按 ID 查询 AV 刮削目录
+func GetAVPathByID(id uint) *AVPath {
+	var p AVPath
+	if err := db.Db.First(&p, id).Error; err != nil {
+		return nil
+	}
+	return &p
 }
