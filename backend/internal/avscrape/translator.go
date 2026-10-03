@@ -22,11 +22,9 @@ type Translator struct {
 	GeminiKey   string
 	GeminiModel string
 	HTTP        *http.Client
-	// ===== Google Cloud Translation =====
 	GoogleAPIKey           string
 	GoogleTranslateForTags bool
 	GoogleTranslateForAll  bool
-	// =====================================
 }
 
 func NewTranslator(engine, target string) *Translator {
@@ -70,7 +68,7 @@ func (t *Translator) Translate(text string) (string, error) {
 }
 
 // ============================================================
-// Gemini 引擎（Interactions API，带重试）
+// Gemini 引擎
 // ============================================================
 
 type geminiInteractionResp struct {
@@ -97,8 +95,6 @@ func extractGeminiText(out *geminiInteractionResp) (string, error) {
 	return "", fmt.Errorf("Gemini 返回为空")
 }
 
-// geminiCall 带重试的 Gemini 调用
-// 503 / 429 时最多重试 5 次，间隔 15 秒
 func (t *Translator) geminiCall(prompt string) (string, error) {
 	if t.GeminiKey == "" {
 		return "", fmt.Errorf("Gemini API Key 未配置")
@@ -246,12 +242,13 @@ func (t *Translator) geminiTranslateAll(r *ScrapeResult) error {
 
 // ============================================================
 // TranslateResult 统一入口
-// 用占位符保护演员名，防止机翻把演员名翻错
+// 返回: warnings
 // ============================================================
 
-func (t *Translator) TranslateResult(r *ScrapeResult) {
+func (t *Translator) TranslateResult(r *ScrapeResult) []string {
+	var warnings []string
 	if r == nil {
-		return
+		return warnings
 	}
 
 	// ===== 1. 用占位符保护标题/简介中的演员名 =====
@@ -294,42 +291,46 @@ func (t *Translator) TranslateResult(r *ScrapeResult) {
 		helpers.AppLogger.Infof("[翻译] 已用 %d 个占位符保护演员名", len(phs))
 	}
 
-	// ===== 2. Google 全量翻译（如果开启）=====
+	// ===== 2. Google 全量翻译 =====
 	if t.GoogleTranslateForAll && t.GoogleAPIKey != "" {
 		helpers.AppLogger.Infof("[翻译] 使用 Google Cloud 全量翻译")
-		t.translateAllWithGoogle(r)
+		w := t.translateAllWithGoogle(r)
+		warnings = append(warnings, w...)
 		restore()
-		return
+		return warnings
 	}
 
-	// ===== 3. 走原引擎（Gemini / DeepL / Bing 等）=====
+	// ===== 3. 走原引擎 =====
 	if t.Engine == "gemini" {
 		if err := t.geminiTranslateAll(r); err == nil {
 			restore()
-			return
+			return warnings
 		} else {
 			helpers.AppLogger.Warnf("[翻译] Gemini 失败，降级到 DeepL: %v", err)
+			warnings = append(warnings, fmt.Sprintf("Gemini 翻译失败: %v，已降级到 DeepL", err))
 			t.Engine = "deepl"
 		}
 	}
 
-	if s, err := t.Translate(r.Title); err == nil && s != "" {
+	if s, err := t.Translate(r.Title); err != nil {
+		warnings = append(warnings, fmt.Sprintf("标题翻译失败: %v", err))
+	} else if s != "" {
 		r.Title = s
 		helpers.AppLogger.Infof("[翻译] 标题 -> %s", s)
 	}
-	if s, err := t.Translate(r.Plot); err == nil && s != "" {
+	if s, err := t.Translate(r.Plot); err != nil {
+		warnings = append(warnings, fmt.Sprintf("简介翻译失败: %v", err))
+	} else if s != "" {
 		r.Plot = s
 		helpers.AppLogger.Infof("[翻译] 简介 -> %s", truncate(s, 50))
 	}
 
-	// ===== 标签：优先走 Google（如果开启 GoogleTranslateForTags）=====
+	// ===== 标签翻译 =====
 	for i, g := range r.Genres {
-		// ===== 改动：不含日文假名的标签跳过（纯中文/英文/数字）=====
 		if !isJapanese(g) {
 			helpers.AppLogger.Infof("[翻译] 标签 %s 无日文假名，跳过翻译", g)
 			continue
 		}
-		// ======================================================
 		var translated string
 		var err error
 		if t.GoogleTranslateForTags && t.GoogleAPIKey != "" {
@@ -343,24 +344,24 @@ func (t *Translator) TranslateResult(r *ScrapeResult) {
 		} else {
 			translated, err = t.Translate(g)
 		}
-		if err == nil && translated != "" {
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("标签 %s 翻译失败: %v", g, err))
+			continue
+		}
+		if translated != "" && translated != g {
 			r.Genres[i] = translated
 		}
 	}
-	// ===============================================================
 
 	helpers.AppLogger.Infof("[翻译] 演员名保留 wiki 中文名，跳过机翻")
-
-	// ===== 4. 还原占位符 =====
 	restore()
+	return warnings
 }
 
 // ============================================================
 // Google Cloud Translation API Basic (v2)
-// 官方接口，每月 50 万字符免费额度
 // ============================================================
 
-// googleCloudTranslate 调用官方 v2 接口翻译单条文本
 func (t *Translator) googleCloudTranslate(text string) (string, error) {
 	if t.GoogleAPIKey == "" {
 		return text, fmt.Errorf("Google Cloud Translation API Key 未配置")
@@ -423,7 +424,6 @@ func (t *Translator) googleCloudTranslate(text string) (string, error) {
 	}
 
 	result := out.Data.Translations[0].TranslatedText
-	// 处理 HTML 实体（v2 API 有时会返回 &quot; 等）
 	result = strings.ReplaceAll(result, "&quot;", "\"")
 	result = strings.ReplaceAll(result, "&#39;", "'")
 	result = strings.ReplaceAll(result, "&amp;", "&")
@@ -432,27 +432,34 @@ func (t *Translator) googleCloudTranslate(text string) (string, error) {
 	return result, nil
 }
 
-// translateAllWithGoogle 全部内容用 Google 翻译
-func (t *Translator) translateAllWithGoogle(r *ScrapeResult) {
-	if s, err := t.googleCloudTranslate(r.Title); err == nil && s != "" {
+// translateAllWithGoogle 全部内容用 Google 翻译，返回 warnings
+func (t *Translator) translateAllWithGoogle(r *ScrapeResult) []string {
+	var warnings []string
+	if s, err := t.googleCloudTranslate(r.Title); err != nil {
+		warnings = append(warnings, fmt.Sprintf("Google 标题翻译失败: %v", err))
+	} else if s != "" {
 		r.Title = s
 		helpers.AppLogger.Infof("[翻译-Google] 标题 -> %s", truncate(s, 40))
-	} else if err != nil {
-		helpers.AppLogger.Warnf("[翻译-Google] 标题失败: %v", err)
 	}
 
-	if s, err := t.googleCloudTranslate(r.Plot); err == nil && s != "" {
+	if s, err := t.googleCloudTranslate(r.Plot); err != nil {
+		warnings = append(warnings, fmt.Sprintf("Google 简介翻译失败: %v", err))
+	} else if s != "" {
 		r.Plot = s
 		helpers.AppLogger.Infof("[翻译-Google] 简介 -> %s", truncate(s, 40))
-	} else if err != nil {
-		helpers.AppLogger.Warnf("[翻译-Google] 简介失败: %v", err)
 	}
 
 	for i, g := range r.Genres {
-		if s, err := t.googleCloudTranslate(g); err == nil && s != "" {
+		if !isJapanese(g) {
+			continue
+		}
+		if s, err := t.googleCloudTranslate(g); err != nil {
+			warnings = append(warnings, fmt.Sprintf("Google 标签 %s 翻译失败: %v", g, err))
+		} else if s != "" && s != g {
 			r.Genres[i] = s
 		}
 	}
+	return warnings
 }
 
 // ============================================================
