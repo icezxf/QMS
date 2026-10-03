@@ -43,7 +43,8 @@ func (c *Controller) SaveConfig(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-// Scrape 手动刮削单个番号
+// Scrape 手动刮削单个番号，可选带 oshash
+// POST /api/avscrape/scrape  { "code": "SNOS-377", "oshash": "可选" }
 func (c *Controller) Scrape(ctx *gin.Context) {
 	var req struct {
 		Code   string `json:"code"`
@@ -61,7 +62,7 @@ func (c *Controller) Scrape(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, result)
 }
 
-// ListMedia 媒体库列表，支持状态筛选
+// ListMedia 媒体库列表，支持状态筛选和关键字搜索
 func (c *Controller) ListMedia(ctx *gin.Context) {
 	page, _ := strconv.Atoi(ctx.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(ctx.DefaultQuery("page_size", "20"))
@@ -105,7 +106,7 @@ func (c *Controller) GetMedia(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, m)
 }
 
-// ReleaseMedia 放行暂停的媒体
+// ReleaseMedia 放行暂停的媒体：跳过失败检查，继续走完流程
 func (c *Controller) ReleaseMedia(ctx *gin.Context) {
 	id, _ := strconv.Atoi(ctx.Param("id"))
 	if err := c.Svc.ReleaseMedia(uint(id)); err != nil {
@@ -115,7 +116,7 @@ func (c *Controller) ReleaseMedia(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"ok": true, "msg": "已放行，下次扫描将强制走完"})
 }
 
-// RestartMedia 重启刮削
+// RestartMedia 重启刮削：清理 tmp 和 AVMedia 状态，从头刮削
 func (c *Controller) RestartMedia(ctx *gin.Context) {
 	id, _ := strconv.Atoi(ctx.Param("id"))
 	if err := c.Svc.RestartMedia(uint(id)); err != nil {
@@ -125,7 +126,7 @@ func (c *Controller) RestartMedia(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"ok": true, "msg": "已重启，记录和临时文件已清理"})
 }
 
-// CancelMedia 取消刮削
+// CancelMedia 取消刮削：清理 tmp 和记录
 func (c *Controller) CancelMedia(ctx *gin.Context) {
 	id, _ := strconv.Atoi(ctx.Param("id"))
 	if err := c.Svc.CancelMedia(uint(id)); err != nil {
@@ -185,7 +186,8 @@ func (c *Controller) DeletePath(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-// ScanPath 触发 AV 刮削
+// ScanPath POST /api/avscrape/paths/:id/scan
+// 改成往 synccron 队列加任务，和原模块共用串行队列，避免 115 风控
 func (c *Controller) ScanPath(ctx *gin.Context) {
 	id, _ := strconv.Atoi(ctx.Param("id"))
 
@@ -203,6 +205,7 @@ func (c *Controller) ScanPath(ctx *gin.Context) {
 		return
 	}
 
+	// 判断是否已经在队列里
 	if synccron.CheckNewTaskStatus(uint(id), synccron.SyncTaskTypeAVScrape) != synccron.TaskStatusNone {
 		ctx.JSON(http.StatusOK, gin.H{"ok": true, "msg": "任务已在队列中"})
 		return
@@ -225,6 +228,7 @@ func (c *Controller) ScanPath(ctx *gin.Context) {
 	})
 }
 
+// ListTasks 任务记录列表，支持状态筛选和番号搜索
 func (c *Controller) ListTasks(ctx *gin.Context) {
 	page, _ := strconv.Atoi(ctx.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(ctx.DefaultQuery("page_size", "20"))
@@ -235,11 +239,16 @@ func (c *Controller) ListTasks(ctx *gin.Context) {
 		pageSize = 20
 	}
 	status := ctx.DefaultQuery("status", "")
+	keyword := ctx.DefaultQuery("keyword", "")
 
 	query := c.DB.Model(&models.AVTask{})
 	if status != "" {
 		query = query.Where("status = ?", status)
 	}
+	if keyword != "" {
+		query = query.Where("code LIKE ?", "%"+keyword+"%")
+	}
+
 	var total int64
 	query.Count(&total)
 
