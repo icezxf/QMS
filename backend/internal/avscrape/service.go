@@ -580,3 +580,48 @@ func (s *Service) CancelMedia(id uint) error {
 	helpers.AppLogger.Infof("[AV取消] %s 已取消", media.Code)
 	return nil
 }
+
+// ===== 批量删除媒体 =====
+
+// BatchDeleteMedia 批量删除媒体记录
+// ids 为空时删除全部
+// 注意：只删数据库记录和本地 tmp，不动源视频、不动已上传的元数据文件
+func (s *Service) BatchDeleteMedia(ids []uint) (int, error) {
+	var mediaList []models.AVMedia
+	query := s.DB.Model(&models.AVMedia{})
+	if len(ids) > 0 {
+		query = query.Where("id IN ?", ids)
+	}
+	if err := query.Find(&mediaList).Error; err != nil {
+		return 0, err
+	}
+	if len(mediaList) == 0 {
+		return 0, nil
+	}
+
+	codes := make([]string, 0, len(mediaList))
+	mediaIDs := make([]uint, 0, len(mediaList))
+	for _, m := range mediaList {
+		codes = append(codes, m.Code)
+		mediaIDs = append(mediaIDs, m.ID)
+	}
+
+	// 清理本地 tmp（每个番号一个目录）
+	for _, code := range codes {
+		tmpDir := filepath.Join(helpers.ConfigDir, "tmp", "avscrape", code)
+		if err := os.RemoveAll(tmpDir); err != nil {
+			helpers.AppLogger.Warnf("[AV批量删除] 清理 tmp 失败 %s: %v", tmpDir, err)
+		}
+	}
+
+	// 删 AVMedia
+	if err := s.DB.Where("id IN ?", mediaIDs).Delete(&models.AVMedia{}).Error; err != nil {
+		return 0, err
+	}
+
+	// 删关联 AVTask
+	s.DB.Where("media_id IN ?", mediaIDs).Delete(&models.AVTask{})
+
+	helpers.AppLogger.Infof("[AV批量删除] 已删除 %d 条媒体记录", len(mediaIDs))
+	return len(mediaIDs), nil
+}
