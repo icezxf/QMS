@@ -106,12 +106,10 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 			helpers.AppLogger.Infof("[维基] 片商 %s → %s", best.Studio, zh)
 			best.Studio = zh
 		} else {
-			// 全名失败，尝试去掉空格后的部分
-			shortName := best.Studio
-			if idx := strings.Index(best.Studio, " "); idx > 0 {
-				shortName = best.Studio[:idx]
-			}
-			if shortName != best.Studio {
+			// ===== 改动：用 strings.Fields 按全角/半角空格分词，取第一个词再试 =====
+			fields := strings.Fields(best.Studio)
+			if len(fields) > 1 {
+				shortName := fields[0]
 				if zh, err := wikiClient.GetChineseName(shortName); err == nil && zh != "" && zh != shortName {
 					helpers.AppLogger.Infof("[维基] 片商 %s → %s (截取 %s)", best.Studio, zh, shortName)
 					best.Studio = zh
@@ -121,6 +119,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 			} else {
 				helpers.AppLogger.Infof("[维基] 片商 %s 未找到中文译名", best.Studio)
 			}
+			// ======================================================================
 		}
 	}
 
