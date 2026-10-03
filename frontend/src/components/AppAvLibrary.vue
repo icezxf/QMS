@@ -131,7 +131,7 @@ const toggleSelect = (id: number, checked: boolean) => {
   syncSelectAll()
 }
 
-const toggleSelectAll = (val: boolean | string | number) => {
+const toggleSelectAll = (val: string | number | boolean) => {
   if (val) {
     selectedIds.value = list.value.map((m) => m.id)
   } else {
@@ -162,7 +162,6 @@ const load = async () => {
     })
     list.value = res.data.list || []
     total.value = res.data.total || 0
-    // 清理已不在当前列表的选中项
     const visibleIds = new Set(list.value.map((m) => m.id))
     selectedIds.value = selectedIds.value.filter((id) => visibleIds.has(id))
     syncSelectAll()
@@ -209,7 +208,7 @@ const release = async (m: any) => {
       { type: 'warning' },
     )
     await axios.post(`/api/avscrape/library/${m.id}/release`)
-    ElMessage.success('已放行')
+    ElMessage.success('已放行，正在重新扫描')
     load()
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error('放行失败')
@@ -224,7 +223,7 @@ const restart = async (m: any) => {
       { type: 'warning' },
     )
     await axios.post(`/api/avscrape/library/${m.id}/restart`)
-    ElMessage.success('已重启')
+    ElMessage.success('已重启，正在重新扫描')
     load()
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error('重启失败')
@@ -368,6 +367,7 @@ onMounted(load)
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center top;
   display: block;
 }
 .av-card__badge {
