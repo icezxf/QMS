@@ -22,6 +22,23 @@
         </el-input>
       </div>
       <div class="toolbar-right">
+        <el-checkbox
+          v-model="selectAll"
+          :indeterminate="isIndeterminate"
+          :disabled="list.length === 0"
+          @change="toggleSelectAll"
+        >
+          全选
+        </el-checkbox>
+        <el-button
+          type="danger"
+          size="small"
+          :disabled="selectedIds.length === 0"
+          @click="batchDelete"
+        >
+          删除选中 ({{ selectedIds.length }})
+        </el-button>
+        <el-button type="danger" size="small" plain @click="clearAll">清空全部</el-button>
         <span class="total-hint">共 {{ total }} 部</span>
       </div>
     </div>
@@ -31,9 +48,15 @@
         v-for="m in list"
         :key="m.id"
         class="av-card"
-        :class="{ 'is-paused': m.status === 'paused' }"
+        :class="{ 'is-paused': m.status === 'paused', 'is-selected': selectedIds.includes(m.id) }"
         @click="goDetail(m.id)"
       >
+        <el-checkbox
+          :model-value="selectedIds.includes(m.id)"
+          class="av-card__checkbox"
+          @click.stop
+          @change="(v) => toggleSelect(m.id, !!v)"
+        />
         <div class="av-card__poster">
           <img :src="resolveImage(m.poster)" :alt="m.code" loading="lazy" />
           <div class="av-card__badge" v-if="m.status === 'paused'">暂停</div>
@@ -73,7 +96,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -89,6 +112,43 @@ const loading = ref(false)
 const statusFilter = ref('')
 const keyword = ref('')
 
+// ===== 选择状态 =====
+const selectedIds = ref<number[]>([])
+const selectAll = ref(false)
+
+const isIndeterminate = computed(() => {
+  return selectedIds.value.length > 0 && selectedIds.value.length < list.value.length
+})
+
+const toggleSelect = (id: number, checked: boolean) => {
+  if (checked) {
+    if (!selectedIds.value.includes(id)) {
+      selectedIds.value.push(id)
+    }
+  } else {
+    selectedIds.value = selectedIds.value.filter((x) => x !== id)
+  }
+  syncSelectAll()
+}
+
+const toggleSelectAll = (val: boolean | string | number) => {
+  if (val) {
+    selectedIds.value = list.value.map((m) => m.id)
+  } else {
+    selectedIds.value = []
+  }
+}
+
+const syncSelectAll = () => {
+  if (list.value.length === 0) {
+    selectAll.value = false
+    return
+  }
+  selectAll.value = selectedIds.value.length === list.value.length
+}
+
+// =======================
+
 const load = async () => {
   loading.value = true
   try {
@@ -102,6 +162,10 @@ const load = async () => {
     })
     list.value = res.data.list || []
     total.value = res.data.total || 0
+    // 清理已不在当前列表的选中项
+    const visibleIds = new Set(list.value.map((m) => m.id))
+    selectedIds.value = selectedIds.value.filter((id) => visibleIds.has(id))
+    syncSelectAll()
   } catch {
     ElMessage.error('加载媒体库失败')
   } finally {
@@ -111,6 +175,8 @@ const load = async () => {
 
 const reload = () => {
   page.value = 1
+  selectedIds.value = []
+  selectAll.value = false
   load()
 }
 
@@ -180,6 +246,50 @@ const cancel = async (m: any) => {
   }
 }
 
+// ===== 批量删除 =====
+const batchDelete = async () => {
+  if (selectedIds.value.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      `确定删除选中的 ${selectedIds.value.length} 条记录吗？\n\n` +
+        `• 只删除数据库记录和本地临时文件\n` +
+        `• 不会删除源视频文件\n` +
+        `• 不会删除已上传的 NFO/图片`,
+      '确认删除',
+      { type: 'warning', dangerouslyUseHTMLString: false },
+    )
+    const res = await axios.post('/api/avscrape/library/batch-delete', {
+      ids: selectedIds.value,
+    })
+    ElMessage.success(res.data.msg || '删除成功')
+    selectedIds.value = []
+    selectAll.value = false
+    load()
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error('删除失败')
+  }
+}
+
+const clearAll = async () => {
+  try {
+    await ElMessageBox.confirm(
+      `确定清空全部媒体记录吗？\n\n` +
+        `• 只删除数据库记录和本地临时文件\n` +
+        `• 不会删除源视频文件\n` +
+        `• 不会删除已上传的 NFO/图片`,
+      '确认清空全部',
+      { type: 'warning', dangerouslyUseHTMLString: false, confirmButtonText: '清空全部' },
+    )
+    const res = await axios.post('/api/avscrape/library/batch-delete', { all: true })
+    ElMessage.success(res.data.msg || '已清空')
+    selectedIds.value = []
+    selectAll.value = false
+    load()
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error('清空失败')
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -192,14 +302,22 @@ onMounted(load)
   justify-content: space-between;
   align-items: center;
   margin-bottom: 20px;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 .toolbar-left {
   display: flex;
   align-items: center;
 }
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .total-hint {
   color: #909399;
   font-size: 13px;
+  margin-left: 4px;
 }
 .card-grid {
   display: grid;
@@ -216,6 +334,7 @@ onMounted(load)
   border: 1px solid #ebeef5;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 .av-card:hover {
   transform: translateY(-4px);
@@ -224,6 +343,19 @@ onMounted(load)
 .av-card.is-paused {
   border-color: #f56c6c;
   box-shadow: 0 0 0 2px rgba(245, 108, 108, 0.15);
+}
+.av-card.is-selected {
+  border-color: #409eff;
+  box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.25);
+}
+.av-card__checkbox {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 4px;
+  padding: 2px 4px 2px 6px;
 }
 .av-card__poster {
   position: relative;
@@ -241,7 +373,7 @@ onMounted(load)
 .av-card__badge {
   position: absolute;
   top: 6px;
-  left: 6px;
+  right: 6px;
   background: #f56c6c;
   color: #fff;
   font-size: 12px;
@@ -339,8 +471,14 @@ onMounted(load)
     width: 100% !important;
     margin-left: 0 !important;
   }
+  .toolbar-right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
   .total-hint {
+    width: 100%;
     text-align: right;
+    order: -1;
   }
   .card-grid {
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -391,6 +529,11 @@ onMounted(load)
   .av-card__badge {
     font-size: 11px;
     padding: 1px 6px;
+  }
+  .av-card__checkbox {
+    top: 4px;
+    left: 4px;
+    padding: 1px 3px 1px 5px;
   }
 }
 </style>
