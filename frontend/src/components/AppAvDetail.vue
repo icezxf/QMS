@@ -51,16 +51,16 @@
           <el-col
             v-for="(actor, idx) in parseJSON(media.actors)"
             :key="idx"
-            :xs="12"
-            :sm="8"
-            :md="6"
-            :lg="4"
+            :xs="8"
+            :sm="6"
+            :md="4"
+            :lg="3"
             style="margin-bottom: 16px"
           >
-            <el-card>
+            <div class="av-actor">
               <img :src="actor.image" class="av-actor__img" />
               <div class="av-actor__name">{{ actor.name }}</div>
-            </el-card>
+            </div>
           </el-col>
         </el-row>
       </el-tab-pane>
@@ -115,7 +115,7 @@ const release = async () => {
   try {
     await ElMessageBox.confirm('放行后将跳过失败检查强制走完流程，确定吗？', '确认放行', { type: 'warning' })
     await axios.post(`/api/avscrape/library/${route.params.id}/release`)
-    ElMessage.success('已放行')
+    ElMessage.success('已放行，正在重新扫描')
     loadDetail()
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error('放行失败')
@@ -126,7 +126,7 @@ const restart = async () => {
   try {
     await ElMessageBox.confirm('重启会删除临时文件并清空记录，从零开始重新刮削，确定吗？', '确认重启', { type: 'warning' })
     await axios.post(`/api/avscrape/library/${route.params.id}/restart`)
-    ElMessage.success('已重启')
+    ElMessage.success('已重启，正在重新扫描')
     router.push('/avscrape/library')
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error('重启失败')
@@ -154,7 +154,9 @@ onMounted(loadDetail)
 .av-detail__hero {
   position: relative;
   margin-top: 16px;
-  min-height: 300px;
+  aspect-ratio: 16 / 9;
+  max-height: 500px;
+  min-height: 260px;
   background-size: cover;
   background-position: center;
   border-radius: 8px;
@@ -164,16 +166,20 @@ onMounted(loadDetail)
   display: flex;
   align-items: flex-end;
   padding: 24px;
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.85));
   color: #fff;
+  min-height: 100%;
 }
 .av-detail__poster {
   width: 180px;
-  height: 260px;
+  aspect-ratio: 2 / 3;
+  height: auto;
   object-fit: cover;
+  object-position: center top;
   border-radius: 4px;
   margin-right: 24px;
   flex-shrink: 0;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
 }
 .av-detail__meta h1 {
   margin: 0 0 8px;
@@ -183,21 +189,33 @@ onMounted(loadDetail)
   margin: 4px 0;
   font-size: 14px;
 }
+.av-actor {
+  text-align: center;
+}
 .av-actor__img {
   width: 100%;
-  height: 120px;
+  aspect-ratio: 1 / 1;
+  height: auto;
   object-fit: cover;
-  border-radius: 4px;
+  object-position: center top;
+  border-radius: 50%;
+  background: #f5f7fa;
+  border: 2px solid #ebeef5;
 }
 .av-actor__name {
   text-align: center;
   margin-top: 8px;
-  font-size: 14px;
+  font-size: 13px;
+  color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .av-preview-img {
   width: 180px;
   height: 120px;
   margin: 4px;
+  border-radius: 4px;
 }
 .av-trailer {
   width: 100%;
@@ -210,7 +228,9 @@ onMounted(loadDetail)
     padding: 12px;
   }
   .av-detail__hero {
+    aspect-ratio: 4 / 3;
     min-height: 200px;
+    max-height: 320px;
   }
   .av-detail__hero-overlay {
     flex-direction: column;
@@ -219,8 +239,7 @@ onMounted(loadDetail)
     padding: 16px;
   }
   .av-detail__poster {
-    width: 130px;
-    height: 195px;
+    width: 120px;
     margin: 0 0 12px 0;
   }
   .av-detail__meta h1 {
@@ -229,9 +248,6 @@ onMounted(loadDetail)
   }
   .av-detail__meta p {
     font-size: 12px;
-  }
-  .av-actor__img {
-    height: 90px;
   }
   .av-actor__name {
     font-size: 12px;
@@ -249,16 +265,12 @@ onMounted(loadDetail)
   }
   .av-detail__poster {
     width: 100px;
-    height: 150px;
   }
   .av-detail__meta h1 {
     font-size: 16px;
   }
   .av-detail__meta p {
     font-size: 11px;
-  }
-  .av-actor__img {
-    height: 80px;
   }
   .av-preview-img {
     width: 100%;
