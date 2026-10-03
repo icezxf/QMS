@@ -36,7 +36,14 @@ func NewWikiClient() *WikiClient {
 const (
 	wikiMaxRetries = 3
 	wikiRetryDelay = 2 * time.Second
+	// ===== 改动 1：查询间隔从 500ms 加大到 1500ms，避免维基限流 =====
+	wikiMinInterval = 1500 * time.Millisecond
+	// ============================================================
 )
+
+// ===== 改动 2：User-Agent 加联系方式，符合维基 API 最佳实践 =====
+const wikiUserAgent = "QMediaSync/1.0 (https://github.com/icezxf/QMS; bocsx000@hotmail.com)"
+// ==============================================================
 
 func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 	if japaneseName == "" {
@@ -53,9 +60,9 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 	}
 	// 限速
 	elapsed := time.Since(w.lastReq)
-	if elapsed < 500*time.Millisecond {
+	if elapsed < wikiMinInterval {
 		w.mu.Unlock()
-		time.Sleep(500*time.Millisecond - elapsed)
+		time.Sleep(wikiMinInterval - elapsed)
 		w.mu.Lock()
 	}
 	w.lastReq = time.Now()
@@ -116,7 +123,9 @@ func (w *WikiClient) requestOnce(endpoint, japaneseName string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("构造请求失败: %w", err)
 	}
-	req.Header.Set("User-Agent", "QMediaSync/1.0 (AV Scraper; contact: none)")
+	// ===== 改动 2：使用带联系方式的 User-Agent =====
+	req.Header.Set("User-Agent", wikiUserAgent)
+	// ==============================================
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := w.HTTP.Do(req)
