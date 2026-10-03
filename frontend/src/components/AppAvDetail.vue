@@ -48,7 +48,15 @@
       </el-tab-pane>
       <el-tab-pane label="演员">
         <el-row :gutter="16">
-          <el-col v-for="(actor, idx) in parseJSON(media.actors)" :key="idx" :span="4" style="margin-bottom: 16px">
+          <el-col
+            v-for="(actor, idx) in parseJSON(media.actors)"
+            :key="idx"
+            :xs="12"
+            :sm="8"
+            :md="6"
+            :lg="4"
+            style="margin-bottom: 16px"
+          >
             <el-card>
               <img :src="actor.image" class="av-actor__img" />
               <div class="av-actor__name">{{ actor.name }}</div>
@@ -62,7 +70,7 @@
           :key="idx"
           :src="img"
           :preview-src-list="parseJSON(media.preview_images)"
-          style="width: 180px; height: 120px; margin: 4px"
+          class="av-preview-img"
           fit="cover"
         />
       </el-tab-pane>
@@ -70,7 +78,7 @@
         <el-tag v-for="(g, idx) in parseJSON(media.genres)" :key="idx" style="margin: 4px">{{ g }}</el-tag>
       </el-tab-pane>
       <el-tab-pane label="预告片" v-if="media.trailer">
-        <video :src="media.trailer" controls style="width: 100%; max-width: 800px" />
+        <video :src="media.trailer" controls class="av-trailer" />
       </el-tab-pane>
     </el-tabs>
   </div>
@@ -165,6 +173,7 @@ onMounted(loadDetail)
   object-fit: cover;
   border-radius: 4px;
   margin-right: 24px;
+  flex-shrink: 0;
 }
 .av-detail__meta h1 {
   margin: 0 0 8px;
@@ -184,5 +193,77 @@ onMounted(loadDetail)
   text-align: center;
   margin-top: 8px;
   font-size: 14px;
+}
+.av-preview-img {
+  width: 180px;
+  height: 120px;
+  margin: 4px;
+}
+.av-trailer {
+  width: 100%;
+  max-width: 800px;
+}
+
+/* ===== 移动端适配 ===== */
+@media (max-width: 768px) {
+  .av-detail {
+    padding: 12px;
+  }
+  .av-detail__hero {
+    min-height: 200px;
+  }
+  .av-detail__hero-overlay {
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 16px;
+  }
+  .av-detail__poster {
+    width: 130px;
+    height: 195px;
+    margin: 0 0 12px 0;
+  }
+  .av-detail__meta h1 {
+    font-size: 18px;
+    margin-bottom: 6px;
+  }
+  .av-detail__meta p {
+    font-size: 12px;
+  }
+  .av-actor__img {
+    height: 90px;
+  }
+  .av-actor__name {
+    font-size: 12px;
+  }
+  .av-preview-img {
+    width: 45%;
+    height: 90px;
+    margin: 2px;
+  }
+}
+
+@media (max-width: 480px) {
+  .av-detail {
+    padding: 8px;
+  }
+  .av-detail__poster {
+    width: 100px;
+    height: 150px;
+  }
+  .av-detail__meta h1 {
+    font-size: 16px;
+  }
+  .av-detail__meta p {
+    font-size: 11px;
+  }
+  .av-actor__img {
+    height: 80px;
+  }
+  .av-preview-img {
+    width: 100%;
+    height: 120px;
+    margin: 2px 0;
+  }
 }
 </style>
