@@ -519,3 +519,76 @@ func (s *Service) GetMedia(id uint) (*models.AVMedia, error) {
 	err := s.DB.First(&m, id).Error
 	return &m, err
 }
+
+// ============================================================
+// 暂停后的人工干预操作
+// ============================================================
+
+// ReleaseMedia 放行暂停的媒体：跳过失败检查，继续走完流程
+func (s *Service) ReleaseMedia(id uint) error {
+	media := models.GetAVMediaByID(id)
+	if media == nil {
+		return fmt.Errorf("媒体记录不存在")
+	}
+	if media.Status != "paused" {
+		return fmt.Errorf("当前状态为 %s，不是暂停状态，无法放行", media.Status)
+	}
+
+	// 标记为 released，下次扫描时跳过失败检查
+	if err := s.DB.Model(media).Updates(map[string]any{
+		"status":       "released",
+		"pause_reason": "",
+	}).Error; err != nil {
+		return err
+	}
+	helpers.AppLogger.Infof("[AV放行] %s 已放行，下次扫描将强制走完", media.Code)
+	return nil
+}
+
+// RestartMedia 重启：清理 tmp 和 AVMedia 状态，从头刮削
+func (s *Service) RestartMedia(id uint) error {
+	media := models.GetAVMediaByID(id)
+	if media == nil {
+		return fmt.Errorf("媒体记录不存在")
+	}
+
+	// 清理本地 tmp 目录
+	tmpDir := filepath.Join(helpers.ConfigDir, "tmp", "avscrape", media.Code)
+	if err := os.RemoveAll(tmpDir); err != nil {
+		helpers.AppLogger.Warnf("[AV重启] 清理 tmp 失败 %s: %v", tmpDir, err)
+	}
+
+	// 删除 AVMedia 记录（下次扫描重新创建）
+	if err := s.DB.Delete(&models.AVMedia{}, id).Error; err != nil {
+		return err
+	}
+
+	// 删除关联的 AVTask 记录
+	s.DB.Where("media_id = ?", id).Delete(&models.AVTask{})
+
+	helpers.AppLogger.Infof("[AV重启] %s 已重启，记录和 tmp 已清理", media.Code)
+	return nil
+}
+
+// CancelMedia 取消：清理 tmp 和记录
+func (s *Service) CancelMedia(id uint) error {
+	media := models.GetAVMediaByID(id)
+	if media == nil {
+		return fmt.Errorf("媒体记录不存在")
+	}
+
+	// 清理本地 tmp
+	tmpDir := filepath.Join(helpers.ConfigDir, "tmp", "avscrape", media.Code)
+	if err := os.RemoveAll(tmpDir); err != nil {
+		helpers.AppLogger.Warnf("[AV取消] 清理 tmp 失败 %s: %v", tmpDir, err)
+	}
+
+	// 删除 AVMedia 和 AVTask 记录
+	if err := s.DB.Delete(&models.AVMedia{}, id).Error; err != nil {
+		return err
+	}
+	s.DB.Where("media_id = ?", id).Delete(&models.AVTask{})
+
+	helpers.AppLogger.Infof("[AV取消] %s 已取消", media.Code)
+	return nil
+}
