@@ -15,6 +15,12 @@ func Register(r *gin.Engine, db *gorm.DB) error {
 		g.GET("/library", ctrl.ListMedia)
 		g.GET("/library/:id", ctrl.GetMedia)
 
+		// ===== 新增：暂停后的人工干预 =====
+		g.POST("/library/:id/release", ctrl.ReleaseMedia)
+		g.POST("/library/:id/restart", ctrl.RestartMedia)
+		g.POST("/library/:id/cancel", ctrl.CancelMedia)
+		// ===================================
+
 		g.GET("/paths", ctrl.ListPaths)
 		g.POST("/paths", ctrl.CreatePath)
 		g.GET("/paths/:id", ctrl.GetPath)
