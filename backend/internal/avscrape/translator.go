@@ -324,6 +324,12 @@ func (t *Translator) TranslateResult(r *ScrapeResult) {
 
 	// ===== 标签：优先走 Google（如果开启 GoogleTranslateForTags）=====
 	for i, g := range r.Genres {
+		// ===== 改动：不含日文假名的标签跳过（纯中文/英文/数字）=====
+		if !isJapanese(g) {
+			helpers.AppLogger.Infof("[翻译] 标签 %s 无日文假名，跳过翻译", g)
+			continue
+		}
+		// ======================================================
 		var translated string
 		var err error
 		if t.GoogleTranslateForTags && t.GoogleAPIKey != "" {
