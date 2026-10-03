@@ -2,6 +2,7 @@ package avscrape
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -14,6 +15,10 @@ import (
 type Service struct {
 	DB *gorm.DB
 }
+
+// studioSeparatorRe 按任意非字母/数字/汉字/假名切分片商名
+// 用来兜底元数据源里混入的不可见字符（ZWSP、NBSP 等）
+var studioSeparatorRe = regexp.MustCompile(`[^\p{Han}\p{Hiragana}\p{Katakana}\p{Latin}\p{N}]+`)
 
 func NewService(db *gorm.DB) *Service {
 	return &Service{DB: db}
@@ -106,10 +111,16 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 			helpers.AppLogger.Infof("[维基] 片商 %s → %s", best.Studio, zh)
 			best.Studio = zh
 		} else {
-			// ===== 改动：用 strings.Fields 按全角/半角空格分词，取第一个词再试 =====
-			fields := strings.Fields(best.Studio)
-			if len(fields) > 1 {
-				shortName := fields[0]
+			// 全名失败，用正则切分（任意非字母/数字都是分隔符），取第一个非空词再试
+			parts := studioSeparatorRe.Split(best.Studio, -1)
+			var shortName string
+			for _, p := range parts {
+				if strings.TrimSpace(p) != "" {
+					shortName = strings.TrimSpace(p)
+					break
+				}
+			}
+			if shortName != "" && shortName != best.Studio {
 				if zh, err := wikiClient.GetChineseName(shortName); err == nil && zh != "" && zh != shortName {
 					helpers.AppLogger.Infof("[维基] 片商 %s → %s (截取 %s)", best.Studio, zh, shortName)
 					best.Studio = zh
@@ -119,7 +130,6 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 			} else {
 				helpers.AppLogger.Infof("[维基] 片商 %s 未找到中文译名", best.Studio)
 			}
-			// ======================================================================
 		}
 	}
 
