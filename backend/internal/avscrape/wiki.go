@@ -105,23 +105,38 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 
 // TranslateActorNames 批量查询演员中文名
 // 关键：翻译成功后把原始日文名加入 aliases，供后续翻译占位符使用
-func (w *WikiClient) TranslateActorNames(actors []Actor) []Actor {
+// 返回: (处理后的演员列表, 警告列表)
+func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
+	var warnings []string
 	for i := range actors {
 		oldName := actors[i].Name
-		if zh, err := w.GetChineseName(oldName); err == nil && zh != "" && zh != oldName {
-			// 把原始日文名加进 aliases
-			exists := false
-			for _, a := range actors[i].Aliases {
-				if a == oldName {
-					exists = true
-					break
-				}
-			}
-			if !exists {
-				actors[i].Aliases = append(actors[i].Aliases, oldName)
-			}
-			actors[i].Name = zh
+		if oldName == "" {
+			continue
 		}
+		zh, err := w.GetChineseName(oldName)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("演员 %s 维基查询失败: %v", oldName, err))
+			continue
+		}
+		if zh == "" {
+			warnings = append(warnings, fmt.Sprintf("演员 %s 未找到中文译名", oldName))
+			continue
+		}
+		if zh == oldName {
+			continue
+		}
+		// 命中，翻译
+		exists := false
+		for _, a := range actors[i].Aliases {
+			if a == oldName {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			actors[i].Aliases = append(actors[i].Aliases, oldName)
+		}
+		actors[i].Name = zh
 	}
-	return actors
+	return actors, warnings
 }
