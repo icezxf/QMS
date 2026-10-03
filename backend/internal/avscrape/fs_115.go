@@ -3,6 +3,7 @@ package avscrape
 import (
 	"context"
 	"fmt"
+	"net/http" // ===== 改动 1：新增 =====
 	"os"
 	"path/filepath"
 	"strings"
@@ -229,6 +230,11 @@ func (f *FS115) GetURL(path string) (string, error) {
 	if url == "" {
 		return "", fmt.Errorf("获取直链失败: %s", path)
 	}
+	// ===== 改动 2：缓存 UA，供 ffprobe / 下载使用 =====
+	h := http.Header{}
+	h.Set("User-Agent", v115open.DEFAULTUA)
+	cacheURLHeader(url, h)
+	// ==================================================
 	return url, nil
 }
 
