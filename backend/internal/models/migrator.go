@@ -20,8 +20,8 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-// ===== 改动 1：MaxVersionCode 从 64 改成 65 =====
-var MaxVersionCode = 65
+// ===== 改动 1：MaxVersionCode 从 65 改成 66 =====
+var MaxVersionCode = 66
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -30,7 +30,6 @@ const (
 	accountUserIDUniqueIndexName      = "idx_account_user_id"
 )
 
-// ===== 改动 2：AllTables 末尾加 4 个 AV 表 =====
 var AllTables = []any{
 	Migrator{},
 	BackupConfig{}, BackupRecord{},
@@ -41,7 +40,6 @@ var AllTables = []any{
 	RequestStat{}, EmbyConfig{}, EmbyMediaItem{}, EmbyMediaSyncFile{}, EmbyLibrary{}, EmbyLibrarySyncPath{}, EmbyLibraryRefreshTask{},
 	DbDownloadTask{}, DbUploadTask{}, UploadSession{}, StrmGenerationTask{}, NotificationChannel{}, TelegramChannelConfig{}, MeoWChannelConfig{}, BarkChannelConfig{},
 	ServerChanChannelConfig{}, CustomWebhookChannelConfig{}, NotificationRule{},
-	// ===== 新增：AV 刮削模块 4 张表 =====
 	AVSettings{}, AVTask{}, AVMedia{}, AVPath{},
 }
 
@@ -50,8 +48,6 @@ func (*Migrator) TableName() string {
 }
 
 // 数据库迁移
-// 如果没有数据则创建
-// 如果已有数据库则从数据库中获取版本，根据版本执行变更
 func Migrate() {
 	if !InitDB() {
 		helpers.AppLogger.Info("已完成数据库初始化")
@@ -77,7 +73,6 @@ func Migrate() {
 	}
 	if migrator.VersionCode == 4 {
 		db.Db.AutoMigrate(ScrapeMediaFile{}, Media{}, MediaSeason{}, MediaEpisode{})
-		// 给所有 ScrapeMediaFile 补充新增字段的值
 		scrapePathMap := make(map[uint]*ScrapePath)
 		scrapePathes := GetScrapePathes("")
 		for _, scrapePath := range scrapePathes {
@@ -684,7 +679,6 @@ func Migrate() {
 		helpers.AppLogger.Info("已添加同时上传任务数和 115 多端播放设置")
 		migrator.UpdateVersionCode(db.Db)
 	}
-	// ===== 改动 3：新增 version 64 的迁移逻辑 =====
 	if migrator.VersionCode == 64 {
 		// 新增 AV 刮削模块的 4 张表
 		if err := db.Db.AutoMigrate(AVSettings{}, AVTask{}, AVMedia{}, AVPath{}); err != nil {
@@ -694,6 +688,16 @@ func Migrate() {
 		helpers.AppLogger.Info("已添加 AV 刮削模块的 av_settings / av_tasks / av_media / av_paths 表")
 		migrator.UpdateVersionCode(db.Db)
 	}
+	// ===== 改动 2：新增 version 65 的迁移块 =====
+	if migrator.VersionCode == 65 {
+		if err := db.Db.AutoMigrate(AVMedia{}, AVTask{}); err != nil {
+			helpers.AppLogger.Errorf("迁移 AV 媒体状态字段失败：%v", err)
+			return
+		}
+		helpers.AppLogger.Info("已添加 AV 媒体状态字段和任务警告字段")
+		migrator.UpdateVersionCode(db.Db)
+	}
+	// ==========================================
 	if migrator.VersionCode == MaxVersionCode {
 		if !accountIdentityIndexesEnsured {
 			if err := ensureAccountIdentityUniqueIndexes(db.Db); err != nil {
@@ -1229,7 +1233,6 @@ func migrateEmbyLibraryRefreshTaskKeys(dbConn *gorm.DB) error {
 	return nil
 }
 
-// 补齐缺失的表、字段和索引
 func BatchCreateTable() error {
 	db.Db.Statement.PrepareStmt = true
 
