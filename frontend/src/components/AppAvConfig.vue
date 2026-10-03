@@ -86,7 +86,7 @@
         <el-input v-model="config.translate_target" placeholder="zh" />
       </el-form-item>
 
-      <!-- ===== 新增：Google Cloud Translation（仅用于特殊术语，节省配额） ===== -->
+      <!-- Google Cloud Translation（可选） -->
       <template v-if="config.enable_translate">
         <el-divider content-position="left">Google Cloud Translation（可选）</el-divider>
 
@@ -122,7 +122,6 @@
           </span>
         </el-form-item>
       </template>
-      <!-- =============================================================== -->
 
       <el-divider content-position="left">附加标签</el-divider>
 
@@ -198,11 +197,9 @@ interface AVConfig {
   translate_gemini_model: string
   translate_target: string
 
-  // ===== Google Cloud Translation =====
   google_translate_api_key: string
   google_translate_for_tags: boolean
   google_translate_for_all: boolean
-  // ====================================
 
   extra_tag_resolution: boolean
   extra_tag_uncensored: boolean
@@ -239,11 +236,9 @@ const config = ref<AVConfig>({
   translate_gemini_model: 'gemini-3.8-flash',
   translate_target: 'zh',
 
-  // ===== Google Cloud Translation =====
   google_translate_api_key: '',
   google_translate_for_tags: false,
   google_translate_for_all: false,
-  // ====================================
 
   extra_tag_resolution: true,
   extra_tag_uncensored: true,
@@ -289,5 +284,64 @@ onMounted(loadConfig)
   margin-left: 8px;
   color: #999;
   font-size: 12px;
+}
+
+/* ===== 移动端适配 ===== */
+@media (max-width: 768px) {
+  .av-config {
+    padding: 12px;
+  }
+  .av-config h2 {
+    font-size: 18px;
+    margin-bottom: 12px;
+  }
+  :deep(.el-form) {
+    max-width: 100% !important;
+  }
+  :deep(.el-form-item) {
+    margin-bottom: 16px;
+  }
+  :deep(.el-form-item__label) {
+    width: 100px !important;
+    font-size: 13px;
+    padding-right: 8px;
+  }
+  :deep(.el-form-item__content) {
+    font-size: 13px;
+  }
+  :deep(.el-input),
+  :deep(.el-select),
+  :deep(.el-textarea) {
+    width: 100% !important;
+  }
+  :deep(.el-divider__text) {
+    font-size: 13px;
+    padding: 0 8px;
+  }
+  .hint {
+    display: block;
+    margin-left: 0;
+    margin-top: 4px;
+    font-size: 11px;
+  }
+}
+
+@media (max-width: 480px) {
+  .av-config {
+    padding: 8px;
+  }
+  .av-config h2 {
+    font-size: 16px;
+  }
+  :deep(.el-form-item__label) {
+    width: 80px !important;
+    font-size: 12px;
+  }
+  :deep(.el-form-item__content) {
+    font-size: 12px;
+  }
+  .hint {
+    font-size: 10px;
+  }
 }
 </style>
