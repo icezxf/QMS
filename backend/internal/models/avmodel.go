@@ -15,9 +15,10 @@ type AVSettings struct {
 // AVTask AV 刮削任务记录
 type AVTask struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
+	MediaId   uint      `gorm:"index" json:"media_id"` // ===== 新增 =====
 	Code      string    `gorm:"index;size:64" json:"code"`
 	FilePath  string    `gorm:"type:text" json:"file_path"`
-	Status    string    `gorm:"size:32" json:"status"`
+	Status    string    `gorm:"size:32" json:"status"` // pending/done/failed/paused/cancelled
 	Provider  string    `gorm:"size:32" json:"provider"`
 	Message   string    `gorm:"type:text" json:"message"`
 	CreatedAt time.Time `json:"created_at"`
@@ -49,8 +50,17 @@ type AVMedia struct {
 	Translated    bool      `json:"translated"`
 	Source        string    `gorm:"size:32" json:"source"`
 	Oshash        string    `gorm:"index;size:64" json:"oshash"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+
+	// ===== 新增：状态管理 =====
+	Status        string    `gorm:"size:32;index;default:'pending'" json:"status"` // pending/scraping/paused/released/completed
+	ProgressStage string    `gorm:"size:64" json:"progress_stage"`                 // 当前阶段：metadata/probe/download/organize
+	PauseReason   string    `gorm:"type:text" json:"pause_reason"`                 // 暂停原因
+	PausedAt      time.Time `json:"paused_at"`                                     // 暂停时间
+	TargetPath    string    `gorm:"type:text" json:"target_path"`                  // 目标路径（暂停后放行用）
+	// =======================
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // AVPath AV 刮削目录配置
@@ -61,8 +71,8 @@ type AVPath struct {
 	AccountID    uint      `json:"account_id"`
 	SourcePath   string    `gorm:"type:text" json:"source_path"`
 	TargetPath   string    `gorm:"type:text" json:"target_path"`
-	Mode         string    `gorm:"size:32" json:"mode"`          // scrape_only / scrape_and_rename / rename_only
-	MoveMethod   string    `gorm:"size:32" json:"move_method"`   // move / copy
+	Mode         string    `gorm:"size:32" json:"mode"`        // scrape_only / scrape_and_rename / rename_only
+	MoveMethod   string    `gorm:"size:32" json:"move_method"` // move / copy
 	NameTemplate string    `gorm:"size:255" json:"name_template"`
 	Enable       bool      `json:"enable"`
 	LastScanAt   time.Time `json:"last_scan_at"`
@@ -70,7 +80,7 @@ type AVPath struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-// ===== 新增：给 synccron 用的辅助查询函数 =====
+// ===== 辅助查询函数 =====
 
 // GetAVPathByID 按 ID 查询 AV 刮削目录
 func GetAVPathByID(id uint) *AVPath {
@@ -79,4 +89,13 @@ func GetAVPathByID(id uint) *AVPath {
 		return nil
 	}
 	return &p
+}
+
+// GetAVMediaByID 按 ID 查询 AV 媒体记录
+func GetAVMediaByID(id uint) *AVMedia {
+	var m AVMedia
+	if err := db.Db.First(&m, id).Error; err != nil {
+		return nil
+	}
+	return &m
 }
