@@ -38,10 +38,6 @@ func NewJavDBClient(cookie string) *JavDBClient {
 var javdbScoreRe = regexp.MustCompile(`([\d.]+)\s*[分,]?\s*(?:由|by)\s*(\d+)\s*(?:人評價|users)`)
 
 func (c *JavDBClient) GetRating(code string) (float64, int, error) {
-	if c.Cookie == "" {
-		return 0, 0, fmt.Errorf("JavDB Cookie 未配置")
-	}
-
 	c.mu.Lock()
 	if entry, ok := c.cache[code]; ok {
 		if time.Since(entry.at) < 24*time.Hour {
@@ -65,7 +61,12 @@ func (c *JavDBClient) GetRating(code string) (float64, int, error) {
 	searchURL := fmt.Sprintf("https://javdb.com/search?f=all&q=%s", code)
 	req, _ := http.NewRequest("GET", searchURL, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
-	req.Header.Set("Cookie", c.Cookie)
+	if c.Cookie != "" {
+		req.Header.Set("Cookie", c.Cookie)
+		helpers.AppLogger.Debugf("[JavDB] 使用 Cookie 请求 %s", code)
+	} else {
+		helpers.AppLogger.Debugf("[JavDB] 未配置 Cookie，尝试无 Cookie 请求 %s", code)
+	}
 	req.Header.Set("Referer", "https://javdb.com/")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 
