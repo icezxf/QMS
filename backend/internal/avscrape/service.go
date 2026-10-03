@@ -138,7 +138,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	}
 
 	// JavDB 评分
-	if cfg.EnableJavDBRating && cfg.JavDBCookie != "" {
+	if cfg.EnableJavDBRating {
 		client := NewJavDBClient(cfg.JavDBCookie)
 		if rating, votes, err := client.GetRating(code); err == nil && rating > 0 {
 			best.Rating = rating
