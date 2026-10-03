@@ -35,18 +35,18 @@ func NewJavDBClient(cookie string) *JavDBClient {
 	}
 }
 
-var javdbScoreRe = regexp.MustCompile(`([\d.]+)\s*[分,]?\s*(?:由|by)\s*(\d+)\s*(?:人評價|users)`)
+// ===== 改动：兼容 "4.5分, 由2315人評價" 这类格式 =====
+var javdbScoreRe = regexp.MustCompile(`([\d.]+)\s*分.*?(\d+)\s*人`)
+// ===================================================
 
 func (c *JavDBClient) GetRating(code string) (float64, int, error) {
 	if code == "" {
 		return 0, 0, fmt.Errorf("空番号")
 	}
 
-	// ===== 改动：cookie 为空时不报错，只打警告 =====
 	if c.Cookie == "" {
 		helpers.AppLogger.Warnf("[JavDB] Cookie 未配置，尝试直连（可能触发 Cloudflare 挑战）")
 	}
-	// =============================================
 
 	c.mu.Lock()
 	if entry, ok := c.cache[code]; ok {
@@ -71,11 +71,9 @@ func (c *JavDBClient) GetRating(code string) (float64, int, error) {
 	searchURL := fmt.Sprintf("https://javdb.com/search?f=all&q=%s", code)
 	req, _ := http.NewRequest("GET", searchURL, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
-	// ===== 改动：cookie 非空时才设置 =====
 	if c.Cookie != "" {
 		req.Header.Set("Cookie", c.Cookie)
 	}
-	// ===================================
 	req.Header.Set("Referer", "https://javdb.com/")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
@@ -95,16 +93,19 @@ func (c *JavDBClient) GetRating(code string) (float64, int, error) {
 		return 0, 0, fmt.Errorf("解析 HTML 失败: %w", err)
 	}
 
-	if doc.Find("div.movie-list").Length() == 0 {
+	// ===== 放宽选择器：div.item 直接选，不再要求 movie-list 父容器 =====
+	items := doc.Find("div.item")
+	if items.Length() == 0 {
 		return 0, 0, fmt.Errorf("JavDB 返回异常（可能触发 Cloudflare 挑战或 Cookie 过期）")
 	}
+	// ===================================================================
 
 	normalized := strings.ToUpper(strings.ReplaceAll(code, "-", ""))
 	var rating float64
 	var votes int
 	var found bool
 
-	doc.Find("div.movie-list div.item").EachWithBreak(func(i int, s *goquery.Selection) bool {
+	items.EachWithBreak(func(i int, s *goquery.Selection) bool {
 		titleCode := strings.ToUpper(strings.TrimSpace(s.Find("div.video-title strong").Text()))
 		titleCode = strings.ReplaceAll(titleCode, "-", "")
 		if titleCode != normalized {
@@ -113,6 +114,7 @@ func (c *JavDBClient) GetRating(code string) (float64, int, error) {
 		scoreText := strings.TrimSpace(s.Find("div.score span.value").Text())
 		scoreText = strings.ReplaceAll(scoreText, "\n", " ")
 		scoreText = strings.Join(strings.Fields(scoreText), " ")
+		helpers.AppLogger.Infof("[JavDB] %s 找到条目，scoreText=%q", code, scoreText)
 
 		m := javdbScoreRe.FindStringSubmatch(scoreText)
 		if len(m) != 3 {
@@ -126,9 +128,10 @@ func (c *JavDBClient) GetRating(code string) (float64, int, error) {
 	})
 
 	if !found {
-		return 0, 0, fmt.Errorf("JavDB 未找到番号 %s", code)
+		return 0, 0, fmt.Errorf("JavDB 未找到番号 %s（或评分元素未匹配）", code)
 	}
 
+	// JavDB 是 5 分制，×2 转成 10 分制
 	rating = rating * 2
 
 	c.mu.Lock()
