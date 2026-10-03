@@ -71,8 +71,8 @@
           <span v-else>—</span>
         </template>
       </el-table-column>
-      <el-table-column prop="provider" label="数据源" width="160" show-overflow-tooltip />
-      <el-table-column prop="message" label="消息" show-overflow-tooltip />
+      <el-table-column prop="provider" label="数据源" width="160" class-name="hide-mobile" show-overflow-tooltip />
+      <el-table-column prop="message" label="消息" class-name="hide-mobile" show-overflow-tooltip />
       <el-table-column label="时间" width="170">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
@@ -235,5 +235,63 @@ onMounted(load)
   color: #606266;
   padding-top: 8px;
   border-top: 1px dashed #dcdfe6;
+}
+
+/* ===== 移动端适配 ===== */
+@media (max-width: 768px) {
+  .av-tasks {
+    padding: 12px;
+  }
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .toolbar-left {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .toolbar-left .el-select,
+  .toolbar-left .el-input {
+    width: 100% !important;
+    margin-left: 0 !important;
+  }
+  .toolbar-right {
+    align-self: flex-end;
+  }
+  :deep(.el-table__header-wrapper),
+  :deep(.el-table__body-wrapper) {
+    font-size: 12px;
+  }
+  :deep(.el-table .cell) {
+    padding: 0 4px;
+  }
+  :deep(.hide-mobile) {
+    display: none !important;
+  }
+  .expand-content {
+    padding: 10px;
+  }
+  .warnings-list {
+    font-size: 12px;
+    padding-left: 16px;
+  }
+  .detail-block {
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  .av-tasks {
+    padding: 8px;
+  }
+  :deep(.el-table__header-wrapper),
+  :deep(.el-table__body-wrapper) {
+    font-size: 11px;
+  }
+  .warnings-title {
+    font-size: 13px;
+  }
 }
 </style>
