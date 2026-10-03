@@ -146,7 +146,6 @@ const syncSelectAll = () => {
   }
   selectAll.value = selectedIds.value.length === list.value.length
 }
-
 // =======================
 
 const load = async () => {
@@ -363,13 +362,15 @@ onMounted(load)
   background: #f5f5f5;
   overflow: hidden;
 }
+/* ===== 改动：从右边开始取 ===== */
 .av-card__poster img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: center top;
+  object-position: right top;
   display: block;
 }
+/* ================================= */
 .av-card__badge {
   position: absolute;
   top: 6px;
