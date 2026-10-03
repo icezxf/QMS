@@ -1,7 +1,9 @@
 package avscrape
 
 import (
-	"fmt"
+	"fmt"	
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
