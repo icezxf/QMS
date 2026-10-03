@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"qmediasync/internal/helpers"
@@ -34,6 +35,43 @@ var maleActorBlacklist = map[string]bool{
 	"マッスル澤野": true, "今井勇太": true, "平井シンジ": true, "橋本真一": true,
 	"Shimiken": true, "Ken Shimizu": true, "Daisuke Matsumoto": true, "Taku Yoshimura": true,
 }
+
+// ===== 扫描过滤器：只处理指定番号（用于单个媒体重启/放行）=====
+var (
+	scanFilterMu    sync.Mutex
+	scanFilterCodes map[string]bool
+)
+
+// SetScanFilter 设置扫描过滤器，只处理指定番号
+// 传空则清除过滤器（处理全部）
+func SetScanFilter(codes []string) {
+	scanFilterMu.Lock()
+	defer scanFilterMu.Unlock()
+	if len(codes) == 0 {
+		scanFilterCodes = nil
+		return
+	}
+	scanFilterCodes = make(map[string]bool, len(codes))
+	for _, c := range codes {
+		scanFilterCodes[c] = true
+	}
+}
+
+func shouldProcessCode(code string) bool {
+	scanFilterMu.Lock()
+	defer scanFilterMu.Unlock()
+	if len(scanFilterCodes) == 0 {
+		return true
+	}
+	return scanFilterCodes[code]
+}
+
+func clearScanFilter() {
+	scanFilterMu.Lock()
+	defer scanFilterMu.Unlock()
+	scanFilterCodes = nil
+}
+// ==========================================================
 
 type Scanner struct {
 	DB  *gorm.DB
@@ -92,7 +130,18 @@ func (s *Scanner) Scan(pathID uint) error {
 		groups[code].Files = append(groups[code].Files, fullPath)
 	}
 
+	// ===== 扫描开始时读取 filter 并清空（保证只在本次生效）=====
+	defer clearScanFilter()
+	// ==========================================================
+
 	for _, code := range order {
+		// ===== 过滤：只处理指定番号 =====
+		if !shouldProcessCode(code) {
+			helpers.AppLogger.Infof("[AV扫描] 番号 %s 不在本次过滤范围内，跳过", code)
+			continue
+		}
+		// ================================
+
 		g := groups[code]
 
 		var existing models.AVMedia
