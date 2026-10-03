@@ -55,7 +55,7 @@
           :model-value="selectedIds.includes(m.id)"
           class="av-card__checkbox"
           @click.stop
-          @change="(v) => toggleSelect(m.id, !!v)"
+          @change="(v: string | number | boolean) => toggleSelect(m.id, !!v)"
         />
         <div class="av-card__poster">
           <img :src="resolveImage(m.poster)" :alt="m.code" loading="lazy" />
