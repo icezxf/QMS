@@ -76,6 +76,18 @@
       <el-table-column label="时间" width="170">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
+      <!-- ===== 新增：操作列 ===== -->
+      <el-table-column label="操作" width="240" fixed="right">
+        <template #default="{ row }">
+          <template v-if="row.status === 'paused' && row.media_id">
+            <el-button size="small" type="success" @click="release(row)">放行</el-button>
+            <el-button size="small" type="primary" @click="restart(row)">重启</el-button>
+            <el-button size="small" type="danger" @click="cancel(row)">取消</el-button>
+          </template>
+          <span v-else>—</span>
+        </template>
+      </el-table-column>
+      <!-- ==================== -->
     </el-table>
 
     <div class="pagination" v-if="total > pageSize">
@@ -181,6 +193,41 @@ const clearAll = async () => {
     if (e !== 'cancel') ElMessage.error('清空失败')
   }
 }
+
+// ===== 新增：操作 =====
+const release = async (row: any) => {
+  try {
+    await ElMessageBox.confirm(`放行番号 ${row.code}？`, '确认放行', { type: 'warning' })
+    await axios.post(`/api/avscrape/library/${row.media_id}/release`)
+    ElMessage.success('已放行，正在重新扫描')
+    load()
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error('放行失败')
+  }
+}
+
+const restart = async (row: any) => {
+  try {
+    await ElMessageBox.confirm(`重启番号 ${row.code}？将删除临时文件并重新刮削。`, '确认重启', { type: 'warning' })
+    await axios.post(`/api/avscrape/library/${row.media_id}/restart`)
+    ElMessage.success('已重启，正在重新扫描')
+    load()
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error('重启失败')
+  }
+}
+
+const cancel = async (row: any) => {
+  try {
+    await ElMessageBox.confirm(`取消番号 ${row.code}？将删除记录和临时文件。`, '确认取消', { type: 'warning' })
+    await axios.post(`/api/avscrape/library/${row.media_id}/cancel`)
+    ElMessage.success('已取消')
+    load()
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error('取消失败')
+  }
+}
+// ====================
 
 onMounted(load)
 </script>
