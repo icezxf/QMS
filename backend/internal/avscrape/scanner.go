@@ -131,8 +131,8 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		}
 	}
 
-	// 步骤 1：刮削元数据
-	helpers.AppLogger.Infof("[AV扫描] %s 步骤 1/4: 刮削元数据", code)
+	// ===== 步骤 1：刮削元数据 =====
+	helpers.AppLogger.Infof("[AV扫描] %s 步骤 1/5: 刮削元数据", code)
 	r, err := s.Svc.Scrape(code, "")
 	if err != nil {
 		reason := fmt.Sprintf("元数据刮削失败: %v", err)
@@ -145,26 +145,15 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		return err
 	}
 	result := r
-	// 收集 Scrape 阶段的所有 warnings
 	scrapeWarnings := result.Warnings
 	media := MediaFromResult(result)
 
-	// 步骤 2：检查元数据完整性
-	if missing := checkMetadataMissing(result); missing != "" {
-		reason := fmt.Sprintf("元数据缺失: %s", missing)
-		if skipPause {
-			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
-		} else {
-			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, scrapeWarnings)
-			return fmt.Errorf("%s", reason)
-		}
-	}
-
+	// ===== 步骤 2：演员过滤 + 共演标签 =====
 	result.Actors = filterFemaleActors(result.Actors)
 	applyEnsembleTag(result)
 
-	// 步骤 3：ffprobe
-	helpers.AppLogger.Infof("[AV扫描] %s 步骤 2/4: ffprobe 探测", code)
+	// ===== 步骤 3：ffprobe =====
+	helpers.AppLogger.Infof("[AV扫描] %s 步骤 2/5: ffprobe 探测", code)
 	s.detectVideoMeta(fs, primaryFile, result, cfg)
 	if result.Resolution == "" {
 		reason := "ffprobe 探测失败，未获取到分辨率"
@@ -176,8 +165,35 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		}
 	}
 
-	// 步骤 4：整理
-	helpers.AppLogger.Infof("[AV扫描] %s 步骤 3/4: 整理", code)
+	// ===== 步骤 4：准备元数据文件（提取 poster/fanart，生成 NFO）=====
+	helpers.AppLogger.Infof("[AV扫描] %s 步骤 3/5: 生成元数据文件", code)
+	files, prepWarnings, err := s.prepareMetaFiles(media.Code, result, cfg)
+	allWarnings := append([]string{}, scrapeWarnings...)
+	allWarnings = append(allWarnings, prepWarnings...)
+	if err != nil {
+		reason := fmt.Sprintf("生成元数据文件失败: %v", err)
+		if skipPause {
+			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
+		} else {
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
+			return err
+		}
+	}
+
+	// ===== 步骤 5：检查元数据完整性（此时 r.Poster/r.Fanart 是最终值）=====
+	helpers.AppLogger.Infof("[AV扫描] %s 步骤 4/5: 检查元数据完整性", code)
+	if missing := checkMetadataMissing(result); missing != "" {
+		reason := fmt.Sprintf("元数据缺失: %s", missing)
+		if skipPause {
+			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
+		} else {
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
+			return fmt.Errorf("%s", reason)
+		}
+	}
+
+	// ===== 步骤 6：整理（移动视频文件）=====
+	helpers.AppLogger.Infof("[AV扫描] %s 步骤 5/5: 整理视频文件", code)
 	media = MediaFromResult(result)
 	targetDir, err := s.organize(fs, path, media, g.Files, result, cfg)
 	if err != nil {
@@ -185,38 +201,25 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		if skipPause {
 			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
 		} else {
-			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, scrapeWarnings)
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
 			return err
 		}
 	}
 
-	// 步骤 5：加入上传队列（收集 prepareMetaFiles 里的 warnings）
-	helpers.AppLogger.Infof("[AV扫描] %s 步骤 4/4: 加入上传队列", code)
-	allWarnings := append([]string{}, scrapeWarnings...)
-	if result != nil {
-		files, prepWarnings, err := s.prepareMetaFiles(media.Code, result, cfg)
-		allWarnings = append(allWarnings, prepWarnings...)
-		if err != nil {
-			reason := fmt.Sprintf("准备元数据文件失败: %v", err)
+	// ===== 步骤 7：加入上传队列 =====
+	if len(files) > 0 {
+		if _, err := fs.QueueUploads(files, targetDir, path.AccountID, path.SourceType); err != nil {
+			reason := fmt.Sprintf("加入上传队列失败: %v", err)
 			if skipPause {
 				helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
 			} else {
 				s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
 				return err
 			}
-		} else if len(files) > 0 {
-			if _, err := fs.QueueUploads(files, targetDir, path.AccountID, path.SourceType); err != nil {
-				reason := fmt.Sprintf("加入上传队列失败: %v", err)
-				if skipPause {
-					helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
-				} else {
-					s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
-					return err
-				}
-			}
 		}
 	}
 
+	// ===== 成功 =====
 	s.markCompleted(code, targetDir)
 	s.recordTask(existingMedia.ID, code, primaryFile, "done", fmt.Sprintf("共 %d 个文件", len(g.Files)), result.Source, allWarnings)
 	helpers.AppLogger.Infof("[AV扫描] %s 刮削完成", code)
