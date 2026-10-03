@@ -263,3 +263,38 @@ func (c *Controller) ClearTasks(ctx *gin.Context) {
 	c.DB.Where("1 = 1").Delete(&models.AVTask{})
 	ctx.JSON(http.StatusOK, gin.H{"ok": true})
 }
+
+// BatchDeleteMedia 批量删除媒体记录
+// POST /api/avscrape/library/batch-delete
+// body: { "ids": [1,2,3] }  或  { "all": true }
+func (c *Controller) BatchDeleteMedia(ctx *gin.Context) {
+	var req struct {
+		IDs []uint `json:"ids"`
+		All bool   `json:"all"`
+	}
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var ids []uint
+	if !req.All {
+		if len(req.IDs) == 0 {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "未选择任何记录"})
+			return
+		}
+		ids = req.IDs
+	}
+
+	count, err := c.Svc.BatchDeleteMedia(ids)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	msg := fmt.Sprintf("已删除 %d 条记录", count)
+	if req.All {
+		msg = fmt.Sprintf("已清空全部 %d 条记录", count)
+	}
+	ctx.JSON(http.StatusOK, gin.H{"ok": true, "count": count, "msg": msg})
+}
