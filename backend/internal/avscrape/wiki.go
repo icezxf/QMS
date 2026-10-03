@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,6 +92,12 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 		}
 	}
 
+	// ===== 去掉消歧义括号后缀 =====
+	if zhName != "" {
+		zhName = stripDisambiguation(zhName)
+	}
+	// =============================
+
 	w.mu.Lock()
 	w.cache[japaneseName] = &wikiCache{zh: zhName, at: time.Now()}
 	w.mu.Unlock()
@@ -101,6 +108,28 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 		helpers.AppLogger.Infof("[维基] %s 未找到中文译名", japaneseName)
 	}
 	return zhName, nil
+}
+
+// stripDisambiguation 去掉维基消歧义后缀
+// 例：
+//   "Miru (AV女優)" → "Miru"
+//   "S1 (成人影片製造商)" → "S1"
+//   "新有菜" → "新有菜"（无括号，原样返回）
+func stripDisambiguation(s string) string {
+	s = strings.TrimSpace(s)
+	// 半角括号（带空格）
+	if idx := strings.LastIndex(s, " ("); idx > 0 {
+		s = s[:idx]
+	}
+	// 半角括号（无空格）
+	if idx := strings.LastIndex(s, "("); idx > 0 {
+		s = s[:idx]
+	}
+	// 全角括号
+	if idx := strings.LastIndex(s, "（"); idx > 0 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s)
 }
 
 // TranslateActorNames 批量查询演员中文名
