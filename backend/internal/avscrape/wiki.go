@@ -62,6 +62,8 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 
 	resp, err := w.HTTP.Do(req)
 	if err != nil {
+		// ===== 改动：出错也打日志 =====
+		helpers.AppLogger.Warnf("[维基] %s 请求失败: %v", japaneseName, err)
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -79,6 +81,7 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 		} `json:"query"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
+		helpers.AppLogger.Warnf("[维基] %s 解析失败: %v", japaneseName, err)
 		return "", err
 	}
 
@@ -92,11 +95,9 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 		}
 	}
 
-	// ===== 去掉消歧义括号后缀 =====
 	if zhName != "" {
 		zhName = stripDisambiguation(zhName)
 	}
-	// =============================
 
 	w.mu.Lock()
 	w.cache[japaneseName] = &wikiCache{zh: zhName, at: time.Now()}
@@ -111,30 +112,20 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 }
 
 // stripDisambiguation 去掉维基消歧义后缀
-// 例：
-//   "Miru (AV女優)" → "Miru"
-//   "S1 (成人影片製造商)" → "S1"
-//   "新有菜" → "新有菜"（无括号，原样返回）
 func stripDisambiguation(s string) string {
 	s = strings.TrimSpace(s)
-	// 半角括号（带空格）
 	if idx := strings.LastIndex(s, " ("); idx > 0 {
 		s = s[:idx]
 	}
-	// 半角括号（无空格）
 	if idx := strings.LastIndex(s, "("); idx > 0 {
 		s = s[:idx]
 	}
-	// 全角括号
 	if idx := strings.LastIndex(s, "（"); idx > 0 {
 		s = s[:idx]
 	}
 	return strings.TrimSpace(s)
 }
 
-// TranslateActorNames 批量查询演员中文名
-// 关键：翻译成功后把原始日文名加入 aliases，供后续翻译占位符使用
-// 返回: (处理后的演员列表, 警告列表)
 func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 	var warnings []string
 	for i := range actors {
@@ -154,7 +145,6 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 		if zh == oldName {
 			continue
 		}
-		// 命中，翻译
 		exists := false
 		for _, a := range actors[i].Aliases {
 			if a == oldName {
