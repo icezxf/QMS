@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/synccron"
 
@@ -43,8 +44,6 @@ func (c *Controller) SaveConfig(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-// Scrape 手动刮削单个番号，可选带 oshash
-// POST /api/avscrape/scrape  { "code": "SNOS-377", "oshash": "可选" }
 func (c *Controller) Scrape(ctx *gin.Context) {
 	var req struct {
 		Code   string `json:"code"`
@@ -62,7 +61,6 @@ func (c *Controller) Scrape(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, result)
 }
 
-// ListMedia 媒体库列表，支持状态筛选和关键字搜索
 func (c *Controller) ListMedia(ctx *gin.Context) {
 	page, _ := strconv.Atoi(ctx.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(ctx.DefaultQuery("page_size", "20"))
@@ -106,27 +104,47 @@ func (c *Controller) GetMedia(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, m)
 }
 
-// ReleaseMedia 放行暂停的媒体：跳过失败检查，继续走完流程
+// ReleaseMedia 放行暂停的媒体
 func (c *Controller) ReleaseMedia(ctx *gin.Context) {
 	id, _ := strconv.Atoi(ctx.Param("id"))
+	media := models.GetAVMediaByID(uint(id))
+	if media == nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "媒体记录不存在"})
+		return
+	}
+	code := media.Code
 	if err := c.Svc.ReleaseMedia(uint(id)); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	ctx.JSON(http.StatusOK, gin.H{"ok": true, "msg": "已放行，下次扫描将强制走完"})
+	// ===== 只处理这一个番号 =====
+	SetScanFilter([]string{code})
+	// =========================
+	c.triggerAllAVScans()
+	ctx.JSON(http.StatusOK, gin.H{"ok": true, "msg": "已放行，正在重新扫描"})
 }
 
-// RestartMedia 重启刮削：清理 tmp 和 AVMedia 状态，从头刮削
+// RestartMedia 重启刮削
 func (c *Controller) RestartMedia(ctx *gin.Context) {
 	id, _ := strconv.Atoi(ctx.Param("id"))
+	media := models.GetAVMediaByID(uint(id))
+	if media == nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "媒体记录不存在"})
+		return
+	}
+	code := media.Code
 	if err := c.Svc.RestartMedia(uint(id)); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	ctx.JSON(http.StatusOK, gin.H{"ok": true, "msg": "已重启，记录和临时文件已清理"})
+	// ===== 只处理这一个番号 =====
+	SetScanFilter([]string{code})
+	// =========================
+	c.triggerAllAVScans()
+	ctx.JSON(http.StatusOK, gin.H{"ok": true, "msg": "已重启，正在重新扫描"})
 }
 
-// CancelMedia 取消刮削：清理 tmp 和记录
+// CancelMedia 取消刮削
 func (c *Controller) CancelMedia(ctx *gin.Context) {
 	id, _ := strconv.Atoi(ctx.Param("id"))
 	if err := c.Svc.CancelMedia(uint(id)); err != nil {
@@ -134,6 +152,39 @@ func (c *Controller) CancelMedia(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusOK, gin.H{"ok": true, "msg": "已取消，临时文件已清理"})
+}
+
+// BatchDeleteMedia 批量删除媒体记录
+func (c *Controller) BatchDeleteMedia(ctx *gin.Context) {
+	var req struct {
+		IDs []uint `json:"ids"`
+		All bool   `json:"all"`
+	}
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var ids []uint
+	if !req.All {
+		if len(req.IDs) == 0 {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "未选择任何记录"})
+			return
+		}
+		ids = req.IDs
+	}
+
+	count, err := c.Svc.BatchDeleteMedia(ids)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	msg := fmt.Sprintf("已删除 %d 条记录", count)
+	if req.All {
+		msg = fmt.Sprintf("已清空全部 %d 条记录", count)
+	}
+	ctx.JSON(http.StatusOK, gin.H{"ok": true, "count": count, "msg": msg})
 }
 
 func (c *Controller) ListPaths(ctx *gin.Context) {
@@ -186,8 +237,6 @@ func (c *Controller) DeletePath(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-// ScanPath POST /api/avscrape/paths/:id/scan
-// 改成往 synccron 队列加任务，和原模块共用串行队列，避免 115 风控
 func (c *Controller) ScanPath(ctx *gin.Context) {
 	id, _ := strconv.Atoi(ctx.Param("id"))
 
@@ -205,7 +254,6 @@ func (c *Controller) ScanPath(ctx *gin.Context) {
 		return
 	}
 
-	// 判断是否已经在队列里
 	if synccron.CheckNewTaskStatus(uint(id), synccron.SyncTaskTypeAVScrape) != synccron.TaskStatusNone {
 		ctx.JSON(http.StatusOK, gin.H{"ok": true, "msg": "任务已在队列中"})
 		return
@@ -228,7 +276,6 @@ func (c *Controller) ScanPath(ctx *gin.Context) {
 	})
 }
 
-// ListTasks 任务记录列表，支持状态筛选和番号搜索
 func (c *Controller) ListTasks(ctx *gin.Context) {
 	page, _ := strconv.Atoi(ctx.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(ctx.DefaultQuery("page_size", "20"))
@@ -264,37 +311,32 @@ func (c *Controller) ClearTasks(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-// BatchDeleteMedia 批量删除媒体记录
-// POST /api/avscrape/library/batch-delete
-// body: { "ids": [1,2,3] }  或  { "all": true }
-func (c *Controller) BatchDeleteMedia(ctx *gin.Context) {
-	var req struct {
-		IDs []uint `json:"ids"`
-		All bool   `json:"all"`
-	}
-	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+// triggerAllAVScans 触发所有启用的 AV 目录扫描
+func (c *Controller) triggerAllAVScans() {
+	var paths []models.AVPath
+	if err := c.DB.Where("enable = ?", true).Find(&paths).Error; err != nil {
+		helpers.AppLogger.Errorf("[AV触发] 查询启用的目录失败: %v", err)
 		return
 	}
-
-	var ids []uint
-	if !req.All {
-		if len(req.IDs) == 0 {
-			ctx.JSON(http.StatusBadRequest, gin.H{"error": "未选择任何记录"})
-			return
+	if len(paths) == 0 {
+		helpers.AppLogger.Warnf("[AV触发] 没有启用的 AV 目录")
+		return
+	}
+	for _, p := range paths {
+		if synccron.CheckNewTaskStatus(p.ID, synccron.SyncTaskTypeAVScrape) != synccron.TaskStatusNone {
+			helpers.AppLogger.Infof("[AV触发] 目录 %d 已在队列中，跳过", p.ID)
+			continue
 		}
-		ids = req.IDs
+		task := &synccron.NewSyncTask{
+			ID:         p.ID,
+			TaskType:   synccron.SyncTaskTypeAVScrape,
+			SourceType: models.SourceType(p.SourceType),
+			AccountId:  p.AccountID,
+		}
+		if err := synccron.AddNewSyncTask(task); err != nil {
+			helpers.AppLogger.Warnf("[AV触发] 目录 %d 加入队列失败: %v", p.ID, err)
+		} else {
+			helpers.AppLogger.Infof("[AV触发] 目录 %d 已加入队列", p.ID)
+		}
 	}
-
-	count, err := c.Svc.BatchDeleteMedia(ids)
-	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	msg := fmt.Sprintf("已删除 %d 条记录", count)
-	if req.All {
-		msg = fmt.Sprintf("已清空全部 %d 条记录", count)
-	}
-	ctx.JSON(http.StatusOK, gin.H{"ok": true, "count": count, "msg": msg})
 }
