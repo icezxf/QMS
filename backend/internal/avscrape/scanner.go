@@ -26,27 +26,13 @@ var videoExts = map[string]bool{
 	".iso": true, ".rmvb": true, ".strm": true,
 }
 
-// cdPartRegex 匹配多碟后缀：cd1/cd2/part1/disc1/disk1
 var cdPartRegex = regexp.MustCompile(`(?i)([-_]?(cd|part|disc|disk)\d+)`)
 
-// maleActorBlacklist 常用男优黑名单
 var maleActorBlacklist = map[string]bool{
-	"清水健":              true,
-	"森林原人":             true,
-	"しみけん":             true,
-	"貞松大輔":             true,
-	"鮫島健司":             true,
-	"吉村卓":              true,
-	"冴山トシキ":            true,
-	"ウルフ田中":            true,
-	"マッスル澤野":           true,
-	"今井勇太":             true,
-	"平井シンジ":            true,
-	"橋本真一":             true,
-	"Shimiken":          true,
-	"Ken Shimizu":       true,
-	"Daisuke Matsumoto": true,
-	"Taku Yoshimura":    true,
+	"清水健": true, "森林原人": true, "しみけん": true, "貞松大輔": true,
+	"鮫島健司": true, "吉村卓": true, "冴山トシキ": true, "ウルフ田中": true,
+	"マッスル澤野": true, "今井勇太": true, "平井シンジ": true, "橋本真一": true,
+	"Shimiken": true, "Ken Shimizu": true, "Daisuke Matsumoto": true, "Taku Yoshimura": true,
 }
 
 type Scanner struct {
@@ -63,9 +49,6 @@ type groupItem struct {
 	Files []string
 }
 
-// ============================================================
-// Scan 主流程
-// ============================================================
 func (s *Scanner) Scan(pathID uint) error {
 	var path models.AVPath
 	if err := s.DB.First(&path, pathID).Error; err != nil {
@@ -99,7 +82,7 @@ func (s *Scanner) Scan(pathID uint) error {
 		code := ExtractCode(name)
 		if code == "" {
 			helpers.AppLogger.Warnf("[AV扫描] 无法识别番号: %s", fullPath)
-			s.recordTask(0, "", fullPath, "failed", "无法识别番号", "")
+			s.recordTask(0, "", fullPath, "failed", "无法识别番号", "", nil)
 			continue
 		}
 		if _, ok := groups[code]; !ok {
@@ -112,7 +95,6 @@ func (s *Scanner) Scan(pathID uint) error {
 	for _, code := range order {
 		g := groups[code]
 
-		// ===== 检查该番号是否处于 paused 状态，是则跳过 =====
 		var existing models.AVMedia
 		if err := s.DB.Where("code = ?", code).First(&existing).Error; err == nil {
 			if existing.Status == "paused" {
@@ -120,7 +102,6 @@ func (s *Scanner) Scan(pathID uint) error {
 				continue
 			}
 		}
-		// ===================================================
 
 		if err := s.processCode(fs, &path, g, cfg); err != nil {
 			helpers.AppLogger.Warnf("[AV扫描] 番号 %s 处理中断: %v", code, err)
@@ -136,13 +117,11 @@ func (s *Scanner) Scan(pathID uint) error {
 	return nil
 }
 
-// processCode 处理单个番号的完整流程，任何一步失败即暂停
 func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, cfg *Config) error {
 	code := g.Code
 	primaryFile := g.Files[0]
 	helpers.AppLogger.Infof("[AV扫描] 番号 %s 共 %d 个文件，主文件: %s", code, len(g.Files), filepath.Base(primaryFile))
 
-	// 判断是否为"已放行"状态（跳过失败检查，强制走完）
 	skipPause := false
 	var existingMedia models.AVMedia
 	if err := s.DB.Where("code = ?", code).First(&existingMedia).Error; err == nil {
@@ -152,38 +131,39 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		}
 	}
 
-	// ===== 步骤 1：刮削元数据 =====
+	// 步骤 1：刮削元数据
 	helpers.AppLogger.Infof("[AV扫描] %s 步骤 1/4: 刮削元数据", code)
 	r, err := s.Svc.Scrape(code, "")
 	if err != nil {
 		reason := fmt.Sprintf("元数据刮削失败: %v", err)
 		if skipPause {
 			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
-			s.recordTask(0, code, primaryFile, "done", reason+"（已放行）", "")
+			s.recordTask(0, code, primaryFile, "done", reason+"（已放行）", "", nil)
 			return nil
 		}
 		s.pauseMedia(code, primaryFile, reason, "")
 		return err
 	}
 	result := r
+	// 收集 Scrape 阶段的所有 warnings
+	scrapeWarnings := result.Warnings
 	media := MediaFromResult(result)
 
-	// ===== 步骤 2：检查元数据完整性 =====
+	// 步骤 2：检查元数据完整性
 	if missing := checkMetadataMissing(result); missing != "" {
 		reason := fmt.Sprintf("元数据缺失: %s", missing)
 		if skipPause {
 			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
 		} else {
-			s.pauseMedia(code, primaryFile, reason, result.Source)
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, scrapeWarnings)
 			return fmt.Errorf("%s", reason)
 		}
 	}
 
-	// ===== 步骤 3：演员过滤 + 共演标签 =====
 	result.Actors = filterFemaleActors(result.Actors)
 	applyEnsembleTag(result)
 
-	// ===== 步骤 4：ffprobe 视频探测 =====
+	// 步骤 3：ffprobe
 	helpers.AppLogger.Infof("[AV扫描] %s 步骤 2/4: ffprobe 探测", code)
 	s.detectVideoMeta(fs, primaryFile, result, cfg)
 	if result.Resolution == "" {
@@ -191,35 +171,37 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		if skipPause {
 			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
 		} else {
-			s.pauseMedia(code, primaryFile, reason, result.Source)
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, scrapeWarnings)
 			return fmt.Errorf("%s", reason)
 		}
 	}
 
-	// ===== 步骤 5：整理（移动/复制源文件）=====
+	// 步骤 4：整理
 	helpers.AppLogger.Infof("[AV扫描] %s 步骤 3/4: 整理", code)
-	media = MediaFromResult(result) // 重新构造，包含探测后的字段
+	media = MediaFromResult(result)
 	targetDir, err := s.organize(fs, path, media, g.Files, result, cfg)
 	if err != nil {
 		reason := fmt.Sprintf("整理失败: %v", err)
 		if skipPause {
 			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
 		} else {
-			s.pauseMedia(code, primaryFile, reason, result.Source)
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, scrapeWarnings)
 			return err
 		}
 	}
 
-	// ===== 步骤 6：加入上传队列 =====
+	// 步骤 5：加入上传队列（收集 prepareMetaFiles 里的 warnings）
 	helpers.AppLogger.Infof("[AV扫描] %s 步骤 4/4: 加入上传队列", code)
+	allWarnings := append([]string{}, scrapeWarnings...)
 	if result != nil {
-		files, err := s.prepareMetaFiles(media.Code, result, cfg)
+		files, prepWarnings, err := s.prepareMetaFiles(media.Code, result, cfg)
+		allWarnings = append(allWarnings, prepWarnings...)
 		if err != nil {
 			reason := fmt.Sprintf("准备元数据文件失败: %v", err)
 			if skipPause {
 				helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
 			} else {
-				s.pauseMedia(code, primaryFile, reason, result.Source)
+				s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
 				return err
 			}
 		} else if len(files) > 0 {
@@ -228,21 +210,19 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 				if skipPause {
 					helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
 				} else {
-					s.pauseMedia(code, primaryFile, reason, result.Source)
+					s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
 					return err
 				}
 			}
 		}
 	}
 
-	// ===== 成功 =====
 	s.markCompleted(code, targetDir)
-	s.recordTask(existingMedia.ID, code, primaryFile, "done", fmt.Sprintf("共 %d 个文件", len(g.Files)), result.Source)
+	s.recordTask(existingMedia.ID, code, primaryFile, "done", fmt.Sprintf("共 %d 个文件", len(g.Files)), result.Source, allWarnings)
 	helpers.AppLogger.Infof("[AV扫描] %s 刮削完成", code)
 	return nil
 }
 
-// checkMetadataMissing 检查核心元数据是否有缺失，返回缺失字段列表
 func checkMetadataMissing(r *ScrapeResult) string {
 	if r == nil {
 		return "ScrapeResult 为空"
@@ -269,22 +249,23 @@ func checkMetadataMissing(r *ScrapeResult) string {
 	return strings.Join(missing, ", ")
 }
 
-// pauseMedia 暂停某个番号
 func (s *Scanner) pauseMedia(code, filePath, reason, provider string) {
+	s.pauseMediaWithWarnings(code, filePath, reason, provider, nil)
+}
+
+func (s *Scanner) pauseMediaWithWarnings(code, filePath, reason, provider string, warnings []string) {
 	helpers.AppLogger.Warnf("[AV暂停] %s: %s", code, reason)
 
 	var existing models.AVMedia
 	err := s.DB.Where("code = ?", code).First(&existing).Error
 	if err == nil {
-		// 已有记录，更新状态
 		s.DB.Model(&existing).Updates(map[string]any{
 			"status":       "paused",
 			"pause_reason": reason,
 			"paused_at":    time.Now(),
 		})
-		s.recordTask(existing.ID, code, filePath, "paused", reason, provider)
+		s.recordTask(existing.ID, code, filePath, "paused", reason, provider, warnings)
 	} else {
-		// 没有记录，创建一条最小记录
 		m := &models.AVMedia{
 			Code:        code,
 			Status:      "paused",
@@ -292,11 +273,10 @@ func (s *Scanner) pauseMedia(code, filePath, reason, provider string) {
 			PausedAt:    time.Now(),
 		}
 		s.DB.Create(m)
-		s.recordTask(m.ID, code, filePath, "paused", reason, provider)
+		s.recordTask(m.ID, code, filePath, "paused", reason, provider, warnings)
 	}
 }
 
-// markCompleted 标记完成
 func (s *Scanner) markCompleted(code, targetPath string) {
 	s.DB.Model(&models.AVMedia{}).Where("code = ?", code).Updates(map[string]any{
 		"status":         "completed",
@@ -306,9 +286,6 @@ func (s *Scanner) markCompleted(code, targetPath string) {
 	})
 }
 
-// ============================================================
-// filterFemaleActors 过滤男优
-// ============================================================
 func filterFemaleActors(actors []Actor) []Actor {
 	out := make([]Actor, 0, len(actors))
 	for _, a := range actors {
@@ -330,9 +307,6 @@ func filterFemaleActors(actors []Actor) []Actor {
 	return out
 }
 
-// ============================================================
-// applyEnsembleTag 多演员（>=2）时加"共演"
-// ============================================================
 func applyEnsembleTag(r *ScrapeResult) {
 	if r == nil || len(r.Actors) < 2 {
 		return
@@ -354,9 +328,6 @@ func applyEnsembleTag(r *ScrapeResult) {
 	}
 }
 
-// ============================================================
-// detectVideoMeta 探测视频信息
-// ============================================================
 func (s *Scanner) detectVideoMeta(fs FileSystem, fullPath string, r *ScrapeResult, cfg *Config) {
 	if url, err := fs.GetURL(fullPath); err == nil && url != "" {
 		helpers.AppLogger.Infof("[AV探测] %s 开始 ffprobe", r.Code)
@@ -380,7 +351,6 @@ func (s *Scanner) detectVideoMeta(fs FileSystem, fullPath string, r *ScrapeResul
 	}
 }
 
-// resolutionSuffix 分辨率 → 文件名后缀（大写 K）
 func resolutionSuffix(res string) string {
 	switch res {
 	case "8K":
@@ -397,9 +367,6 @@ func resolutionSuffix(res string) string {
 	return ""
 }
 
-// ============================================================
-// organize 移动所有 CD 文件到目标目录，返回目标目录路径
-// ============================================================
 func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVMedia, videoPaths []string, r *ScrapeResult, cfg *Config) (string, error) {
 	relDir := renderTemplate(path.NameTemplate, media)
 	if relDir == "" {
@@ -458,18 +425,17 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 	return targetDir, nil
 }
 
-// ============================================================
-// prepareMetaFiles 生成元数据
-// ============================================================
-func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config) ([]LocalFile, error) {
+// prepareMetaFiles 生成元数据，返回 (files, warnings, error)
+func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config) ([]LocalFile, []string, error) {
+	var warnings []string
 	if r == nil {
-		return nil, nil
+		return nil, warnings, nil
 	}
 
 	tmpDir := filepath.Join(helpers.ConfigDir, "tmp", "avscrape", baseName)
 	os.RemoveAll(tmpDir)
 	if err := os.MkdirAll(tmpDir, 0755); err != nil {
-		return nil, fmt.Errorf("创建临时目录失败: %w", err)
+		return nil, warnings, fmt.Errorf("创建临时目录失败: %w", err)
 	}
 
 	files := []LocalFile{}
@@ -501,6 +467,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		data, err := downloadImage(url)
 		if err != nil {
 			helpers.AppLogger.Warnf("[AV元数据]   [%d] 下载失败: %s => %v", i, redactURL(url), err)
+			warnings = append(warnings, fmt.Sprintf("图片下载失败: %s", redactURL(url)))
 			continue
 		}
 		imgCfg, _, err := image.DecodeConfig(bytes.NewReader(data))
@@ -532,8 +499,10 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		if cropped, ok := cropPosterFromFanart(fanartData); ok {
 			posterData = cropped
 			helpers.AppLogger.Infof("[AV元数据] poster 从 fanart 右侧裁剪")
+			warnings = append(warnings, "poster 通过 fanart 右侧裁剪获得（原始源无竖版图）")
 		} else {
 			helpers.AppLogger.Warnf("[AV元数据] fanart 裁剪 poster 失败")
+			warnings = append(warnings, "fanart 裁剪 poster 失败")
 		}
 	}
 
@@ -543,6 +512,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 				if cropped, ok := cropPosterFromDMM(data); ok {
 					posterData = cropped
 					helpers.AppLogger.Infof("[AV元数据] poster 使用 DMM pl.jpg 左侧裁剪")
+					warnings = append(warnings, "poster 通过 DMM pl.jpg 左侧裁剪获得")
 				}
 			} else {
 				helpers.AppLogger.Warnf("[AV元数据] DMM pl.jpg 下载失败: %v", err)
@@ -578,6 +548,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 	} else {
 		r.Poster = ""
 		helpers.AppLogger.Warnf("[AV元数据] poster 最终为 nil，未生成")
+		warnings = append(warnings, "poster 最终未生成")
 	}
 
 	if fanartData != nil {
@@ -593,10 +564,12 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 	} else {
 		r.Fanart = ""
 		helpers.AppLogger.Warnf("[AV元数据] fanart 最终为 nil，未生成")
+		warnings = append(warnings, "fanart 最终未生成")
 	}
 
 	helpers.AppLogger.Infof("[AV元数据] PreviewImages 共 %d 张", len(r.PreviewImages))
 	successCount := 0
+	failCount := 0
 	for i, url := range r.PreviewImages {
 		remoteName := fmt.Sprintf("extrafanart/fanart%d.jpg", i+1)
 		localPath := filepath.Join(tmpDir, fmt.Sprintf("fanart%d.jpg", i+1))
@@ -605,10 +578,14 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 			successCount++
 		} else {
 			helpers.AppLogger.Warnf("[AV元数据] 下载剧照 %d 失败: %v", i+1, err)
+			failCount++
 		}
 	}
 	if successCount > 0 {
 		helpers.AppLogger.Infof("[AV元数据] 剧照下载完成: %d/%d", successCount, len(r.PreviewImages))
+		if failCount > 0 {
+			warnings = append(warnings, fmt.Sprintf("剧照部分下载失败: 成功 %d, 失败 %d", successCount, failCount))
+		}
 	}
 
 	if r.Trailer != "" {
@@ -620,14 +597,16 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 
 	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
 	if err := os.WriteFile(nfoPath, []byte(GenerateNFO(r)), 0644); err != nil {
-		return nil, fmt.Errorf("写 NFO 失败: %w", err)
+		return nil, warnings, fmt.Errorf("写 NFO 失败: %w", err)
 	}
 	files = append(files, LocalFile{LocalPath: nfoPath, RemoteName: baseName + ".nfo"})
 
-	return files, nil
+	return files, warnings, nil
 }
 
-func (s *Scanner) recordTask(mediaId uint, code, filePath, status, msg, provider string) {
+// recordTask 新增 warnings 参数
+func (s *Scanner) recordTask(mediaId uint, code, filePath, status, msg, provider string, warnings []string) {
+	warningsJSON, _ := json.Marshal(warnings)
 	s.DB.Create(&models.AVTask{
 		MediaId:  mediaId,
 		Code:     code,
@@ -635,6 +614,7 @@ func (s *Scanner) recordTask(mediaId uint, code, filePath, status, msg, provider
 		Status:   status,
 		Message:  msg,
 		Provider: provider,
+		Warnings: string(warningsJSON),
 	})
 }
 
@@ -669,9 +649,6 @@ func walkVideos(fs FileSystem, root string, depth int) ([]string, error) {
 	return videos, nil
 }
 
-// ============================================================
-// renderTemplate
-// ============================================================
 func renderTemplate(tpl string, media *models.AVMedia) string {
 	if tpl == "" {
 		return media.Code
@@ -699,12 +676,10 @@ func renderTemplate(tpl string, media *models.AVMedia) string {
 		actorDir = "多人作品"
 	}
 	allActors := strings.Join(names, ", ")
-	// ===== {actors} 2 人及以上时，前面加一层"多人作品/"父目录 =====
 	allActorsPath := sanitizePath(allActors)
 	if len(names) >= 2 {
 		allActorsPath = "多人作品/" + sanitizePath(allActors)
 	}
-	// ==============================================================
 
 	replacer := strings.NewReplacer(
 		"{actor}", sanitizePath(actorDir),
