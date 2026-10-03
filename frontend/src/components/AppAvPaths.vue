@@ -6,20 +6,20 @@
     </div>
 
     <el-table :data="list" border stripe v-loading="loading">
-      <el-table-column prop="id" label="ID" width="60" />
+      <el-table-column prop="id" label="ID" width="60" class-name="hide-mobile" />
       <el-table-column prop="name" label="名称" min-width="120" />
-      <el-table-column label="来源类型" width="100">
+      <el-table-column label="来源类型" width="100" class-name="hide-mobile">
         <template #default="{ row }">{{ sourceTypeText(row.source_type) }}</template>
       </el-table-column>
       <el-table-column prop="source_path" label="源路径" min-width="200" show-overflow-tooltip />
-      <el-table-column prop="target_path" label="目标路径" min-width="200" show-overflow-tooltip />
-      <el-table-column label="操作方式" width="130">
+      <el-table-column prop="target_path" label="目标路径" min-width="200" show-overflow-tooltip class-name="hide-mobile" />
+      <el-table-column label="操作方式" width="130" class-name="hide-mobile">
         <template #default="{ row }">{{ modeText(row.mode) }}</template>
       </el-table-column>
-      <el-table-column label="整理方式" width="100">
+      <el-table-column label="整理方式" width="100" class-name="hide-mobile">
         <template #default="{ row }">{{ moveMethodText(row.move_method) }}</template>
       </el-table-column>
-      <el-table-column label="启用" width="80">
+      <el-table-column label="启用" width="80" class-name="hide-mobile">
         <template #default="{ row }">
           <el-tag :type="row.enable ? 'success' : 'info'">{{ row.enable ? '启用' : '禁用' }}</el-tag>
         </template>
@@ -34,7 +34,12 @@
     </el-table>
 
     <!-- 编辑表单 -->
-    <el-dialog v-model="dialogVisible" :title="editId ? '编辑 AV 刮削目录' : '添加 AV 刮削目录'" width="700px">
+    <el-dialog
+      v-model="dialogVisible"
+      :title="editId ? '编辑 AV 刮削目录' : '添加 AV 刮削目录'"
+      width="700px"
+      class="av-dialog-responsive"
+    >
       <el-form :model="form" label-width="120px">
         <el-form-item label="名称">
           <el-input v-model="form.name" placeholder="给这个刮削目录起个名字" />
@@ -87,7 +92,7 @@
 
         <el-form-item label="命名模板">
           <el-input v-model="form.name_template" placeholder="{actor}/{number}" />
-          <div style="font-size: 12px; color: #999; margin-top: 4px">
+          <div class="template-hint">
             可用变量：<code>{actor}</code> 首个演员、
             <code>{actors}</code> 全部演员、
             <code>{number}</code> 番号、
@@ -111,7 +116,12 @@
     </el-dialog>
 
     <!-- 目录选择器 -->
-    <el-dialog v-model="pickerVisible" title="选择目录" width="600px">
+    <el-dialog
+      v-model="pickerVisible"
+      title="选择目录"
+      width="600px"
+      class="av-dialog-responsive"
+    >
       <div class="picker-path">
         <span>当前路径：{{ pickerParentPath || '根目录' }}</span>
         <el-button size="small" @click="pickerGoRoot">返回根目录</el-button>
@@ -127,9 +137,7 @@
         <el-table-column label="名称" min-width="200">
           <template #default="{ row }">📁 {{ row.name }}</template>
         </el-table-column>
-        <el-table-column label="路径" min-width="200" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.path }}</template>
-        </el-table-column>
+        <el-table-column label="路径" min-width="200" show-overflow-tooltip class-name="hide-mobile" />
         <el-table-column label="选择" width="100">
           <template #default="{ row }">
             <el-button size="small" type="primary" @click.stop="pickerConfirm(row)">选此目录</el-button>
@@ -358,5 +366,133 @@ onMounted(() => {
   margin-bottom: 12px;
   font-size: 14px;
   color: #666;
+}
+.template-hint {
+  font-size: 12px;
+  color: #999;
+  margin-top: 4px;
+  line-height: 1.6;
+}
+.template-hint code {
+  background: #f5f7fa;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #e6a23c;
+}
+
+/* ===== 移动端适配 ===== */
+@media (max-width: 768px) {
+  .av-paths {
+    padding: 12px;
+  }
+  .av-paths__header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .av-paths__header h2 {
+    font-size: 18px;
+    margin: 0;
+  }
+  :deep(.hide-mobile) {
+    display: none !important;
+  }
+  :deep(.el-table__header-wrapper),
+  :deep(.el-table__body-wrapper) {
+    font-size: 12px;
+  }
+  :deep(.el-table .cell) {
+    padding: 0 4px;
+  }
+  .picker-path {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    font-size: 12px;
+  }
+  .picker-path .el-button {
+    width: 100%;
+  }
+  .template-hint {
+    font-size: 11px;
+  }
+}
+
+@media (max-width: 480px) {
+  .av-paths {
+    padding: 8px;
+  }
+  :deep(.el-table__header-wrapper),
+  :deep(.el-table__body-wrapper) {
+    font-size: 11px;
+  }
+}
+</style>
+
+<!-- 非 scoped：作用于 teleport 到 body 的 dialog -->
+<style>
+@media (max-width: 768px) {
+  .av-dialog-responsive {
+    width: 95% !important;
+    max-width: 95vw !important;
+    margin: 5vh auto !important;
+  }
+  .av-dialog-responsive .el-dialog__header {
+    padding: 16px 16px 8px;
+  }
+  .av-dialog-responsive .el-dialog__body {
+    padding: 12px 16px;
+  }
+  .av-dialog-responsive .el-dialog__footer {
+    padding: 8px 16px 16px;
+  }
+  .av-dialog-responsive .el-form-item {
+    margin-bottom: 14px;
+  }
+  .av-dialog-responsive .el-form-item__label {
+    width: 100px !important;
+    font-size: 13px;
+    padding-right: 8px;
+  }
+  .av-dialog-responsive .el-form-item__content {
+    font-size: 13px;
+  }
+  .av-dialog-responsive .el-input,
+  .av-dialog-responsive .el-select {
+    width: 100% !important;
+  }
+  .av-dialog-responsive .el-radio-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .av-dialog-responsive .el-radio-button__inner {
+    font-size: 12px;
+    padding: 8px 12px;
+  }
+  .av-dialog-responsive .el-dialog__title {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .av-dialog-responsive {
+    width: 100% !important;
+    max-width: 100vw !important;
+    margin: 0 !important;
+    border-radius: 0;
+  }
+  .av-dialog-responsive .el-form-item__label {
+    width: 80px !important;
+    font-size: 12px;
+  }
+  .av-dialog-responsive .el-form-item__content {
+    font-size: 12px;
+  }
+  .av-dialog-responsive .el-radio-button__inner {
+    font-size: 11px;
+    padding: 6px 10px;
+  }
 }
 </style>
