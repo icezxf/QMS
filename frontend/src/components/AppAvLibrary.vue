@@ -317,4 +317,80 @@ onMounted(load)
   display: flex;
   justify-content: center;
 }
+
+/* ===== 移动端适配 ===== */
+@media (max-width: 768px) {
+  .av-library {
+    padding: 12px;
+  }
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .toolbar-left {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .toolbar-left .el-select,
+  .toolbar-left .el-input {
+    width: 100% !important;
+    margin-left: 0 !important;
+  }
+  .total-hint {
+    text-align: right;
+  }
+  .card-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 10px;
+  }
+  .av-card__title {
+    font-size: 12px;
+  }
+  .av-card__actors {
+    font-size: 11px;
+  }
+  .av-card__actions {
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px;
+  }
+  .av-card__actions .el-button {
+    padding: 4px 0;
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  .av-library {
+    padding: 8px;
+  }
+  .card-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .av-card__body {
+    padding: 8px;
+  }
+  .av-card__code {
+    font-size: 12px;
+  }
+  .av-card__title {
+    font-size: 11px;
+    height: 2.6em;
+  }
+  .av-card__actors {
+    font-size: 10px;
+  }
+  .av-card__rating {
+    font-size: 10px;
+    padding: 1px 6px;
+  }
+  .av-card__badge {
+    font-size: 11px;
+    padding: 1px 6px;
+  }
+}
 </style>
