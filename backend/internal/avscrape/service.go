@@ -1,7 +1,7 @@
 package avscrape
 
 import (
-	"fmt"	
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,8 +18,6 @@ type Service struct {
 	DB *gorm.DB
 }
 
-// studioSeparatorRe 按任意非字母/数字/汉字/假名切分片商名
-// 用来兜底元数据源里混入的不可见字符（ZWSP、NBSP 等）
 var studioSeparatorRe = regexp.MustCompile(`[^\p{Han}\p{Hiragana}\p{Katakana}\p{Latin}\p{N}]+`)
 
 func NewService(db *gorm.DB) *Service {
@@ -33,7 +31,6 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	}
 	var allResults []*ScrapeResult
 
-	// ===== oshash 优先匹配 =====
 	if oshash != "" && cfg.EnableOshashMatch && cfg.EnableJavStash {
 		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
 		if r, err := js.SearchByOshash(oshash); err == nil {
@@ -44,7 +41,6 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		}
 	}
 
-	// ===== MetaTube（用 ProviderID 拉详情） =====
 	if cfg.EnableMetaTube && cfg.MetaTubeServer != "" {
 		mt := NewMetaTubeClient(cfg.MetaTubeServer)
 		hits, err := mt.Search(code)
@@ -72,7 +68,6 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		}
 	}
 
-	// ===== JavStash 番号搜索 =====
 	if cfg.EnableJavStash {
 		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
 		hits, err := js.Search(code)
@@ -85,7 +80,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		return nil, fmt.Errorf("no result for %s", code)
 	}
 
-	// ===== 用 JavStash 的 aliases 归一化演员名 =====
+	// 演员名归一化
 	aliasMap := buildJavStashAliasMap(allResults)
 	if len(aliasMap) > 0 {
 		helpers.AppLogger.Infof("[演员归一化] JavStash 提供了 %d 条别名映射", len(aliasMap))
@@ -102,18 +97,21 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	// ===== 合并多源 =====
 	best := mergeResults(allResults, cfg)
 
-	// ===== 维基百科补全演员中文名 =====
-	wikiClient := NewWikiClient()
-	best.Actors = wikiClient.TranslateActorNames(best.Actors)
+	// ===== 收集警告 =====
+	var warnings []string
 
-	// ===== 维基百科补全片商中文名 =====
+	// 演员维基翻译
+	wikiClient := NewWikiClient()
+	translatedActors, actorWarnings := wikiClient.TranslateActorNames(best.Actors)
+	best.Actors = translatedActors
+	warnings = append(warnings, actorWarnings...)
+
+	// 片商维基翻译
 	if best.Studio != "" {
-		// 先试全名
 		if zh, err := wikiClient.GetChineseName(best.Studio); err == nil && zh != "" && zh != best.Studio {
 			helpers.AppLogger.Infof("[维基] 片商 %s → %s", best.Studio, zh)
 			best.Studio = zh
 		} else {
-			// 全名失败，用正则切分（任意非字母/数字都是分隔符），取第一个非空词再试
 			parts := studioSeparatorRe.Split(best.Studio, -1)
 			var shortName string
 			for _, p := range parts {
@@ -127,15 +125,19 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 					helpers.AppLogger.Infof("[维基] 片商 %s → %s (截取 %s)", best.Studio, zh, shortName)
 					best.Studio = zh
 				} else {
-					helpers.AppLogger.Infof("[维基] 片商 %s 未找到中文译名", best.Studio)
+					msg := fmt.Sprintf("片商 %s 未找到中文译名", best.Studio)
+					helpers.AppLogger.Infof("[维基] %s", msg)
+					warnings = append(warnings, msg)
 				}
 			} else {
-				helpers.AppLogger.Infof("[维基] 片商 %s 未找到中文译名", best.Studio)
+				msg := fmt.Sprintf("片商 %s 未找到中文译名", best.Studio)
+				helpers.AppLogger.Infof("[维基] %s", msg)
+				warnings = append(warnings, msg)
 			}
 		}
 	}
 
-	// ===== JavDB 评分 =====
+	// JavDB 评分
 	if cfg.EnableJavDBRating && cfg.JavDBCookie != "" {
 		client := NewJavDBClient(cfg.JavDBCookie)
 		if rating, votes, err := client.GetRating(code); err == nil && rating > 0 {
@@ -144,10 +146,11 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 			helpers.AppLogger.Infof("[AV刮削] JavDB 评分: %.2f (%d人)", rating, votes)
 		} else if err != nil {
 			helpers.AppLogger.Warnf("[AV刮削] JavDB 评分获取失败: %v", err)
+			warnings = append(warnings, fmt.Sprintf("JavDB 评分获取失败: %v", err))
 		}
 	}
 
-	// ===== 翻译 =====
+	// 翻译
 	if cfg.EnableTranslate {
 		tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.DeepLKey = cfg.TranslateDeepLKey
@@ -155,14 +158,15 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		tr.BingRegion = cfg.TranslateBingRegion
 		tr.GeminiKey = cfg.TranslateGeminiKey
 		tr.GeminiModel = cfg.TranslateGeminiModel
-		// ===== Google Cloud Translation =====
 		tr.GoogleAPIKey = cfg.GoogleTranslateAPIKey
 		tr.GoogleTranslateForTags = cfg.GoogleTranslateForTags
 		tr.GoogleTranslateForAll = cfg.GoogleTranslateForAll
-		// ====================================
 		helpers.AppLogger.Infof("[AV刮削] 开始翻译 %s (engine=%s)", code, cfg.TranslateEngine)
-		tr.TranslateResult(best)
+		transWarnings := tr.TranslateResult(best)
+		warnings = append(warnings, transWarnings...)
 	}
+
+	best.Warnings = warnings
 
 	best.Oshash = oshash
 
@@ -216,6 +220,7 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	sorted := sortByChinese(results, cfg.PreferChineseSource)
 	best := *sorted[0]
 	best.ImageCandidates = []string{}
+	best.Warnings = nil
 
 	type candidate struct {
 		url      string
@@ -522,11 +527,8 @@ func (s *Service) GetMedia(id uint) (*models.AVMedia, error) {
 	return &m, err
 }
 
-// ============================================================
-// 暂停后的人工干预操作
-// ============================================================
+// ===== 暂停操作 =====
 
-// ReleaseMedia 放行暂停的媒体：跳过失败检查，继续走完流程
 func (s *Service) ReleaseMedia(id uint) error {
 	media := models.GetAVMediaByID(id)
 	if media == nil {
@@ -535,8 +537,6 @@ func (s *Service) ReleaseMedia(id uint) error {
 	if media.Status != "paused" {
 		return fmt.Errorf("当前状态为 %s，不是暂停状态，无法放行", media.Status)
 	}
-
-	// 标记为 released，下次扫描时跳过失败检查
 	if err := s.DB.Model(media).Updates(map[string]any{
 		"status":       "released",
 		"pause_reason": "",
@@ -547,50 +547,36 @@ func (s *Service) ReleaseMedia(id uint) error {
 	return nil
 }
 
-// RestartMedia 重启：清理 tmp 和 AVMedia 状态，从头刮削
 func (s *Service) RestartMedia(id uint) error {
 	media := models.GetAVMediaByID(id)
 	if media == nil {
 		return fmt.Errorf("媒体记录不存在")
 	}
-
-	// 清理本地 tmp 目录
 	tmpDir := filepath.Join(helpers.ConfigDir, "tmp", "avscrape", media.Code)
 	if err := os.RemoveAll(tmpDir); err != nil {
 		helpers.AppLogger.Warnf("[AV重启] 清理 tmp 失败 %s: %v", tmpDir, err)
 	}
-
-	// 删除 AVMedia 记录（下次扫描重新创建）
 	if err := s.DB.Delete(&models.AVMedia{}, id).Error; err != nil {
 		return err
 	}
-
-	// 删除关联的 AVTask 记录
 	s.DB.Where("media_id = ?", id).Delete(&models.AVTask{})
-
-	helpers.AppLogger.Infof("[AV重启] %s 已重启，记录和 tmp 已清理", media.Code)
+	helpers.AppLogger.Infof("[AV重启] %s 已重启", media.Code)
 	return nil
 }
 
-// CancelMedia 取消：清理 tmp 和记录
 func (s *Service) CancelMedia(id uint) error {
 	media := models.GetAVMediaByID(id)
 	if media == nil {
 		return fmt.Errorf("媒体记录不存在")
 	}
-
-	// 清理本地 tmp
 	tmpDir := filepath.Join(helpers.ConfigDir, "tmp", "avscrape", media.Code)
 	if err := os.RemoveAll(tmpDir); err != nil {
 		helpers.AppLogger.Warnf("[AV取消] 清理 tmp 失败 %s: %v", tmpDir, err)
 	}
-
-	// 删除 AVMedia 和 AVTask 记录
 	if err := s.DB.Delete(&models.AVMedia{}, id).Error; err != nil {
 		return err
 	}
 	s.DB.Where("media_id = ?", id).Delete(&models.AVTask{})
-
 	helpers.AppLogger.Infof("[AV取消] %s 已取消", media.Code)
 	return nil
 }
