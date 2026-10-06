@@ -228,6 +228,11 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 		if best.OriginalTitle == "" && r.OriginalTitle != "" {
 			best.OriginalTitle = r.OriginalTitle
 		}
+				// ===== 新增：Fanart 兜底（JavStash 的横版图）=====
+		if best.Fanart == "" && r.Fanart != "" {
+			best.Fanart = r.Fanart
+		}
+		// ================================================
 		if best.Director == "" && r.Director != "" {
 			best.Director = r.Director
 		}
