@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -98,17 +97,16 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	// ===== 收集警告 =====
 	var warnings []string
 
-	// 演员维基翻译
+	// 演员维基翻译（优先 JavStash 中文，回退 wiki）
 	wikiClient := NewWikiClient()
 	translatedActors, actorWarnings := wikiClient.TranslateActorNames(best.Actors)
 	best.Actors = translatedActors
 	warnings = append(warnings, actorWarnings...)
 
-	// 片商维基翻译
-		// ===== 片商：直接用数据源原始值，不做维基翻译 =====
-	// （best.Studio 已在 mergeResults 里从 JavStash/MetaTube 合并而来）
+	// 片商：不做任何翻译，直接用 mergeResults 的值
+	// （JavStash 优先，MetaTube 兜底；缺失时保留原始值）
 	if best.Studio != "" {
-		helpers.AppLogger.Infof("[片商] 使用原始值: %s", best.Studio)
+		helpers.AppLogger.Infof("[片商] 使用数据源原始值: %s", best.Studio)
 	}
 
 	// JavDB 评分
@@ -530,6 +528,8 @@ func (s *Service) RestartMedia(id uint) error {
 	if err := os.RemoveAll(tmpDir); err != nil {
 		helpers.AppLogger.Warnf("[AV重启] 清理 tmp 失败 %s: %v", tmpDir, err)
 	}
+	imgDir := filepath.Join(helpers.ConfigDir, "avscrape_images", media.Code)
+	_ = os.RemoveAll(imgDir)
 	if err := s.DB.Delete(&models.AVMedia{}, id).Error; err != nil {
 		return err
 	}
@@ -547,6 +547,8 @@ func (s *Service) CancelMedia(id uint) error {
 	if err := os.RemoveAll(tmpDir); err != nil {
 		helpers.AppLogger.Warnf("[AV取消] 清理 tmp 失败 %s: %v", tmpDir, err)
 	}
+	imgDir := filepath.Join(helpers.ConfigDir, "avscrape_images", media.Code)
+	_ = os.RemoveAll(imgDir)
 	if err := s.DB.Delete(&models.AVMedia{}, id).Error; err != nil {
 		return err
 	}
@@ -557,9 +559,6 @@ func (s *Service) CancelMedia(id uint) error {
 
 // ===== 批量删除媒体 =====
 
-// BatchDeleteMedia 批量删除媒体记录
-// ids 为空时删除全部
-// 注意：只删数据库记录和本地 tmp，不动源视频、不动已上传的元数据文件
 func (s *Service) BatchDeleteMedia(ids []uint) (int, error) {
 	var mediaList []models.AVMedia
 	query := s.DB.Model(&models.AVMedia{})
@@ -580,20 +579,21 @@ func (s *Service) BatchDeleteMedia(ids []uint) (int, error) {
 		mediaIDs = append(mediaIDs, m.ID)
 	}
 
-	// 清理本地 tmp（每个番号一个目录）
 	for _, code := range codes {
 		tmpDir := filepath.Join(helpers.ConfigDir, "tmp", "avscrape", code)
 		if err := os.RemoveAll(tmpDir); err != nil {
 			helpers.AppLogger.Warnf("[AV批量删除] 清理 tmp 失败 %s: %v", tmpDir, err)
 		}
+		imgDir := filepath.Join(helpers.ConfigDir, "avscrape_images", code)
+		if err := os.RemoveAll(imgDir); err != nil {
+			helpers.AppLogger.Warnf("[AV批量删除] 清理图片失败 %s: %v", imgDir, err)
+		}
 	}
 
-	// 删 AVMedia
 	if err := s.DB.Where("id IN ?", mediaIDs).Delete(&models.AVMedia{}).Error; err != nil {
 		return 0, err
 	}
 
-	// 删关联 AVTask
 	s.DB.Where("media_id IN ?", mediaIDs).Delete(&models.AVTask{})
 
 	helpers.AppLogger.Infof("[AV批量删除] 已删除 %d 条媒体记录", len(mediaIDs))
