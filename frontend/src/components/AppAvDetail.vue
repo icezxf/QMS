@@ -1,540 +1,415 @@
 <template>
-  <div class="av-library">
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <el-select v-model="statusFilter" placeholder="全部状态" style="width: 140px" @change="reload">
-          <el-option label="全部" value="" />
-          <el-option label="已完成" value="completed" />
-          <el-option label="已暂停" value="paused" />
-          <el-option label="已放行" value="released" />
-          <el-option label="刮削中" value="scraping" />
-        </el-select>
-        <el-input
-          v-model="keyword"
-          placeholder="搜索番号/标题/演员"
-          style="width: 260px; margin-left: 12px"
-          clearable
-          @keyup.enter="reload"
-        >
-          <template #append>
-            <el-button :icon="Search" @click="reload" />
-          </template>
-        </el-input>
-      </div>
-      <div class="toolbar-right">
-        <el-checkbox
-          v-model="selectAll"
-          :indeterminate="isIndeterminate"
-          :disabled="list.length === 0"
-          @change="toggleSelectAll"
-        >
-          全选
-        </el-checkbox>
-        <el-button
-          type="danger"
-          size="small"
-          :disabled="selectedIds.length === 0"
-          @click="batchDelete"
-        >
-          删除选中 ({{ selectedIds.length }})
-        </el-button>
-        <el-button type="danger" size="small" plain @click="clearAll">清空全部</el-button>
-        <span class="total-hint">共 {{ total }} 部</span>
-      </div>
+  <div class="av-detail">
+    <el-page-header @back="goBack" :content="media?.code || '加载中'" />
+
+    <div v-if="loadError" class="av-detail__error">
+      <el-alert :title="loadError" type="error" show-icon :closable="false" />
+      <el-button style="margin-top: 16px" @click="loadDetail">重新加载</el-button>
     </div>
 
-    <div v-loading="loading" class="card-grid">
-      <div
-        v-for="m in list"
-        :key="m.id"
-        class="av-card"
-        :class="{ 'is-paused': m.status === 'paused', 'is-selected': selectedIds.includes(m.id) }"
-        @click="goDetail(m.id)"
+    <div v-else-if="!media" class="av-detail__loading" v-loading="loading" />
+
+    <template v-else>
+      <!-- 暂停提示 -->
+      <el-alert
+        v-if="media.status === 'paused'"
+        :title="'刮削暂停：' + (media.pause_reason || '未知原因')"
+        type="error"
+        show-icon
+        :closable="false"
+        style="margin-top: 16px"
       >
-        <el-checkbox
-          :model-value="selectedIds.includes(m.id)"
-          class="av-card__checkbox"
-          @click.stop
-          @change="(v: string | number | boolean) => toggleSelect(m.id, !!v)"
-        />
-        <div class="av-card__poster">
-          <img :src="resolveImage(m.poster)" :alt="m.code" loading="lazy" />
-          <div class="av-card__badge" v-if="m.status === 'paused'">暂停</div>
-          <div class="av-card__badge av-card__badge--ok" v-else-if="m.status === 'completed'">✓</div>
-          <div class="av-card__rating" v-if="m.rating > 0">★ {{ m.rating.toFixed(1) }}</div>
-        </div>
-        <div class="av-card__body">
-          <div class="av-card__code">{{ m.code }}</div>
-          <div class="av-card__title" :title="m.title">{{ m.title || '（无标题）' }}</div>
-          <div class="av-card__actors">{{ actorSummary(m.actors) }}</div>
-        </div>
-        <div class="av-card__actions" v-if="m.status === 'paused'" @click.stop>
-          <el-button size="small" type="success" @click="release(m)">放行</el-button>
-          <el-button size="small" type="primary" @click="restart(m)">重启</el-button>
-          <el-button size="small" type="danger" @click="cancel(m)">取消</el-button>
-        </div>
-        <div class="av-card__pause-reason" v-if="m.status === 'paused' && m.pause_reason" :title="m.pause_reason">
-          {{ m.pause_reason }}
-        </div>
-      </div>
+        <template #default>
+          <div style="margin-top: 12px">
+            <el-button type="success" size="small" @click="release">放行（跳过失败强制走完）</el-button>
+            <el-button type="primary" size="small" @click="restart">重启（清空重刮）</el-button>
+            <el-button type="danger" size="small" @click="cancel">取消（删除记录）</el-button>
+          </div>
+        </template>
+      </el-alert>
 
-      <div v-if="!loading && list.length === 0" class="empty">
-        <el-empty description="暂无刮削结果" />
-      </div>
-    </div>
-
-    <div class="pagination" v-if="total > pageSize">
-      <el-pagination
-        v-model:current-page="page"
-        :page-size="pageSize"
-        :total="total"
-        layout="prev, pager, next"
-        @current-change="load"
+      <el-alert
+        v-else-if="media.status === 'released'"
+        title="已放行，下次扫描将强制走完"
+        type="warning"
+        show-icon
+        :closable="false"
+        style="margin-top: 16px"
       />
-    </div>
+
+      <!-- Hero 区 -->
+      <div
+        class="av-detail__hero"
+        :style="{ backgroundImage: media.fanart ? `url(${media.fanart})` : 'none' }"
+      >
+        <div class="av-detail__hero-overlay">
+          <img
+            v-if="media.poster"
+            :src="media.poster"
+            class="av-detail__poster"
+            @error="onImgError"
+          />
+          <div class="av-detail__meta">
+            <h1>{{ media.title || '（无标题）' }}</h1>
+            <p v-if="media.original_title">{{ media.original_title }}</p>
+            <p>
+              番号：{{ media.code || '—' }} ｜ 发行：{{ formatDate(media.release_date) }} ｜
+              时长：{{ media.runtime || 0 }} 分钟
+            </p>
+            <p>片商：{{ media.studio || '—' }} ｜ 厂牌：{{ media.label || '—' }} ｜ 导演：{{ media.director || '—' }}</p>
+            <p v-if="media.rating > 0">评分：★ {{ media.rating.toFixed(2) }}</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <el-tabs style="margin-top: 20px">
+        <el-tab-pane label="剧情简介">
+          <p class="av-detail__plot">{{ media.plot || '暂无简介' }}</p>
+        </el-tab-pane>
+
+        <el-tab-pane label="演员">
+          <el-row :gutter="16">
+            <el-col
+              v-for="(actor, idx) in parseJSON(media.actors)"
+              :key="idx"
+              :xs="8"
+              :sm="6"
+              :md="4"
+              :lg="3"
+              style="margin-bottom: 16px"
+            >
+              <div class="av-actor">
+                <img
+                  v-if="actor.image"
+                  :src="actor.image"
+                  class="av-actor__img"
+                  @error="onImgError"
+                />
+                <div v-else class="av-actor__img av-actor__img--empty">无图</div>
+                <div class="av-actor__name" :title="actor.name">{{ actor.name }}</div>
+              </div>
+            </el-col>
+          </el-row>
+          <div v-if="parseJSON(media.actors).length === 0" class="av-detail__empty-tip">暂无演员信息</div>
+        </el-tab-pane>
+
+        <el-tab-pane label="剧照">
+          <div class="av-detail__previews">
+            <el-image
+              v-for="(img, idx) in parseJSON(media.preview_images)"
+              :key="idx"
+              :src="img"
+              :preview-src-list="parseJSON(media.preview_images)"
+              class="av-preview-img"
+              fit="cover"
+              :initial-index="idx"
+            />
+          </div>
+          <div v-if="parseJSON(media.preview_images).length === 0" class="av-detail__empty-tip">暂无剧照</div>
+        </el-tab-pane>
+
+        <el-tab-pane label="标签">
+          <el-tag v-for="(g, idx) in parseJSON(media.genres)" :key="idx" style="margin: 4px">{{ g }}</el-tag>
+          <div v-if="parseJSON(media.genres).length === 0" class="av-detail__empty-tip">暂无标签</div>
+        </el-tab-pane>
+
+        <el-tab-pane label="预告片" v-if="media.trailer">
+          <video :src="media.trailer" controls class="av-trailer" />
+        </el-tab-pane>
+      </el-tabs>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search } from '@element-plus/icons-vue'
 
+const route = useRoute()
 const router = useRouter()
-
-const list = ref<any[]>([])
-const total = ref(0)
-const page = ref(1)
-const pageSize = ref(24)
+const media = ref<any>(null)
 const loading = ref(false)
-const statusFilter = ref('')
-const keyword = ref('')
+const loadError = ref('')
 
-// ===== 选择状态 =====
-const selectedIds = ref<number[]>([])
-const selectAll = ref(false)
-
-const isIndeterminate = computed(() => {
-  return selectedIds.value.length > 0 && selectedIds.value.length < list.value.length
-})
-
-const toggleSelect = (id: number, checked: boolean) => {
-  if (checked) {
-    if (!selectedIds.value.includes(id)) {
-      selectedIds.value.push(id)
-    }
-  } else {
-    selectedIds.value = selectedIds.value.filter((x) => x !== id)
-  }
-  syncSelectAll()
-}
-
-const toggleSelectAll = (val: string | number | boolean) => {
-  if (val) {
-    selectedIds.value = list.value.map((m) => m.id)
-  } else {
-    selectedIds.value = []
+const parseJSON = (str: string) => {
+  if (!str) return []
+  try {
+    const v = JSON.parse(str)
+    return Array.isArray(v) ? v : []
+  } catch {
+    return []
   }
 }
 
-const syncSelectAll = () => {
-  if (list.value.length === 0) {
-    selectAll.value = false
+const formatDate = (d: string) => {
+  if (!d) return '—'
+  if (d.length >= 10) return d.slice(0, 10)
+  return d
+}
+
+const onImgError = (e: Event) => {
+  const img = e.target as HTMLImageElement
+  img.style.display = 'none'
+}
+
+const goBack = () => {
+  router.push('/avscrape/library')
+}
+
+const loadDetail = async () => {
+  const id = route.params.id
+  if (!id) {
+    loadError.value = '缺少媒体 ID'
     return
   }
-  selectAll.value = selectedIds.value.length === list.value.length
-}
-// =======================
 
-const load = async () => {
   loading.value = true
+  loadError.value = ''
   try {
-    const res = await axios.get('/api/avscrape/library', {
-      params: {
-        page: page.value,
-        page_size: pageSize.value,
-        status: statusFilter.value,
-        keyword: keyword.value,
-      },
-    })
-    list.value = res.data.list || []
-    total.value = res.data.total || 0
-    const visibleIds = new Set(list.value.map((m) => m.id))
-    selectedIds.value = selectedIds.value.filter((id) => visibleIds.has(id))
-    syncSelectAll()
-  } catch {
-    ElMessage.error('加载媒体库失败')
+    const res = await axios.get(`/api/avscrape/library/${id}`)
+    const raw = res.data
+
+    // ===== 兼容两种 API 格式 =====
+    // 格式 A：直接返回媒体对象 { id, code, title, ... }
+    // 格式 B：包装 { code: 200, data: { id, code, ... } }
+    let payload: any = null
+    if (raw && typeof raw === 'object') {
+      if (raw.data && typeof raw.data === 'object' && (raw.data.id || raw.data.code)) {
+        // 格式 B
+        payload = raw.data
+      } else if (raw.id || raw.code) {
+        // 格式 A
+        payload = raw
+      }
+    }
+
+    if (!payload) {
+      loadError.value = 'API 返回数据格式异常'
+      console.error('[AppAvDetail] 未识别的 API 返回:', raw)
+      return
+    }
+
+    media.value = payload
+  } catch (e: any) {
+    const msg = e?.response?.data?.error || e?.response?.data?.message || e?.message || '加载失败'
+    loadError.value = `加载详情失败：${msg}`
+    console.error('[AppAvDetail] 加载详情失败:', e)
   } finally {
     loading.value = false
   }
 }
 
-const reload = () => {
-  page.value = 1
-  selectedIds.value = []
-  selectAll.value = false
-  load()
-}
-
-const goDetail = (id: number) => {
-  router.push(`/avscrape/library/${id}`)
-}
-
-const resolveImage = (url: string) => {
-  if (!url) return 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="200" height="300"><rect width="200" height="300" fill="%23eee"/><text x="50%" y="50%" text-anchor="middle" fill="%23999" font-size="14">无封面</text></svg>'
-  if (url.startsWith('http')) return url
-  return url
-}
-
-const actorSummary = (actorsStr: string) => {
+const release = async () => {
   try {
-    const actors = JSON.parse(actorsStr || '[]')
-    if (!actors.length) return '—'
-    const names = actors.slice(0, 3).map((a: any) => a.name).filter(Boolean)
-    return actors.length > 3 ? names.join('、') + ` 等 ${actors.length} 人` : names.join('、')
-  } catch {
-    return '—'
-  }
-}
-
-const release = async (m: any) => {
-  try {
-    await ElMessageBox.confirm(
-      `放行后，番号 ${m.code} 将跳过失败检查强制走完流程，确定吗？`,
-      '确认放行',
-      { type: 'warning' },
-    )
-    await axios.post(`/api/avscrape/library/${m.id}/release`)
+    await ElMessageBox.confirm('放行后将跳过失败检查强制走完流程，确定吗？', '确认放行', { type: 'warning' })
+    await axios.post(`/api/avscrape/library/${route.params.id}/release`)
     ElMessage.success('已放行，正在重新扫描')
-    load()
+    loadDetail()
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error('放行失败')
   }
 }
 
-const restart = async (m: any) => {
+const restart = async () => {
   try {
     await ElMessageBox.confirm(
-      `重启会删除临时文件并清空记录，番号 ${m.code} 将从零开始重新刮削，确定吗？`,
+      '重启会删除临时文件并清空记录，从零开始重新刮削，确定吗？',
       '确认重启',
       { type: 'warning' },
     )
-    await axios.post(`/api/avscrape/library/${m.id}/restart`)
+    await axios.post(`/api/avscrape/library/${route.params.id}/restart`)
     ElMessage.success('已重启，正在重新扫描')
-    load()
+    router.push('/avscrape/library')
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error('重启失败')
   }
 }
 
-const cancel = async (m: any) => {
+const cancel = async () => {
   try {
-    await ElMessageBox.confirm(
-      `取消会删除临时文件和记录，番号 ${m.code} 的所有刮削数据将丢失，确定吗？`,
-      '确认取消',
-      { type: 'warning' },
-    )
-    await axios.post(`/api/avscrape/library/${m.id}/cancel`)
+    await ElMessageBox.confirm('取消会删除临时文件和记录，确定吗？', '确认取消', { type: 'warning' })
+    await axios.post(`/api/avscrape/library/${route.params.id}/cancel`)
     ElMessage.success('已取消')
-    load()
+    router.push('/avscrape/library')
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error('取消失败')
   }
 }
 
-// ===== 批量删除 =====
-const batchDelete = async () => {
-  if (selectedIds.value.length === 0) return
-  try {
-    await ElMessageBox.confirm(
-      `确定删除选中的 ${selectedIds.value.length} 条记录吗？\n\n` +
-        `• 只删除数据库记录和本地临时文件\n` +
-        `• 不会删除源视频文件\n` +
-        `• 不会删除已上传的 NFO/图片`,
-      '确认删除',
-      { type: 'warning', dangerouslyUseHTMLString: false },
-    )
-    const res = await axios.post('/api/avscrape/library/batch-delete', {
-      ids: selectedIds.value,
-    })
-    ElMessage.success(res.data.msg || '删除成功')
-    selectedIds.value = []
-    selectAll.value = false
-    load()
-  } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error('删除失败')
-  }
-}
-
-const clearAll = async () => {
-  try {
-    await ElMessageBox.confirm(
-      `确定清空全部媒体记录吗？\n\n` +
-        `• 只删除数据库记录和本地临时文件\n` +
-        `• 不会删除源视频文件\n` +
-        `• 不会删除已上传的 NFO/图片`,
-      '确认清空全部',
-      { type: 'warning', dangerouslyUseHTMLString: false, confirmButtonText: '清空全部' },
-    )
-    const res = await axios.post('/api/avscrape/library/batch-delete', { all: true })
-    ElMessage.success(res.data.msg || '已清空')
-    selectedIds.value = []
-    selectAll.value = false
-    load()
-  } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error('清空失败')
-  }
-}
-
-onMounted(load)
+onMounted(loadDetail)
 </script>
 
 <style scoped>
-.av-library {
+.av-detail {
   padding: 20px;
 }
-.toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-  gap: 12px;
-  flex-wrap: wrap;
+.av-detail__error {
+  margin-top: 20px;
 }
-.toolbar-left {
-  display: flex;
-  align-items: center;
+.av-detail__loading {
+  min-height: 200px;
+  margin-top: 20px;
 }
-.toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.total-hint {
-  color: #909399;
-  font-size: 13px;
-  margin-left: 4px;
-}
-.card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 16px;
-  min-height: 300px;
-}
-.av-card {
-  background: #fff;
+.av-detail__hero {
+  position: relative;
+  margin-top: 16px;
+  aspect-ratio: 16 / 9;
+  max-height: 500px;
+  min-height: 260px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-color: #000;
   border-radius: 8px;
   overflow: hidden;
-  cursor: pointer;
-  transition: transform 0.15s, box-shadow 0.15s;
-  border: 1px solid #ebeef5;
+}
+.av-detail__hero-overlay {
   display: flex;
-  flex-direction: column;
-  position: relative;
+  align-items: flex-end;
+  padding: 24px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.85));
+  color: #fff;
+  min-height: 100%;
+  box-sizing: border-box;
 }
-.av-card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-}
-.av-card.is-paused {
-  border-color: #f56c6c;
-  box-shadow: 0 0 0 2px rgba(245, 108, 108, 0.15);
-}
-.av-card.is-selected {
-  border-color: #409eff;
-  box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.25);
-}
-.av-card__checkbox {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  z-index: 2;
-  background: rgba(255, 255, 255, 0.9);
-  border-radius: 4px;
-  padding: 2px 4px 2px 6px;
-}
-.av-card__poster {
-  position: relative;
-  width: 100%;
+.av-detail__poster {
+  width: 180px;
   aspect-ratio: 2 / 3;
-  background: #f5f5f5;
-  overflow: hidden;
-}
-/* ===== 改动：从右边开始取 ===== */
-.av-card__poster img {
-  width: 100%;
-  height: 100%;
+  height: auto;
   object-fit: cover;
   object-position: right top;
+  border-radius: 4px;
+  margin-right: 24px;
+  flex-shrink: 0;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  background: #333;
+}
+.av-detail__meta {
+  flex: 1;
+  min-width: 0;
+}
+.av-detail__meta h1 {
+  margin: 0 0 8px;
+  font-size: 24px;
+  line-height: 1.3;
+}
+.av-detail__meta p {
+  margin: 4px 0;
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.av-detail__plot {
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.av-detail__empty-tip {
+  color: #909399;
+  font-size: 14px;
+  padding: 20px 0;
+  text-align: center;
+}
+.av-actor {
+  text-align: center;
+}
+.av-actor__img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  height: auto;
+  object-fit: cover;
+  object-position: center top;
+  border-radius: 50%;
+  background: #f5f7fa;
+  border: 2px solid #ebeef5;
   display: block;
 }
-/* ================================= */
-.av-card__badge {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  background: #f56c6c;
-  color: #fff;
+.av-actor__img--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #c0c4cc;
   font-size: 12px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-weight: 600;
 }
-.av-card__badge--ok {
-  background: #67c23a;
-}
-.av-card__rating {
-  position: absolute;
-  bottom: 6px;
-  right: 6px;
-  background: rgba(0, 0, 0, 0.65);
-  color: #ffd04b;
-  font-size: 12px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-weight: 600;
-}
-.av-card__body {
-  padding: 10px;
-  flex: 1;
-}
-.av-card__code {
-  font-size: 13px;
-  font-weight: 600;
-  color: #409eff;
-  margin-bottom: 4px;
-}
-.av-card__title {
+.av-actor__name {
+  margin-top: 8px;
   font-size: 13px;
   color: #303133;
-  line-height: 1.4;
-  height: 2.8em;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  margin-bottom: 6px;
-}
-.av-card__actors {
-  font-size: 12px;
-  color: #909399;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.av-card__actions {
+.av-detail__previews {
   display: flex;
-  gap: 6px;
-  padding: 8px 10px;
-  border-top: 1px solid #f0f0f0;
+  flex-wrap: wrap;
+  gap: 8px;
 }
-.av-card__actions .el-button {
-  flex: 1;
-  padding: 5px 0;
-}
-.av-card__pause-reason {
-  font-size: 11px;
-  color: #f56c6c;
-  padding: 0 10px 8px;
+.av-preview-img {
+  width: 180px;
+  height: 120px;
+  border-radius: 4px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.empty {
-  grid-column: 1 / -1;
-}
-.pagination {
-  margin-top: 24px;
-  display: flex;
-  justify-content: center;
+.av-trailer {
+  width: 100%;
+  max-width: 800px;
 }
 
 /* ===== 移动端适配 ===== */
 @media (max-width: 768px) {
-  .av-library {
+  .av-detail {
     padding: 12px;
   }
-  .toolbar {
+  .av-detail__hero {
+    aspect-ratio: 4 / 3;
+    min-height: 200px;
+    max-height: 320px;
+  }
+  .av-detail__hero-overlay {
     flex-direction: column;
-    align-items: stretch;
-    gap: 10px;
-    margin-bottom: 14px;
+    align-items: center;
+    text-align: center;
+    padding: 16px;
   }
-  .toolbar-left {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
+  .av-detail__poster {
+    width: 120px;
+    margin: 0 0 12px 0;
   }
-  .toolbar-left .el-select,
-  .toolbar-left .el-input {
-    width: 100% !important;
-    margin-left: 0 !important;
+  .av-detail__meta h1 {
+    font-size: 18px;
+    margin-bottom: 6px;
   }
-  .toolbar-right {
-    flex-wrap: wrap;
-    justify-content: flex-end;
-  }
-  .total-hint {
-    width: 100%;
-    text-align: right;
-    order: -1;
-  }
-  .card-grid {
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 10px;
-  }
-  .av-card__title {
+  .av-detail__meta p {
     font-size: 12px;
   }
-  .av-card__actors {
-    font-size: 11px;
-  }
-  .av-card__actions {
-    flex-direction: column;
-    gap: 4px;
-    padding: 6px;
-  }
-  .av-card__actions .el-button {
-    padding: 4px 0;
+  .av-actor__name {
     font-size: 12px;
+  }
+  .av-preview-img {
+    width: calc(50% - 4px);
+    height: 90px;
   }
 }
 
 @media (max-width: 480px) {
-  .av-library {
+  .av-detail {
     padding: 8px;
   }
-  .card-grid {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 8px;
+  .av-detail__poster {
+    width: 100px;
   }
-  .av-card__body {
-    padding: 8px;
+  .av-detail__meta h1 {
+    font-size: 16px;
   }
-  .av-card__code {
-    font-size: 12px;
-  }
-  .av-card__title {
+  .av-detail__meta p {
     font-size: 11px;
-    height: 2.6em;
   }
-  .av-card__actors {
-    font-size: 10px;
-  }
-  .av-card__rating {
-    font-size: 10px;
-    padding: 1px 6px;
-  }
-  .av-card__badge {
-    font-size: 11px;
-    padding: 1px 6px;
-  }
-  .av-card__checkbox {
-    top: 4px;
-    left: 4px;
-    padding: 1px 3px 1px 5px;
+  .av-preview-img {
+    width: 100%;
+    height: 120px;
   }
 }
 </style>
