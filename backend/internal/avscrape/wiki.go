@@ -59,7 +59,6 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 		return "", nil
 	}
 
-	// 缓存
 	w.mu.Lock()
 	if entry, ok := w.cache[japaneseName]; ok {
 		if time.Since(entry.at) < 24*time.Hour {
@@ -67,7 +66,6 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 			return entry.zh, nil
 		}
 	}
-	// 限速
 	elapsed := time.Since(w.lastReq)
 	if elapsed < wikiMinInterval {
 		w.mu.Unlock()
@@ -94,7 +92,6 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 
 		zh, err := w.requestOnce(endpoint, japaneseName)
 		if err != nil {
-			// 429 限流直接放弃，不重试
 			if strings.Contains(err.Error(), "RATE_LIMIT") {
 				lastErr = err
 				break
@@ -142,7 +139,6 @@ func (w *WikiClient) requestOnce(endpoint, japaneseName string) (string, error) 
 	}
 	defer resp.Body.Close()
 
-	// 429 限流
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return "", fmt.Errorf("RATE_LIMIT: HTTP 429")
 	}
@@ -215,7 +211,7 @@ func stripDisambiguation(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// TranslateActorNames 演员名翻译：优先 JavStash 中文 → 回退 wiki
+// TranslateActorNames 演员名翻译：优先 wiki → JavStash 中文兜底
 func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 	var warnings []string
 	for i := range actors {
@@ -224,13 +220,10 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 			continue
 		}
 
-		// ===== 优先：从 JavStash 的 Name/Aliases 里找中文 =====
-		if zh := pickChineseFromActor(actors[i]); zh != "" {
-			if zh == oldName {
-				// 原名就是中文，跳过
-				continue
-			}
-			// 从 Aliases 里找到中文，替换
+		// ===== 第一步：查 wiki（优先） =====
+		zh, err := w.GetChineseName(oldName)
+		if err == nil && zh != "" && zh != oldName {
+			// wiki 命中，替换
 			exists := false
 			for _, a := range actors[i].Aliases {
 				if a == oldName {
@@ -242,39 +235,40 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 				actors[i].Aliases = append(actors[i].Aliases, oldName)
 			}
 			actors[i].Name = zh
-			helpers.AppLogger.Infof("[演员] %s → %s (JavStash)", oldName, zh)
 			continue
 		}
-		// ====================================================
 
-		// ===== 回退：查 wiki =====
-		zh, err := w.GetChineseName(oldName)
+		// ===== 第二步：wiki 没命中，从 JavStash 的 Name/Aliases 里找中文兜底 =====
+		if fallbackZh := pickChineseFromActor(actors[i]); fallbackZh != "" {
+			if fallbackZh == oldName {
+				// 原名就是中文，跳过
+				continue
+			}
+			exists := false
+			for _, a := range actors[i].Aliases {
+				if a == oldName {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				actors[i].Aliases = append(actors[i].Aliases, oldName)
+			}
+			actors[i].Name = fallbackZh
+			helpers.AppLogger.Infof("[演员] %s → %s (JavStash 兜底)", oldName, fallbackZh)
+			continue
+		}
+
+		// ===== 第三步：都没命中，记录警告 =====
 		if err != nil {
 			if strings.Contains(err.Error(), "RATE_LIMIT") {
-				warnings = append(warnings, fmt.Sprintf("演员 %s 维基限流(429)，跳过翻译", oldName))
+				warnings = append(warnings, fmt.Sprintf("演员 %s 维基限流(429)，且 JavStash 无中文", oldName))
 			} else {
-				warnings = append(warnings, fmt.Sprintf("演员 %s 维基请求失败: %v", oldName, err))
+				warnings = append(warnings, fmt.Sprintf("演员 %s 维基请求失败(%v)，且 JavStash 无中文", oldName, err))
 			}
-			continue
+		} else {
+			warnings = append(warnings, fmt.Sprintf("演员 %s 维基无中文条目，且 JavStash 无中文", oldName))
 		}
-		if zh == "" {
-			warnings = append(warnings, fmt.Sprintf("演员 %s 维基无中文条目", oldName))
-			continue
-		}
-		if zh == oldName {
-			continue
-		}
-		exists := false
-		for _, a := range actors[i].Aliases {
-			if a == oldName {
-				exists = true
-				break
-			}
-		}
-		if !exists {
-			actors[i].Aliases = append(actors[i].Aliases, oldName)
-		}
-		actors[i].Name = zh
 	}
 	return actors, warnings
 }
