@@ -18,8 +18,6 @@ type Service struct {
 	DB *gorm.DB
 }
 
-var studioSeparatorRe = regexp.MustCompile(`[^\p{Han}\p{Hiragana}\p{Katakana}\p{Latin}\p{N}]+`)
-
 func NewService(db *gorm.DB) *Service {
 	return &Service{DB: db}
 }
@@ -107,34 +105,10 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	warnings = append(warnings, actorWarnings...)
 
 	// 片商维基翻译
+		// ===== 片商：直接用数据源原始值，不做维基翻译 =====
+	// （best.Studio 已在 mergeResults 里从 JavStash/MetaTube 合并而来）
 	if best.Studio != "" {
-		if zh, err := wikiClient.GetChineseName(best.Studio); err == nil && zh != "" && zh != best.Studio {
-			helpers.AppLogger.Infof("[维基] 片商 %s → %s", best.Studio, zh)
-			best.Studio = zh
-		} else {
-			parts := studioSeparatorRe.Split(best.Studio, -1)
-			var shortName string
-			for _, p := range parts {
-				if strings.TrimSpace(p) != "" {
-					shortName = strings.TrimSpace(p)
-					break
-				}
-			}
-			if shortName != "" && shortName != best.Studio {
-				if zh, err := wikiClient.GetChineseName(shortName); err == nil && zh != "" && zh != shortName {
-					helpers.AppLogger.Infof("[维基] 片商 %s → %s (截取 %s)", best.Studio, zh, shortName)
-					best.Studio = zh
-				} else {
-					msg := fmt.Sprintf("片商 %s 未找到中文译名", best.Studio)
-					helpers.AppLogger.Infof("[维基] %s", msg)
-					warnings = append(warnings, msg)
-				}
-			} else {
-				msg := fmt.Sprintf("片商 %s 未找到中文译名", best.Studio)
-				helpers.AppLogger.Infof("[维基] %s", msg)
-				warnings = append(warnings, msg)
-			}
-		}
+		helpers.AppLogger.Infof("[片商] 使用原始值: %s", best.Studio)
 	}
 
 	// JavDB 评分
