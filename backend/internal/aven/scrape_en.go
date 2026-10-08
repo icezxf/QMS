@@ -205,6 +205,29 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 		}
 	}
 
+	// ===== 打水印 =====
+	wmItems := buildWatermarksN(r, cfg)
+	if len(wmItems) > 0 {
+		helpers.AppLogger.Infof("[欧美水印] 需要打水印 %d 个", len(wmItems))
+		if posterData != nil {
+			if wm, err := avscrape.ApplyWatermark(posterData, wmItems); err == nil {
+				posterData = wm
+				helpers.AppLogger.Infof("[欧美水印] poster 水印完成")
+			} else {
+				warnings = append(warnings, fmt.Sprintf("poster 水印失败: %v", err))
+			}
+		}
+		if fanartData != nil {
+			if wm, err := avscrape.ApplyWatermark(fanartData, wmItems); err == nil {
+				fanartData = wm
+				helpers.AppLogger.Infof("[欧美水印] fanart 水印完成")
+			} else {
+				warnings = append(warnings, fmt.Sprintf("fanart 水印失败: %v", err))
+			}
+		}
+	}
+	// ==================
+
 	// ===== 写 poster =====
 	if posterData != nil {
 		p := filepath.Join(tmpDir, "poster.jpg")
@@ -441,4 +464,43 @@ func resolutionSuffix(res string) string {
 		return "-4K"
 	}
 	return ""
+}
+
+// ============================================================
+// 水印判定（欧美版，复用 avscrape.ApplyWatermark）
+// ============================================================
+
+// buildWatermarksN 欧美水印判定（逻辑与日本 AV 一致，但用 aven.Config）
+func buildWatermarksN(r *avscrape.ScrapeResult, cfg *Config) []avscrape.WatermarkItem {
+	var items []avscrape.WatermarkItem
+
+	allTags := append([]string{}, r.Genres...)
+	allTags = append(allTags, r.ExtraTags...)
+	joined := strings.ToLower(strings.Join(allTags, ","))
+
+	if cfg.Watermark8K && (strings.Contains(joined, "8k") || r.Resolution == "8K") {
+		items = append(items, avscrape.WatermarkItem{PngName: "8k.png", Label: "8K"})
+	} else if cfg.Watermark7K && (strings.Contains(joined, "7k") || r.Resolution == "7K") {
+		items = append(items, avscrape.WatermarkItem{PngName: "7k.png", Label: "7K"})
+	} else if cfg.Watermark6K && (strings.Contains(joined, "6k") || r.Resolution == "6K") {
+		items = append(items, avscrape.WatermarkItem{PngName: "6k.png", Label: "6K"})
+	} else if cfg.Watermark5K && (strings.Contains(joined, "5k") || r.Resolution == "5K") {
+		items = append(items, avscrape.WatermarkItem{PngName: "5k.png", Label: "5K"})
+	} else if cfg.Watermark4K && (strings.Contains(joined, "4k") || r.Resolution == "4K") {
+		items = append(items, avscrape.WatermarkItem{PngName: "4k.png", Label: "4K"})
+	}
+
+	if cfg.WatermarkSubtitle && (r.HasChineseSub || strings.Contains(joined, "字幕") || strings.Contains(joined, "中字")) {
+		items = append(items, avscrape.WatermarkItem{PngName: "字幕.png", Label: "字幕"})
+	}
+	if cfg.WatermarkCrack && strings.Contains(joined, "破解") {
+		items = append(items, avscrape.WatermarkItem{PngName: "破解.png", Label: "破解"})
+	}
+	if cfg.WatermarkLeak && strings.Contains(joined, "流出") {
+		items = append(items, avscrape.WatermarkItem{PngName: "流出.png", Label: "流出"})
+	}
+	if cfg.WatermarkUncensored && (r.IsUncensored || strings.Contains(joined, "无码")) {
+		items = append(items, avscrape.WatermarkItem{PngName: "无码.png", Label: "无码"})
+	}
+	return items
 }
