@@ -228,7 +228,7 @@ func (c *StashDBClient) FindSceneByOshash(oshash string) (*StashScene, error) {
 	}`, sceneFields)
 
 	variables := map[string]interface{}{
-		"fps": [][][]map[string]string{
+		"fps": [][]map[string]string{
 			{
 				{
 					"hash":      oshash,
