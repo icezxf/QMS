@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"qmediasync/internal/avscrape"
@@ -13,6 +14,41 @@ import (
 
 	"gorm.io/gorm"
 )
+
+// ===== 扫描过滤器：只处理指定 oshash =====
+var (
+	scanFilterNMu       sync.Mutex
+	scanFilterNOshashes map[string]bool
+)
+
+func SetScanFilterN(oshashes []string) {
+	scanFilterNMu.Lock()
+	defer scanFilterNMu.Unlock()
+	if len(oshashes) == 0 {
+		scanFilterNOshashes = nil
+		return
+	}
+	scanFilterNOshashes = make(map[string]bool, len(oshashes))
+	for _, c := range oshashes {
+		scanFilterNOshashes[c] = true
+	}
+}
+
+func shouldProcessOshash(oshash string) bool {
+	scanFilterNMu.Lock()
+	defer scanFilterNMu.Unlock()
+	if len(scanFilterNOshashes) == 0 {
+		return true
+	}
+	return scanFilterNOshashes[oshash]
+}
+
+func clearScanFilterN() {
+	scanFilterNMu.Lock()
+	defer scanFilterNMu.Unlock()
+	scanFilterNOshashes = nil
+}
+// ==========================================
 
 type ScannerEN struct {
 	DB  *gorm.DB
@@ -31,6 +67,9 @@ func (s *ScannerEN) Scan(pathID uint) error {
 	if !path.Enable {
 		return fmt.Errorf("目录未启用: %d", pathID)
 	}
+
+	// 扫描开始时读取 filter，结束后清空
+	defer clearScanFilterN()
 
 	// 用临时 AVPath 创建文件系统（复用 avscrape 的 FS）
 	tempAVPath := &models.AVPath{
@@ -80,6 +119,14 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 	// 2. 探测 osHash + 刮削
 	headers := map[string]string{}
 	result, oshash, err := s.Svc.ScrapeByURL(videoURL, headers)
+
+	// ===== filter 检查：如果 filter 存在且不匹配，跳过 =====
+	if oshash != "" && !shouldProcessOshash(oshash) {
+		helpers.AppLogger.Infof("[欧美扫描] %s 不在本次过滤范围内，跳过", oshash)
+		return nil
+	}
+	// =====================================================
+
 	if err != nil {
 		if oshash == "" {
 			oshash = computeOshashFromName(fileName)
