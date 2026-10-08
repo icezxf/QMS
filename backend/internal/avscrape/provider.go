@@ -9,6 +9,9 @@ type Actor struct {
 	Country  string   `json:"country,omitempty"`
 	Height   int      `json:"height,omitempty"`
 	Image    string   `json:"image,omitempty"`
+	// ===== 改动 1：新增性别字段（欧美用：FEMALE / MALE）=====
+	Gender string `json:"gender,omitempty"`
+	// =====================================================
 }
 
 type ScrapeResult struct {
@@ -16,6 +19,9 @@ type ScrapeResult struct {
 	Title         string   `json:"title"`
 	OriginalTitle string   `json:"original_title"`
 	Plot          string   `json:"plot"`
+	// ===== 改动 2：新增简介原文字段（欧美翻译前后对比用）=====
+	PlotOriginal string `json:"plot_original,omitempty"`
+	// =====================================================
 	Runtime       int      `json:"runtime"`
 	ReleaseDate   string   `json:"release_date"`
 	Director      string   `json:"director"`
