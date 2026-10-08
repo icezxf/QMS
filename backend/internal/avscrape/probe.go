@@ -287,6 +287,13 @@ func computeOshash(head, tail []byte, fileSize int64) string {
 	return fmt.Sprintf("%016x", hash)
 }
 
+// ===== 新增：导出给 aven 包用 =====
+// ComputeOshash 计算 osHash（头尾各 64KB，起始值 = fileSize）
+func ComputeOshash(head, tail []byte, fileSize int64) string {
+	return computeOshash(head, tail, fileSize)
+}
+// =================================
+
 func redactURL(raw string) string {
 	if len(raw) > 200 {
 		return raw[:200] + "..."
@@ -381,7 +388,7 @@ func probeVideoLocal(videoURL string) (*probeResult, error) {
 
 // ============================================================
 // probeVideo 统一入口
-// 优先走方案 1（ffprobe 直读 URL，接近原版），失败回退到方案 2（下载 2MB 本地读）
+// 优先走方案 1（ffprobe 直读 URL），失败回退到方案 2（下载 2MB 本地读）
 // ============================================================
 func probeVideo(videoURL string) (*probeResult, error) {
 	if videoURL == "" {
