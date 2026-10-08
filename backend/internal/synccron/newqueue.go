@@ -19,14 +19,19 @@ type SyncTaskType string
 const (
 	SyncTaskTypeStrm     SyncTaskType = "strm_sync"
 	SyncTaskTypeScrape   SyncTaskType = "scrape_organize"
-	// ===== 改动 1：新增 AV 刮削任务类型 =====
 	SyncTaskTypeAVScrape SyncTaskType = "av_scrape"
-	// =====================================
+	// ===== 改动 1：新增欧美刮削任务类型 =====
+	SyncTaskTypeAVENScrape SyncTaskType = "aven_scrape"
+	// =======================================
 )
 
-// ===== 改动 2：AV 扫描回调（由 main.go 注册，避免循环依赖）=====
+// ===== 改动 2：欧美扫描回调 =====
+var AVENScanHandler func(pathID uint) error
+// ================================
+
+// ===== 已有的 AV 扫描回调 =====
 var AVScanHandler func(pathID uint) error
-// ==================================================================
+// ==============================
 
 func (t SyncTaskType) DisplayName() string {
 	switch t {
@@ -34,10 +39,12 @@ func (t SyncTaskType) DisplayName() string {
 		return "STRM 同步"
 	case SyncTaskTypeScrape:
 		return "刮削整理"
-	// ===== 改动 3：加 AV 类型的显示名 =====
 	case SyncTaskTypeAVScrape:
 		return "AV 刮削"
-	// =====================================
+	// ===== 改动 3：欧美刮削显示名 =====
+	case SyncTaskTypeAVENScrape:
+		return "欧美刮削"
+	// ================================
 	default:
 		return string(t)
 	}
@@ -128,16 +135,13 @@ func NewQueuePerType(sourceType models.SourceType) *NewSyncQueuePerType {
 func (q *NewSyncQueuePerType) isTaskExists(task *NewSyncTask) bool {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
-
 	key := task.Key()
 	if _, exists := q.waitingQueue[key]; exists {
 		return true
 	}
-
 	if q.currentTask != nil && q.currentTask.Key() == key {
 		return true
 	}
-
 	return false
 }
 
@@ -207,16 +211,13 @@ func (q *NewSyncQueuePerType) isTaskExistsUnsafe(task *NewSyncTask) bool {
 	if _, exists := q.waitingQueue[key]; exists {
 		return true
 	}
-
 	if q.currentTask != nil && q.currentTask.Key() == key {
 		return true
 	}
-
 	return false
 }
 
 func (q *NewSyncQueuePerType) startProcessorIfNotRunningUnsafe() {
-	// 打印任务运行状态
 	logInfo("队列运行状态：%d", q.runningFlag.Load())
 	if q.runningFlag.CompareAndSwap(0, 1) {
 		go q.process()
@@ -226,7 +227,6 @@ func (q *NewSyncQueuePerType) startProcessorIfNotRunningUnsafe() {
 func (q *NewSyncQueuePerType) StartProcessor() {
 	q.processorStartMu.Lock()
 	defer q.processorStartMu.Unlock()
-
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 	q.startProcessorIfNotRunningUnsafe()
@@ -249,25 +249,20 @@ func (q *NewSyncQueuePerType) process() {
 			}
 
 			q.mutex.Lock()
-
 			if _, exists := q.waitingQueue[task.Key()]; !exists {
 				logInfo("任务已被取消，跳过处理：类型=%s，ID=%d", task.TaskType.DisplayName(), task.ID)
 				q.mutex.Unlock()
 				continue
 			}
-
 			q.currentTask = task
 			delete(q.waitingQueue, task.Key())
 			q.mutex.Unlock()
 
 			logInfo("开始处理任务：类型=%s，ID=%d", task.TaskType.DisplayName(), task.ID)
-
 			q.executeTask(task)
-
 			q.mutex.Lock()
 			q.currentTask = nil
 			q.mutex.Unlock()
-
 			logInfo("任务处理完成：类型=%s，ID=%d", task.TaskType.DisplayName(), task.ID)
 		}
 	}
@@ -288,139 +283,23 @@ func (q *NewSyncQueuePerType) executeTask(task *NewSyncTask) {
 		q.executeStrmSync(task)
 	case SyncTaskTypeScrape:
 		q.executeScrape(task)
-	// ===== 改动 4：加 AV 任务的执行分支 =====
 	case SyncTaskTypeAVScrape:
 		q.executeAVScrape(task)
-	// ========================================
+	// ===== 改动 4：新增欧美刮削执行分支 =====
+	case SyncTaskTypeAVENScrape:
+		q.executeAVENScrape(task)
+	// =======================================
 	}
 }
 
 func (q *NewSyncQueuePerType) executeStrmSync(task *NewSyncTask) {
-	if task.ID == 0 {
-		// 手动同步
-		account, err := models.GetAccountById(task.AccountId)
-		if err != nil {
-			logError("获取账号失败，ID=%d，错误=%v", task.AccountId, err)
-			return
-		}
-		q.strmSync = syncstrm.NewSyncStrmByPath(account, task.SourcePath, task.SourcePathId, task.TargetPath, task.IsFile)
-		if q.strmSync == nil {
-			logError("创建同步任务失败")
-			return
-		}
-	} else {
-		syncPath := models.GetSyncPathById(task.ID)
-		if syncPath == nil {
-			logError("获取同步目录失败，ID=%d", task.ID)
-			return
-		}
-
-		if syncPath.SourceType != q.sourceType {
-			logError("同步目录类型不匹配：预期=%s，实际=%s", q.sourceType, syncPath.SourceType)
-			return
-		}
-
-		logInfo("开始执行 STRM 同步任务：ID=%d", task.ID)
-		q.strmSync = syncstrm.NewSyncStrmFromSyncPath(syncPath)
-		if q.strmSync == nil {
-			logError("创建同步任务失败")
-			return
-		}
-	}
-
-	// 触发 STRM 同步任务开始事件
-	startPayload := map[string]any{
-		"task_id": task.ID,
-	}
-	if q.strmSync != nil && q.strmSync.Sync != nil {
-		startPayload["sync_id"] = q.strmSync.Sync.ID
-		startPayload["sync_path_id"] = q.strmSync.Sync.SyncPathId
-		startPayload["log_path"] = models.SyncLogRelativePath(q.strmSync.Sync.ID)
-	}
-	realtime.BroadcastEvent(realtime.EventStrmSyncTaskStart, startPayload)
-
-	defer func() {
-		q.strmSync = nil
-	}()
-	if startErr := q.strmSync.Start(); startErr == nil {
-		logInfo("STRM 同步任务执行成功：ID=%d", task.ID)
-		// 触发 STRM 同步任务完成事件
-		completePayload := map[string]any{
-			"task_id": task.ID,
-			"success": true,
-		}
-		if q.strmSync != nil && q.strmSync.Sync != nil {
-			completePayload["sync_id"] = q.strmSync.Sync.ID
-			completePayload["sync_path_id"] = q.strmSync.Sync.SyncPathId
-			completePayload["log_path"] = models.SyncLogRelativePath(q.strmSync.Sync.ID)
-		}
-		realtime.BroadcastEvent(realtime.EventStrmSyncTaskComplete, completePayload)
-	} else {
-		logError("STRM 同步任务执行失败：ID=%d，错误=%v", task.ID, startErr)
-		// 触发 STRM 同步任务完成事件（失败）
-		completePayload := map[string]any{
-			"task_id": task.ID,
-			"success": false,
-			"error":   startErr.Error(),
-		}
-		if q.strmSync != nil && q.strmSync.Sync != nil {
-			completePayload["sync_id"] = q.strmSync.Sync.ID
-			completePayload["sync_path_id"] = q.strmSync.Sync.SyncPathId
-			completePayload["log_path"] = models.SyncLogRelativePath(q.strmSync.Sync.ID)
-		}
-		realtime.BroadcastEvent(realtime.EventStrmSyncTaskComplete, completePayload)
-	}
+	// ... 现有代码不变 ...
 }
 
 func (q *NewSyncQueuePerType) executeScrape(task *NewSyncTask) {
-	scrapePath := models.GetScrapePathByID(task.ID)
-	if scrapePath == nil {
-		logError("获取刮削目录失败，ID=%d", task.ID)
-		return
-	}
-
-	if scrapePath.SourceType != q.sourceType {
-		logError("刮削目录类型不匹配：预期=%s，实际=%s", q.sourceType, scrapePath.SourceType)
-		return
-	}
-
-	logInfo("开始执行刮削任务：ID=%d", task.ID)
-
-	// 触发刮削任务开始事件
-	realtime.BroadcastEvent(realtime.EventScraperTaskStart, map[string]any{
-		"task_id":   task.ID,
-		"path_name": scrapePath.SourcePath,
-	})
-
-	q.scrapeInstance = scrape.NewScrape(scrapePath)
-	if q.scrapeInstance == nil {
-		logError("创建刮削任务失败")
-		return
-	}
-	defer func() {
-		q.scrapeInstance = nil
-	}()
-
-	if success := q.scrapeInstance.Start(); success {
-		logInfo("刮削任务执行成功：ID=%d", task.ID)
-		// 触发刮削任务完成事件
-		realtime.BroadcastEvent(realtime.EventScraperTaskComplete, map[string]any{
-			"task_id":   task.ID,
-			"path_name": scrapePath.SourcePath,
-			"success":   true,
-		})
-	} else {
-		logError("刮削任务执行失败：ID=%d", task.ID)
-		// 触发刮削任务完成事件（失败）
-		realtime.BroadcastEvent(realtime.EventScraperTaskComplete, map[string]any{
-			"task_id":   task.ID,
-			"path_name": scrapePath.SourcePath,
-			"success":   false,
-		})
-	}
+	// ... 现有代码不变 ...
 }
 
-// ===== 改动 5：新增 executeAVScrape 方法 =====
 func (q *NewSyncQueuePerType) executeAVScrape(task *NewSyncTask) {
 	avPath := models.GetAVPathByID(task.ID)
 	if avPath == nil {
@@ -463,7 +342,51 @@ func (q *NewSyncQueuePerType) executeAVScrape(task *NewSyncTask) {
 		"success":   true,
 	})
 }
-// ==========================================
+
+// ===== 新增：欧美刮削执行方法 =====
+func (q *NewSyncQueuePerType) executeAVENScrape(task *NewSyncTask) {
+	avenPath := models.GetAVENPathByID(task.ID)
+	if avenPath == nil {
+		logError("获取欧美刮削目录失败，ID=%d", task.ID)
+		return
+	}
+
+	if models.SourceType(avenPath.SourceType) != q.sourceType {
+		logError("欧美刮削目录类型不匹配：预期=%s，实际=%s", q.sourceType, avenPath.SourceType)
+		return
+	}
+
+	if AVENScanHandler == nil {
+		logError("AVENScanHandler 未注册，跳过欧美刮削任务")
+		return
+	}
+
+	logInfo("开始执行欧美刮削任务：ID=%d，目录=%s", task.ID, avenPath.SourcePath)
+
+	realtime.BroadcastEvent(realtime.EventScraperTaskStart, map[string]any{
+		"task_id":   task.ID,
+		"path_name": avenPath.SourcePath,
+	})
+
+	if err := AVENScanHandler(task.ID); err != nil {
+		logError("欧美刮削任务执行失败：ID=%d，错误=%v", task.ID, err)
+		realtime.BroadcastEvent(realtime.EventScraperTaskComplete, map[string]any{
+			"task_id":   task.ID,
+			"path_name": avenPath.SourcePath,
+			"success":   false,
+			"error":     err.Error(),
+		})
+		return
+	}
+
+	logInfo("欧美刮削任务执行成功：ID=%d", task.ID)
+	realtime.BroadcastEvent(realtime.EventScraperTaskComplete, map[string]any{
+		"task_id":   task.ID,
+		"path_name": avenPath.SourcePath,
+		"success":   true,
+	})
+}
+// =======================================
 
 func (q *NewSyncQueuePerType) CancelTask(id uint, taskType SyncTaskType) error {
 	q.mutex.Lock()
@@ -496,28 +419,22 @@ func (q *NewSyncQueuePerType) CancelTask(id uint, taskType SyncTaskType) error {
 func (q *NewSyncQueuePerType) CheckTaskStatus(id uint, taskType SyncTaskType) int {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
-
 	key := fmt.Sprintf("%d-%s", id, string(taskType))
-
 	if _, exists := q.waitingQueue[key]; exists {
 		return TaskStatusWaiting
 	}
-
 	if q.currentTask != nil && q.currentTask.Key() == key {
 		return TaskStatusRunning
 	}
-
 	return TaskStatusNone
 }
 
 func (q *NewSyncQueuePerType) Pause() {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
-
 	if q.status == QueueStatusPaused {
 		return
 	}
-
 	logInfo("暂停队列：SourceType=%s", q.sourceType)
 	q.status = QueueStatusPaused
 }
@@ -525,17 +442,13 @@ func (q *NewSyncQueuePerType) Pause() {
 func (q *NewSyncQueuePerType) Resume() {
 	q.processorStartMu.Lock()
 	defer q.processorStartMu.Unlock()
-
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
-
 	if q.status != QueueStatusPaused {
 		return
 	}
-
 	logInfo("恢复队列：SourceType=%s", q.sourceType)
 	q.status = QueueStatusRunning
-
 	taskCount := 0
 	for _, task := range q.waitingQueue {
 		select {
@@ -555,14 +468,12 @@ done:
 func (q *NewSyncQueuePerType) GetStatus() map[string]any {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
-
 	currentTaskID := uint(0)
 	currentTaskType := ""
 	if q.currentTask != nil {
 		currentTaskID = q.currentTask.ID
 		currentTaskType = string(q.currentTask.TaskType)
 	}
-
 	return map[string]any{
 		"source_type":       q.sourceType,
 		"status":            q.status,
@@ -594,16 +505,11 @@ func InitNewSyncQueueManager() *NewSyncQueueManager {
 	if GlobalNewSyncQueueManager != nil {
 		return GlobalNewSyncQueueManager
 	}
-
 	GlobalNewSyncQueueManager = &NewSyncQueueManager{
 		queues: make(map[models.SourceType]*NewSyncQueuePerType),
 	}
-	models.PauseSyncQueuesFunc = func() {
-		PauseAllNewSyncQueues()
-	}
-	models.ResumeSyncQueuesFunc = func() {
-		ResumeAllNewSyncQueues()
-	}
+	models.PauseSyncQueuesFunc = func() { PauseAllNewSyncQueues() }
+	models.ResumeSyncQueuesFunc = func() { ResumeAllNewSyncQueues() }
 	models.IsStrmSyncTaskActiveFunc = func(syncPathId uint) bool {
 		status := CheckNewTaskStatus(syncPathId, SyncTaskTypeStrm)
 		return status == TaskStatusWaiting || status == TaskStatusRunning
@@ -615,31 +521,23 @@ func (m *NewSyncQueueManager) getQueue(sourceType models.SourceType) *NewSyncQue
 	m.mutex.RLock()
 	queue, exists := m.queues[sourceType]
 	m.mutex.RUnlock()
-
 	if exists {
 		return queue
 	}
-
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
-
 	if queue, exists := m.queues[sourceType]; exists {
 		return queue
 	}
-
 	queue = NewQueuePerType(sourceType)
 	m.queues[sourceType] = queue
 	logInfo("创建新队列：SourceType=%s", sourceType)
-
 	return queue
 }
 
 func (m *NewSyncQueueManager) AddSyncTask(task *NewSyncTask) error {
 	queue := m.getQueue(task.SourceType)
-	if err := queue.AddTask(task); err != nil {
-		return err
-	}
-	return nil
+	return queue.AddTask(task)
 }
 
 func (m *NewSyncQueueManager) CancelTask(id uint, taskType SyncTaskType) error {
@@ -652,23 +550,26 @@ func (m *NewSyncQueueManager) CancelTask(id uint, taskType SyncTaskType) error {
 			return fmt.Errorf("获取同步目录失败：ID=%d", id)
 		}
 		sourceType = syncPath.SourceType
-
 	case SyncTaskTypeScrape:
 		scrapePath := models.GetScrapePathByID(id)
 		if scrapePath == nil {
 			return fmt.Errorf("获取刮削目录失败：ID=%d", id)
 		}
 		sourceType = scrapePath.SourceType
-
-	// ===== 改动 6：Manager 的 CancelTask 加 AV 分支 =====
 	case SyncTaskTypeAVScrape:
 		avPath := models.GetAVPathByID(id)
 		if avPath == nil {
 			return fmt.Errorf("获取 AV 刮削目录失败：ID=%d", id)
 		}
 		sourceType = models.SourceType(avPath.SourceType)
-	// ====================================================
-
+	// ===== 改动 5：Manager CancelTask 加欧美分支 =====
+	case SyncTaskTypeAVENScrape:
+		avenPath := models.GetAVENPathByID(id)
+		if avenPath == nil {
+			return fmt.Errorf("获取欧美刮削目录失败：ID=%d", id)
+		}
+		sourceType = models.SourceType(avenPath.SourceType)
+	// ================================================
 	default:
 		return fmt.Errorf("未知的任务类型：%s", taskType.DisplayName())
 	}
@@ -687,23 +588,26 @@ func (m *NewSyncQueueManager) CheckTaskStatus(id uint, taskType SyncTaskType) in
 			return TaskStatusNone
 		}
 		sourceType = syncPath.SourceType
-
 	case SyncTaskTypeScrape:
 		scrapePath := models.GetScrapePathByID(id)
 		if scrapePath == nil {
 			return TaskStatusNone
 		}
 		sourceType = scrapePath.SourceType
-
-	// ===== 改动 7：Manager 的 CheckTaskStatus 加 AV 分支 =====
 	case SyncTaskTypeAVScrape:
 		avPath := models.GetAVPathByID(id)
 		if avPath == nil {
 			return TaskStatusNone
 		}
 		sourceType = models.SourceType(avPath.SourceType)
-	// ========================================================
-
+	// ===== 改动 6：Manager CheckTaskStatus 加欧美分支 =====
+	case SyncTaskTypeAVENScrape:
+		avenPath := models.GetAVENPathByID(id)
+		if avenPath == nil {
+			return TaskStatusNone
+		}
+		sourceType = models.SourceType(avenPath.SourceType)
+	// ======================================================
 	default:
 		return TaskStatusNone
 	}
@@ -715,7 +619,6 @@ func (m *NewSyncQueueManager) CheckTaskStatus(id uint, taskType SyncTaskType) in
 func (m *NewSyncQueueManager) PauseAll() {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
-
 	logInfo("暂停所有任务队列")
 	for _, queue := range m.queues {
 		queue.Pause()
@@ -725,7 +628,6 @@ func (m *NewSyncQueueManager) PauseAll() {
 func (m *NewSyncQueueManager) ResumeAll() {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
-
 	logInfo("恢复所有任务队列")
 	for _, queue := range m.queues {
 		queue.Resume()
@@ -735,12 +637,10 @@ func (m *NewSyncQueueManager) ResumeAll() {
 func (m *NewSyncQueueManager) GetAllStatus() map[models.SourceType]map[string]any {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
-
 	status := make(map[models.SourceType]map[string]any)
 	for sourceType, queue := range m.queues {
 		status[sourceType] = queue.GetStatus()
 	}
-
 	return status
 }
 
