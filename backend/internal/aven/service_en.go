@@ -14,34 +14,44 @@ import (
 )
 
 type ServiceEN struct {
-	DB      *gorm.DB
-	StashDB *StashDBClient
-	Config  *Config
+	DB *gorm.DB
 }
 
 func NewServiceEN(db *gorm.DB) *ServiceEN {
-	cfg, err := LoadConfig(db)
-	if err != nil || cfg == nil {
-		def := defaultConfig
-		cfg = &def
-	}
-	var stashDB *StashDBClient
-	if cfg.EnableStashDB && cfg.StashDBAPIKey != "" {
-		stashDB = NewStashDBClient(cfg.StashDBEndpoint, cfg.StashDBAPIKey)
-	}
-	return &ServiceEN{
-		DB:      db,
-		StashDB: stashDB,
-		Config:  cfg,
-	}
+	return &ServiceEN{DB: db}
 }
 
+// ===== 懒加载：db 为 nil 时返回默认配置，避免测试崩溃 =====
+func (s *ServiceEN) GetConfig() *Config {
+	if s.DB == nil {
+		def := defaultConfig
+		return &def
+	}
+	cfg, err := LoadConfig(s.DB)
+	if err != nil || cfg == nil {
+		def := defaultConfig
+		return &def
+	}
+	return cfg
+}
+
+func (s *ServiceEN) GetStashDB() *StashDBClient {
+	cfg := s.GetConfig()
+	if !cfg.EnableStashDB || cfg.StashDBAPIKey == "" {
+		return nil
+	}
+	return NewStashDBClient(cfg.StashDBEndpoint, cfg.StashDBAPIKey)
+}
+// ==========================================================
+
 // ScrapeByURL 通过视频 URL 刮削
-// 返回 (ScrapeResult, oshash, error)
 func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*avscrape.ScrapeResult, string, error) {
-	if s.StashDB == nil {
+	stashDB := s.GetStashDB()
+	if stashDB == nil {
 		return nil, "", fmt.Errorf("StashDB 未配置或 API Key 为空")
 	}
+
+	cfg := s.GetConfig()
 
 	// 1. 探测 osHash + 分辨率/HDR
 	pr, err := ProbeVideoByURL(videoURL, headers)
@@ -53,7 +63,7 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 	}
 
 	// 2. 查 StashDB
-	scene, err := s.StashDB.FindSceneByOshash(pr.Oshash)
+	scene, err := stashDB.FindSceneByOshash(pr.Oshash)
 	if err != nil {
 		return nil, pr.Oshash, fmt.Errorf("查询 StashDB 失败: %w", err)
 	}
@@ -67,42 +77,40 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 	r.FileSize = pr.FileSize
 	r.Resolution = pr.Resolution
 	r.IsHDR = pr.IsHDR
-	r.ExtraTags = buildExtraTagsN(r, s.Config)
+	r.ExtraTags = buildExtraTagsN(r, cfg)
 
 	// 4. 翻译
 	var warnings []string
-	if s.Config.EnableTranslate {
-		tr := avscrape.NewTranslator(s.Config.TranslateEngine, s.Config.TranslateTarget)
+	if cfg.EnableTranslate {
+		tr := avscrape.NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.SourceLang = "en"
-		tr.DeepLKey = s.Config.TranslateDeepLKey
-		tr.BingKey = s.Config.TranslateBingKey
-		tr.BingRegion = s.Config.TranslateBingRegion
-		tr.GeminiKey = s.Config.TranslateGeminiKey
-		tr.GeminiModel = s.Config.TranslateGeminiModel
-		tr.GoogleAPIKey = s.Config.GoogleTranslateAPIKey
-		tr.GoogleTranslateForTags = s.Config.GoogleTranslateForTags
-		tr.GoogleTranslateForAll = s.Config.GoogleTranslateForAll
+		tr.DeepLKey = cfg.TranslateDeepLKey
+		tr.BingKey = cfg.TranslateBingKey
+		tr.BingRegion = cfg.TranslateBingRegion
+		tr.GeminiKey = cfg.TranslateGeminiKey
+		tr.GeminiModel = cfg.TranslateGeminiModel
+		tr.GoogleAPIKey = cfg.GoogleTranslateAPIKey
+		tr.GoogleTranslateForTags = cfg.GoogleTranslateForTags
+		tr.GoogleTranslateForAll = cfg.GoogleTranslateForAll
 
-		helpers.AppLogger.Infof("[欧美翻译] 开始翻译 (engine=%s)", s.Config.TranslateEngine)
-		warnings = append(warnings, s.translateResultN(tr, r)...)
+		helpers.AppLogger.Infof("[欧美翻译] 开始翻译 (engine=%s)", cfg.TranslateEngine)
+		warnings = append(warnings, s.translateResultN(tr, r, cfg)...)
 	}
 
 	r.Warnings = warnings
 	return r, pr.Oshash, nil
 }
 
-// translateResultN 欧美翻译：标题/简介/标签
-func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.ScrapeResult) []string {
+// translateResultN 欧美翻译
+func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.ScrapeResult, cfg *Config) []string {
 	var warnings []string
 	if r == nil {
 		return warnings
 	}
 
-	// 保存简介原文
 	r.PlotOriginal = r.Plot
 
-	// 标题
-	if s.Config.TranslateTitle && r.Title != "" {
+	if cfg.TranslateTitle && r.Title != "" {
 		if t, err := tr.Translate(r.Title); err == nil && t != "" && t != r.Title {
 			old := r.Title
 			r.Title = t
@@ -112,8 +120,7 @@ func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.Scrape
 		}
 	}
 
-	// 简介
-	if s.Config.TranslatePlot && r.Plot != "" {
+	if cfg.TranslatePlot && r.Plot != "" {
 		if t, err := tr.Translate(r.Plot); err == nil && t != "" {
 			r.Plot = t
 			helpers.AppLogger.Infof("[欧美翻译] 简介: %s", truncate(t, 50))
@@ -122,8 +129,7 @@ func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.Scrape
 		}
 	}
 
-	// 标签
-	if s.Config.TranslateTags {
+	if cfg.TranslateTags {
 		for i, g := range r.Genres {
 			if t, err := tr.Translate(g); err == nil && t != "" && t != g {
 				r.Genres[i] = t
@@ -144,7 +150,6 @@ func buildExtraTagsN(r *avscrape.ScrapeResult, cfg *Config) []string {
 		}
 	}
 	if cfg.ExtraTagUncensored {
-		// 欧美默认无码
 		tags = append(tags, "无码")
 	}
 	if cfg.ExtraTagChineseSub && r.HasChineseSub {
@@ -153,9 +158,7 @@ func buildExtraTagsN(r *avscrape.ScrapeResult, cfg *Config) []string {
 	return tags
 }
 
-// ============================================================
-// 暂停操作
-// ============================================================
+// ===== 暂停操作 =====
 
 func (s *ServiceEN) ReleaseMedia(id uint) error {
 	media := models.GetAVENMediaByID(id)
@@ -245,5 +248,4 @@ func (s *ServiceEN) GetMedia(id uint) (*models.AVENMedia, error) {
 	return &m, err
 }
 
-// 保留占位，防止 unused
 var _ = strings.TrimSpace
