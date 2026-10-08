@@ -45,6 +45,9 @@ func (s *ServiceEN) GetStashDB() *StashDBClient {
 // ==========================================================
 
 // ScrapeByURL 通过视频 URL 刮削
+//
+// headers 由调用方（scanner_en.go）从 FS 层缓存里取好传进来，
+// 内含 115 / OpenList 的 UA，不带会导致直链下载 403。
 func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*avscrape.ScrapeResult, string, error) {
 	stashDB := s.GetStashDB()
 	if stashDB == nil {
