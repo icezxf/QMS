@@ -23,9 +23,9 @@ import (
 // ============================================================
 
 const (
-	oshashChunkSize = 64 * 1024        // 64KB
-	ffprobeHeadSize = 2 * 1024 * 1024  // 2MB
-	oshashTailSize  = 64 * 1024        // 64KB
+	oshashChunkSize = 64 * 1024       // 64KB
+	ffprobeHeadSize = 2 * 1024 * 1024 // 2MB
+	oshashTailSize  = 64 * 1024       // 64KB
 )
 
 type ProbeResult struct {
@@ -36,7 +36,6 @@ type ProbeResult struct {
 }
 
 // ProbeVideoByURL 下载头尾数据，计算 osHash + ffprobe 探测
-// headers 是给 URL 请求用的（115 的 UA 等）
 func ProbeVideoByURL(videoURL string, headers map[string]string) (*ProbeResult, error) {
 	if videoURL == "" {
 		return nil, fmt.Errorf("空 URL")
@@ -49,14 +48,17 @@ func ProbeVideoByURL(videoURL string, headers map[string]string) (*ProbeResult, 
 	}
 
 	// ===== 2. 下载尾部 64KB =====
+	// ===== 改动：downloadRange 返回 3 值，用第三个变量接 error =====
 	var tail []byte
 	if fileSize > oshashTailSize {
-		tail, err = downloadRange(videoURL, fileSize-oshashTailSize, fileSize-1, headers)
-		if err != nil {
-			helpers.AppLogger.Warnf("[欧美探测] 下载尾部失败: %v", err)
+		var tailErr error
+		tail, _, tailErr = downloadRange(videoURL, fileSize-oshashTailSize, fileSize-1, headers)
+		if tailErr != nil {
+			helpers.AppLogger.Warnf("[欧美探测] 下载尾部失败: %v", tailErr)
 			// 尾部失败不致命，osHash 会返回空
 		}
 	}
+	// ==============================================================
 
 	// ===== 3. 算 osHash =====
 	oshash := computeOshash(head, tail, fileSize)
@@ -76,7 +78,7 @@ func ProbeVideoByURL(videoURL string, headers map[string]string) (*ProbeResult, 
 }
 
 // ============================================================
-// 下载指定字节范围
+// 下载指定字节范围（返回 body / fileSize / error）
 // ============================================================
 
 func downloadRange(videoURL string, start, end int64, headers map[string]string) ([]byte, int64, error) {
@@ -123,7 +125,7 @@ func downloadRange(videoURL string, start, end int64, headers map[string]string)
 }
 
 // ============================================================
-// osHash 计算（头尾各 64KB，逐 8 字节小端累加，起始值 = fileSize）
+// osHash 计算
 // ============================================================
 
 func computeOshash(head, tail []byte, fileSize int64) string {
@@ -141,7 +143,7 @@ func computeOshash(head, tail []byte, fileSize int64) string {
 }
 
 // ============================================================
-// ffprobe 探测（临时文件 + 本地 ffprobe）
+// ffprobe 探测
 // ============================================================
 
 func probeFromBuffer(data []byte) (string, bool) {
@@ -214,7 +216,7 @@ func probeFromBuffer(data []byte) (string, bool) {
 }
 
 // ============================================================
-// 分辨率分级（和日本 AV 一致）
+// 分辨率分级
 // ============================================================
 
 func classifyResolution(w, h int) string {
