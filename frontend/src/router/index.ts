@@ -117,7 +117,7 @@ const AppDatabaseRepair = createAsyncRouteComponent(
   () => import('@/components/AppDatabaseRepair.vue'),
 )
 
-// ===== 改动 1：AV 刮削组件 =====
+// ===== AV 刮削组件 =====
 const AppAvLibrary = createAsyncRouteComponent(
   'AppAvLibrary',
   () => import('@/components/AppAvLibrary.vue'),
@@ -139,6 +139,29 @@ const AppAvConfig = createAsyncRouteComponent(
   () => import('@/components/AppAvConfig.vue'),
 )
 // =================================
+
+// ===== 改动 1：欧美刮削组件 =====
+const AppAvenLibrary = createAsyncRouteComponent(
+  'AppAvenLibrary',
+  () => import('@/components/AppAvenLibrary.vue'),
+)
+const AppAvenDetail = createAsyncRouteComponent(
+  'AppAvenDetail',
+  () => import('@/components/AppAvenDetail.vue'),
+)
+const AppAvenPaths = createAsyncRouteComponent(
+  'AppAvenPaths',
+  () => import('@/components/AppAvenPaths.vue'),
+)
+const AppAvenTasks = createAsyncRouteComponent(
+  'AppAvenTasks',
+  () => import('@/components/AppAvenTasks.vue'),
+)
+const AppAvenConfig = createAsyncRouteComponent(
+  'AppAvenConfig',
+  () => import('@/components/AppAvenConfig.vue'),
+)
+// ================================
 
 // 定义路由元信息类型
 declare module 'vue-router' {
@@ -438,7 +461,7 @@ const routes: RouteRecordRaw[] = [
     },
   },
 
-  // ===== 改动 2：AV 刮削路由 =====
+  // ===== AV 刮削路由 =====
   {
     path: '/avscrape',
     name: 'avscrape',
@@ -530,6 +553,104 @@ const routes: RouteRecordRaw[] = [
       },
       requiresAuth: true,
       parent: 'avscrape',
+      icon: 'Setting',
+      showInMenu: true,
+    },
+  },
+  // =================================
+
+  // ===== 改动 2：欧美刮削路由 =====
+  {
+    path: '/aven',
+    name: 'aven',
+    redirect: '/aven/library',
+    meta: {
+      title: '欧美刮削',
+      requiresAuth: true,
+      icon: 'VideoCamera',
+      showInMenu: true,
+    },
+  },
+  {
+    path: '/aven/library',
+    name: 'aven-library',
+    component: AppAvenLibrary,
+    meta: {
+      title: '欧美媒体库',
+      page: {
+        description: '浏览欧美刮削结果',
+        icon: 'Film',
+        variant: 'management',
+      },
+      requiresAuth: true,
+      parent: 'aven',
+      icon: 'Film',
+      showInMenu: true,
+    },
+  },
+  {
+    path: '/aven/library/:id',
+    name: 'aven-detail',
+    component: AppAvenDetail,
+    meta: {
+      title: '欧美详情',
+      page: {
+        description: '查看作品详情',
+        icon: 'Film',
+        variant: 'detail',
+      },
+      requiresAuth: true,
+      parent: 'aven',
+      showInMenu: false,
+    },
+  },
+  {
+    path: '/aven/paths',
+    name: 'aven-paths',
+    component: AppAvenPaths,
+    meta: {
+      title: '欧美刮削目录',
+      page: {
+        description: '管理欧美刮削目录',
+        icon: 'FolderOpened',
+        variant: 'management',
+      },
+      requiresAuth: true,
+      parent: 'aven',
+      icon: 'FolderOpened',
+      showInMenu: true,
+    },
+  },
+  {
+    path: '/aven/tasks',
+    name: 'aven-tasks',
+    component: AppAvenTasks,
+    meta: {
+      title: '欧美任务记录',
+      page: {
+        description: '查看欧美刮削任务执行记录',
+        icon: 'List',
+        variant: 'compact',
+      },
+      requiresAuth: true,
+      parent: 'aven',
+      icon: 'List',
+      showInMenu: true,
+    },
+  },
+  {
+    path: '/aven/config',
+    name: 'aven-config',
+    component: AppAvenConfig,
+    meta: {
+      title: '欧美配置',
+      page: {
+        description: '配置 StashDB、翻译和刮削行为',
+        icon: 'Setting',
+        variant: 'settings',
+      },
+      requiresAuth: true,
+      parent: 'aven',
       icon: 'Setting',
       showInMenu: true,
     },
@@ -842,7 +963,6 @@ const routes: RouteRecordRaw[] = [
       showInMenu: true,
     },
   },
-  // 旧路径重定向：保持外部书签、历史记录和旧文档链接可用
   {
     path: '/proxy',
     redirect: '/settings/proxy',
@@ -851,7 +971,6 @@ const routes: RouteRecordRaw[] = [
     path: '/settings/database-repair',
     redirect: '/database/repair',
   },
-  // 未知路径统一回首页，由首页的 requiresAuth 继续走鉴权守卫
   {
     path: '/:pathMatch(.*)*',
     redirect: '/',
@@ -863,7 +982,6 @@ const router = createRouter({
   routes,
 })
 
-// 路由守卫
 router.beforeEach(async (to) => {
   const authStore = useAuthStore()
 
