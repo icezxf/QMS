@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"qmediasync/internal/avscrape"
-	"qmediasync/internal/helpers"
 )
 
 // SceneToResult 把 StashDB Scene 转成 avscrape.ScrapeResult
