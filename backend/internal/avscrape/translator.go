@@ -16,6 +16,9 @@ import (
 type Translator struct {
 	Engine      string
 	Target      string
+	// ===== 改动 1：新增源语言字段，默认 "ja"（日本），欧美用 "en" =====
+	SourceLang  string
+	// ===================================================================
 	DeepLKey    string
 	BingKey     string
 	BingRegion  string
@@ -34,7 +37,10 @@ func NewTranslator(engine, target string) *Translator {
 	return &Translator{
 		Engine: engine,
 		Target: target,
-		HTTP:   &http.Client{Timeout: 90 * time.Second},
+		// ===== 改动 2：默认日语 =====
+		SourceLang: "ja",
+		// ===========================
+		HTTP: &http.Client{Timeout: 90 * time.Second},
 	}
 }
 
@@ -68,7 +74,7 @@ func (t *Translator) Translate(text string) (string, error) {
 }
 
 // ============================================================
-// Gemini 引擎
+// Gemini 引擎（Interactions API，带重试）
 // ============================================================
 
 type geminiInteractionResp struct {
@@ -154,7 +160,17 @@ func (t *Translator) geminiCall(prompt string) (string, error) {
 }
 
 func (t *Translator) geminiTranslate(text string) (string, error) {
-	prompt := fmt.Sprintf("请把下面的日文翻译成简体中文，只返回翻译结果，不要加任何解释、不要加引号：\n%s", text)
+	// 根据源语言生成 prompt
+	var langName string
+	switch t.SourceLang {
+	case "en":
+		langName = "英文"
+	case "ja", "":
+		langName = "日文"
+	default:
+		langName = "原文"
+	}
+	prompt := fmt.Sprintf("请把下面的%s翻译成简体中文，只返回翻译结果，不要加任何解释、不要加引号：\n%s", langName, text)
 	return t.geminiCall(prompt)
 }
 
@@ -176,11 +192,21 @@ func (t *Translator) geminiTranslateAll(r *ScrapeResult) error {
 	}
 	inputJSON, _ := json.Marshal(input)
 
-	prompt := fmt.Sprintf(`你是一个日文影视元数据翻译助手。请把下面 JSON 中的所有日文内容翻译成简体中文。
+	var langName string
+	switch t.SourceLang {
+	case "en":
+		langName = "英文"
+	case "ja", "":
+		langName = "日文"
+	default:
+		langName = "原文"
+	}
+
+	prompt := fmt.Sprintf(`你是一个%s影视元数据翻译助手。请把下面 JSON 中的所有%s内容翻译成简体中文。
 
 规则：
 1. 如果文本中出现 __ACTOR_数字__ 这样的标记（例如 __ACTOR_0__），必须原样保留，不要翻译、不要修改、不要加空格。
-2. 演员名必须翻译为该演员公认的中文译名（如 "新ありな" → "新有菜"）。如果不确定，就保留日文原名，不要音译。
+2. 演员名必须翻译为该演员公认的中文译名。如果不确定，就保留原文，不要音译。
 3. 标题翻译要自然通顺，保留原意，不要机翻腔。
 4. 剧情简介要完整翻译，不要省略、不要概括。
 5. 标签（genres）要翻译成中文习惯用语。
@@ -189,7 +215,7 @@ func (t *Translator) geminiTranslateAll(r *ScrapeResult) error {
 输入 JSON：
 %s
 
-请直接返回翻译后的 JSON，结构必须和输入完全一致（title/plot/actors/genres 四个字段）。`, string(inputJSON))
+请直接返回翻译后的 JSON，结构必须和输入完全一致（title/plot/actors/genres 四个字段）。`, langName, langName, string(inputJSON))
 
 	raw, err := t.geminiCall(prompt)
 	if err != nil {
@@ -242,7 +268,6 @@ func (t *Translator) geminiTranslateAll(r *ScrapeResult) error {
 
 // ============================================================
 // TranslateResult 统一入口
-// 返回: warnings
 // ============================================================
 
 func (t *Translator) TranslateResult(r *ScrapeResult) []string {
@@ -327,7 +352,9 @@ func (t *Translator) TranslateResult(r *ScrapeResult) []string {
 
 	// ===== 标签翻译 =====
 	for i, g := range r.Genres {
-		if !isJapanese(g) {
+		// 日文场景下：无日文假名跳过
+		// 英文场景下：不跳过（都是英文标签）
+		if t.SourceLang != "en" && !isJapanese(g) {
 			helpers.AppLogger.Infof("[翻译] 标签 %s 无日文假名，跳过翻译", g)
 			continue
 		}
@@ -353,7 +380,7 @@ func (t *Translator) TranslateResult(r *ScrapeResult) []string {
 		}
 	}
 
-	helpers.AppLogger.Infof("[翻译] 演员名保留 wiki 中文名，跳过机翻")
+	helpers.AppLogger.Infof("[翻译] 演员名保留原值，跳过机翻")
 	restore()
 	return warnings
 }
@@ -384,9 +411,16 @@ func (t *Translator) googleCloudTranslate(text string) (string, error) {
 		targetLang = "ja"
 	}
 
+	// ===== 改动 3：源语言从 t.SourceLang 取 =====
+	sourceLang := t.SourceLang
+	if sourceLang == "" {
+		sourceLang = "ja"
+	}
+	// ==========================================
+
 	body := map[string]interface{}{
 		"q":      []string{text},
-		"source": "ja",
+		"source": sourceLang,
 		"target": targetLang,
 		"format": "text",
 	}
@@ -432,7 +466,6 @@ func (t *Translator) googleCloudTranslate(text string) (string, error) {
 	return result, nil
 }
 
-// translateAllWithGoogle 全部内容用 Google 翻译，返回 warnings
 func (t *Translator) translateAllWithGoogle(r *ScrapeResult) []string {
 	var warnings []string
 	if s, err := t.googleCloudTranslate(r.Title); err != nil {
@@ -450,7 +483,7 @@ func (t *Translator) translateAllWithGoogle(r *ScrapeResult) []string {
 	}
 
 	for i, g := range r.Genres {
-		if !isJapanese(g) {
+		if t.SourceLang != "en" && !isJapanese(g) {
 			continue
 		}
 		if s, err := t.googleCloudTranslate(g); err != nil {
@@ -487,8 +520,18 @@ func (t *Translator) deepl(text string) (string, error) {
 		targetLang = "JA"
 	}
 
+	// ===== 改动 4：源语言从 t.SourceLang 取 =====
+	sourceLang := t.SourceLang
+	if sourceLang == "" {
+		sourceLang = "JA"
+	} else {
+		sourceLang = strings.ToUpper(sourceLang)
+	}
+	// ==========================================
+
 	form := url.Values{}
 	form.Set("text", text)
+	form.Set("source_lang", sourceLang)
 	form.Set("target_lang", targetLang)
 
 	req, _ := http.NewRequest("POST", endpoint, strings.NewReader(form.Encode()))
@@ -528,7 +571,15 @@ func (t *Translator) bing(text string) (string, error) {
 	u, _ := url.Parse(endpoint)
 	q := u.Query()
 	q.Set("api-version", "3.0")
-	q.Set("from", "ja")
+
+	// ===== 改动 5：源语言从 t.SourceLang 取 =====
+	sourceLang := t.SourceLang
+	if sourceLang == "" {
+		sourceLang = "ja"
+	}
+	q.Set("from", sourceLang)
+	// ==========================================
+
 	q.Set("to", "zh-Hans")
 	u.RawQuery = q.Encode()
 
@@ -564,6 +615,7 @@ func (t *Translator) bing(text string) (string, error) {
 }
 
 func (t *Translator) googleFree(text string) (string, error) {
+	// googleFree 用 sl=auto 自动检测源语言，不需要 SourceLang
 	u := fmt.Sprintf("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=%s&dt=t&q=%s",
 		t.Target, url.QueryEscape(text))
 	resp, err := t.HTTP.Get(u)
@@ -596,7 +648,12 @@ func (t *Translator) googleFree(text string) (string, error) {
 }
 
 func (t *Translator) myMemory(text string) (string, error) {
-	langPair := "ja|zh-CN"
+	// MyMemory 也支持 langpair 参数，源语言从 t.SourceLang 取
+	src := t.SourceLang
+	if src == "" {
+		src = "ja"
+	}
+	langPair := src + "|zh-CN"
 	u := fmt.Sprintf("https://api.mymemory.translated.net/get?q=%s&langpair=%s",
 		url.QueryEscape(text), url.QueryEscape(langPair))
 	resp, err := t.HTTP.Get(u)
