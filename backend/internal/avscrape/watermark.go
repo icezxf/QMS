@@ -165,3 +165,8 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// ApplyWatermark 给单张图片打水印，供外部包（如 aven）调用。
+func ApplyWatermark(imgData []byte, items []WatermarkItem) ([]byte, error) {
+	return applyWatermark(imgData, items)
+}
