@@ -2,6 +2,7 @@ package aven
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/draw"
