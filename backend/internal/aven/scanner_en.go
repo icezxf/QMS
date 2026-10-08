@@ -50,6 +50,115 @@ func clearScanFilterN() {
 }
 // ==========================================
 
+// ===== 源目录清理：没有 >1G 视频的子目录整个删除 =====
+const (
+	cleanupBigVideoSizeEN      = int64(1) << 30 // 1G
+	cleanupDeleteIntervalEN    = 500 * time.Millisecond
+	cleanupMaxDeletesPerScanEN = 100
+)
+
+var videoExtsN = map[string]bool{
+	".mp4": true, ".mkv": true, ".avi": true, ".wmv": true,
+	".mov": true, ".flv": true, ".ts": true, ".m2ts": true,
+	".iso": true, ".rmvb": true, ".strm": true,
+}
+
+// cleanupSourceDirN 递归清理源目录下的残留子目录
+// 规则：源目录本身保留，源目录下的任意子目录，如果连同所有子目录、
+// 所有文件都没有 >1G 的视频，就整个删除
+func cleanupSourceDirN(fs avscrape.FileSystem, srcDir string) {
+	entries, err := fs.ListDetailed(srcDir)
+	if err != nil {
+		helpers.AppLogger.Warnf("[欧美清理] 列出源目录失败 %s: %v", srcDir, err)
+		return
+	}
+
+	deleted := 0
+	for _, e := range entries {
+		if !e.IsDir {
+			continue
+		}
+		cleanupDirRecursiveN(fs, e.Path, &deleted)
+	}
+
+	if deleted > 0 {
+		helpers.AppLogger.Infof("[欧美清理] 本次共删除 %d 个残留目录", deleted)
+	}
+}
+
+// cleanupDirRecursiveN 后序遍历目录树
+// 返回 true 表示这个目录已经被删掉
+func cleanupDirRecursiveN(fs avscrape.FileSystem, dir string, deleted *int) bool {
+	entries, err := fs.ListDetailed(dir)
+	if err != nil {
+		// 列不出来就不动它，保守
+		return false
+	}
+
+	hasBigVideo := false
+
+	// 1. 先递归处理子目录
+	for _, e := range entries {
+		if !e.IsDir {
+			continue
+		}
+		subRemoved := cleanupDirRecursiveN(fs, e.Path, deleted)
+		if !subRemoved {
+			// 子目录还在，说明里面（含深层）有 >1G 视频
+			hasBigVideo = true
+		}
+	}
+
+	// 2. 再检查当前目录的直接文件
+	if !hasBigVideo {
+		for _, e := range entries {
+			if e.IsDir {
+				continue
+			}
+			if !isVideoNameN(e.Name) {
+				continue
+			}
+			if e.Size > cleanupBigVideoSizeEN {
+				hasBigVideo = true
+				break
+			}
+		}
+	}
+
+	// 还有大视频，保留
+	if hasBigVideo {
+		return false
+	}
+
+	// 达到单次上限就停
+	if *deleted >= cleanupMaxDeletesPerScanEN {
+		helpers.AppLogger.Warnf("[欧美清理] 已达到单次删除上限 %d，跳过 %s",
+			cleanupMaxDeletesPerScanEN, dir)
+		return false
+	}
+
+	// 节流：每次删除之前 sleep，避免连续 Del 请求
+	if *deleted > 0 && cleanupDeleteIntervalEN > 0 {
+		time.Sleep(cleanupDeleteIntervalEN)
+	}
+
+	// 删除整个目录
+	if err := fs.DeleteDir(dir); err != nil {
+		helpers.AppLogger.Warnf("[欧美清理] 删除目录失败 %s: %v", dir, err)
+		return false
+	}
+	*deleted++
+	helpers.AppLogger.Infof("[欧美清理] 已删除残留目录: %s", dir)
+	return true
+}
+
+// isVideoNameN 判断文件名是否视频
+func isVideoNameN(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	return videoExtsN[ext]
+}
+// ==================================================
+
 type ScannerEN struct {
 	DB  *gorm.DB
 	Svc *ServiceEN
@@ -68,10 +177,8 @@ func (s *ScannerEN) Scan(pathID uint) error {
 		return fmt.Errorf("目录未启用: %d", pathID)
 	}
 
-	// 扫描开始时读取 filter，结束后清空
 	defer clearScanFilterN()
 
-	// 用临时 AVPath 创建文件系统（复用 avscrape 的 FS）
 	tempAVPath := &models.AVPath{
 		ID:           path.ID,
 		SourceType:   path.SourceType,
@@ -88,6 +195,11 @@ func (s *ScannerEN) Scan(pathID uint) error {
 		return fmt.Errorf("创建文件系统失败: %w", err)
 	}
 
+	// ===== 扫描前：清理没有 >1G 视频的残留子目录 =====
+	helpers.AppLogger.Infof("[欧美扫描] 开始清理源目录: %s", path.SourcePath)
+	cleanupSourceDirN(fs, path.SourcePath)
+	// =================================================
+
 	// 遍历视频
 	videoFiles, err := walkVideosEN(fs, path.SourcePath, 0)
 	if err != nil {
@@ -102,6 +214,11 @@ func (s *ScannerEN) Scan(pathID uint) error {
 		}
 	}
 
+	// ===== 扫描后：再清理一次（清本轮搬走后的空壳目录）=====
+	helpers.AppLogger.Infof("[欧美扫描] 扫描结束，二次清理源目录: %s", path.SourcePath)
+	cleanupSourceDirN(fs, path.SourcePath)
+	// =====================================================
+
 	s.DB.Model(&path).Update("last_scan_at", time.Now())
 	return nil
 }
@@ -110,14 +227,13 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 	fileName := filepath.Base(videoPath)
 	helpers.AppLogger.Infof("[欧美扫描] 处理: %s", fileName)
 
-	// 1. 拿直链（fs.GetURL 内部会把 115/openlist 的请求头缓存进 avscrape）
+	// 1. 拿直链
 	videoURL, err := fs.GetURL(videoPath)
 	if err != nil {
 		return fmt.Errorf("获取直链失败: %w", err)
 	}
 
-	// ===== 2. 从 avscrape 缓存里取出 115/openlist 的请求头（含 UA）=====
-	// 不带上 UA 会被 115 CDN 拦截返回 403
+	// 2. 从 avscrape 缓存取 header（含 115 UA）
 	headers := map[string]string{}
 	if h := avscrape.GetURLHeader(videoURL); h != nil {
 		for k, vs := range h {
@@ -126,12 +242,10 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 			}
 		}
 	}
-	// ==================================================================
 
 	// 3. 探测 osHash + 刮削
 	result, oshash, err := s.Svc.ScrapeByURL(videoURL, headers)
 
-	// filter 检查：如果 filter 存在且不匹配，跳过
 	if oshash != "" && !shouldProcessOshash(oshash) {
 		helpers.AppLogger.Infof("[欧美扫描] %s 不在本次过滤范围内，跳过", oshash)
 		return nil
@@ -261,7 +375,6 @@ func (s *ScannerEN) recordTask(mediaID uint, oshash, filePath, status, msg strin
 	})
 }
 
-// checkMetadataMissingEN 欧美完整性检查
 func checkMetadataMissingEN(r *avscrape.ScrapeResult) string {
 	if r == nil {
 		return "ScrapeResult 为空"
@@ -291,11 +404,6 @@ func walkVideosEN(fs avscrape.FileSystem, root string, depth int) ([]string, err
 		return nil, err
 	}
 	var videos []string
-	videoExts := map[string]bool{
-		".mp4": true, ".mkv": true, ".avi": true, ".wmv": true,
-		".mov": true, ".flv": true, ".ts": true, ".m2ts": true,
-		".iso": true, ".rmvb": true, ".strm": true,
-	}
 	for _, e := range entries {
 		if e.IsDir {
 			sub, err := walkVideosEN(fs, e.Path, depth+1)
@@ -304,15 +412,13 @@ func walkVideosEN(fs avscrape.FileSystem, root string, depth int) ([]string, err
 			}
 			continue
 		}
-		ext := strings.ToLower(filepath.Ext(e.Name))
-		if videoExts[ext] {
+		if videoExtsN[strings.ToLower(filepath.Ext(e.Name))] {
 			videos = append(videos, e.Path)
 		}
 	}
 	return videos, nil
 }
 
-// 用文件名兜底做一个假 oshash（仅用于记录日志）
 func computeOshashFromName(name string) string {
 	return "nohash-" + sanitizePathN(name)
 }
