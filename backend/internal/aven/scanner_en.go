@@ -153,7 +153,7 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 	if baseName == "" {
 		baseName = sanitizePathN(strings.TrimSuffix(fileName, filepath.Ext(fileName)))
 	}
-	files, prepWarnings, err := PrepareMetaFilesN(baseName, result, s.Svc.Config)
+	files, prepWarnings, err := PrepareMetaFilesN(baseName, result, s.Svc.GetConfig())
 	allWarnings := append([]string{}, result.Warnings...)
 	allWarnings = append(allWarnings, prepWarnings...)
 	if err != nil {
