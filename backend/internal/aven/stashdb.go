@@ -26,7 +26,6 @@ type StashDBClient struct {
 	lastReq time.Time
 }
 
-// 限速间隔（StashDB 官方建议约 1 请求/秒，避免被限流）
 const stashDBMinInterval = 1200 * time.Millisecond
 
 func NewStashDBClient(endpoint, apiKey string) *StashDBClient {
@@ -41,31 +40,30 @@ func NewStashDBClient(endpoint, apiKey string) *StashDBClient {
 }
 
 // ============================================================
-// StashDB 数据结构
+// 数据结构（严格对应 StashDB schema）
 // ============================================================
 
 type StashScene struct {
-	ID       string  `json:"id"`
-	Title    string  `json:"title"`
-	Details  string  `json:"details"`
-	Date     string  `json:"date"`
-	Duration int     `json:"duration"` // 秒
-	Rating   float64 `json:"rating"`   // 1-100
-	Trailer  string  `json:"trailer"`
+	ID          string  `json:"id"`
+	Title       string  `json:"title"`
+	Details     string  `json:"details"`
+	ReleaseDate string  `json:"release_date"` // "2019-04-23"
+	Duration    int     `json:"duration"`     // 秒
+	Code        *string `json:"code"`         // 可能 null
+	Director    *string `json:"director"`     // 可能 null
 
 	Studio *StashStudio `json:"studio"`
 
 	Performers []StashPerformerRef `json:"performers"`
 	Tags       []StashTag          `json:"tags"`
 	Images     []StashImage        `json:"images"`
-	Paths      *StashPaths         `json:"paths"`
 	Urls       []StashURL          `json:"urls"`
 }
 
 type StashStudio struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Image string `json:"image"`
+	ID     string       `json:"id"`
+	Name   string       `json:"name"`
+	Images []StashImage `json:"images"`
 }
 
 type StashPerformerRef struct {
@@ -73,11 +71,11 @@ type StashPerformerRef struct {
 }
 
 type StashPerformer struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	Image   string   `json:"image"`   // 可能是相对路径或完整 URL
-	Gender  string   `json:"gender"`
-	Aliases []string `json:"aliases"`
+	ID      string       `json:"id"`
+	Name    string       `json:"name"`
+	Gender  string       `json:"gender"` // "FEMALE" / "MALE"
+	Aliases []string     `json:"aliases"`
+	Images  []StashImage `json:"images"`
 }
 
 type StashTag struct {
@@ -86,12 +84,10 @@ type StashTag struct {
 }
 
 type StashImage struct {
-	ID  string `json:"id"`
-	URL string `json:"url"`
-}
-
-type StashPaths struct {
-	Screenshot string `json:"screenshot"`
+	ID     string `json:"id"`
+	URL    string `json:"url"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
 }
 
 type StashURL struct {
@@ -111,11 +107,9 @@ type gqlResponse struct {
 	Data   json.RawMessage `json:"data"`
 	Errors []struct {
 		Message string `json:"message"`
-		Path    []any  `json:"path,omitempty"`
 	} `json:"errors"`
 }
 
-// doGraphQL 通用 GraphQL 请求，带重试 + 限速
 func (c *StashDBClient) doGraphQL(query string, variables map[string]interface{}, out interface{}) error {
 	if c.APIKey == "" {
 		return fmt.Errorf("StashDB API Key 未配置")
@@ -148,7 +142,6 @@ func (c *StashDBClient) doGraphQL(query string, variables map[string]interface{}
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
-		// StashDB 认证：ApiKey header
 		req.Header.Set("ApiKey", c.APIKey)
 		req.Header.Set("User-Agent", "QMediaSync/1.0")
 
@@ -188,6 +181,37 @@ func (c *StashDBClient) doGraphQL(query string, variables map[string]interface{}
 }
 
 // ============================================================
+// 字段模板
+// ============================================================
+
+const sceneFields = `
+	id
+	title
+	details
+	release_date
+	duration
+	code
+	director
+	studio {
+		id
+		name
+		images { url width height }
+	}
+	performers {
+		performer {
+			id
+			name
+			gender
+			aliases
+			images { url width height }
+		}
+	}
+	tags { id name }
+	images { url width height }
+	urls { url }
+`
+
+// ============================================================
 // 公开方法
 // ============================================================
 
@@ -198,73 +222,62 @@ func (c *StashDBClient) FindSceneByOshash(oshash string) (*StashScene, error) {
 		return nil, fmt.Errorf("空 oshash")
 	}
 
-	query := `query FindSceneByHash($oshash: String!) {
-		findSceneByHash(input: { oshash: $oshash }) {
-			id
-			title
-			details
-			date
-			duration
-			rating
-			trailer
-			studio { id name image }
-			performers {
-				performer { id name image gender aliases }
-			}
-			tags { id name }
-			images { id url }
-			paths { screenshot }
-			urls { url }
+	query := fmt.Sprintf(`query FindScenesByFingerprints($fps: [[FingerprintQueryInput!]!]!) {
+		findScenesBySceneFingerprints(fingerprints: $fps) {%s
 		}
-	}`
+	}`, sceneFields)
 
-	var result struct {
-		FindSceneByHash *StashScene `json:"findSceneByHash"`
+	variables := map[string]interface{}{
+		"fps": [][][]map[string]string{
+			{
+				{
+					"hash":      oshash,
+					"algorithm": "OSHASH",
+				},
+			},
+		},
 	}
 
-	err := c.doGraphQL(query, map[string]interface{}{"oshash": oshash}, &result)
+	var result struct {
+		FindScenesBySceneFingerprints [][]*StashScene `json:"findScenesBySceneFingerprints"`
+	}
+
+	err := c.doGraphQL(query, variables, &result)
 	if err != nil {
 		return nil, err
 	}
-	if result.FindSceneByHash == nil {
+
+	if len(result.FindScenesBySceneFingerprints) == 0 ||
+		len(result.FindScenesBySceneFingerprints[0]) == 0 {
 		helpers.AppLogger.Infof("[StashDB] oshash %s 未命中", oshash)
 		return nil, nil
 	}
 
+	scene := result.FindScenesBySceneFingerprints[0][0]
 	helpers.AppLogger.Infof("[StashDB] oshash %s → scene %s (%s)",
-		oshash, result.FindSceneByHash.ID, result.FindSceneByHash.Title)
-	return result.FindSceneByHash, nil
+		oshash, scene.ID, scene.Title)
+	return scene, nil
 }
 
 // SearchScene 模糊搜索（osHash 未命中时的兜底）
-// 一般用文件名或标题作为 term
 func (c *StashDBClient) SearchScene(term string) ([]*StashScene, error) {
 	if strings.TrimSpace(term) == "" {
 		return nil, fmt.Errorf("空搜索词")
 	}
 
-	query := `query SearchScene($term: String!) {
-		searchScene(term: $term) {
-			id
-			title
-			details
-			date
-			duration
-			rating
-			trailer
-			studio { id name image }
-			performers {
-				performer { id name image gender aliases }
+	query := fmt.Sprintf(`query SearchScenes($term: String!) {
+		searchScenes(term: $term) {
+			count
+			scenes {%s
 			}
-			tags { id name }
-			images { id url }
-			paths { screenshot }
-			urls { url }
 		}
-	}`
+	}`, sceneFields)
 
 	var result struct {
-		SearchScene []*StashScene `json:"searchScene"`
+		SearchScenes struct {
+			Count  int           `json:"count"`
+			Scenes []*StashScene `json:"scenes"`
+		} `json:"searchScenes"`
 	}
 
 	err := c.doGraphQL(query, map[string]interface{}{"term": term}, &result)
@@ -272,33 +285,46 @@ func (c *StashDBClient) SearchScene(term string) ([]*StashScene, error) {
 		return nil, err
 	}
 
-	helpers.AppLogger.Infof("[StashDB] 搜索 %q 命中 %d 个场景", term, len(result.SearchScene))
-	return result.SearchScene, nil
+	helpers.AppLogger.Infof("[StashDB] 搜索 %q 命中 %d 个场景", term, result.SearchScenes.Count)
+	return result.SearchScenes.Scenes, nil
+}
+
+// FindSceneByID 按 ID 查询（用于 fallback）
+func (c *StashDBClient) FindSceneByID(id string) (*StashScene, error) {
+	if id == "" {
+		return nil, fmt.Errorf("空 scene id")
+	}
+
+	query := fmt.Sprintf(`query FindScene($id: ID!) {
+		findScene(id: $id) {%s
+		}
+	}`, sceneFields)
+
+	var result struct {
+		FindScene *StashScene `json:"findScene"`
+	}
+
+	err := c.doGraphQL(query, map[string]interface{}{"id": id}, &result)
+	if err != nil {
+		return nil, err
+	}
+	return result.FindScene, nil
 }
 
 // ============================================================
-// 辅助：规范化 URL（StashDB 的 image 可能是相对路径）
+// 辅助
 // ============================================================
 
-// normalizeStashImageURL StashDB 的 performer.Image / studio.Image 可能是相对路径，
-// 需要拼上 CDN 前缀
-func normalizeStashImageURL(u string) string {
-	if u == "" {
+// PrimaryImageURL 从 images 数组里取第一张的 URL
+func PrimaryImageURL(images []StashImage) string {
+	if len(images) == 0 {
 		return ""
 	}
-	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
-		return u
-	}
-	// 相对路径，拼 StashDB 的 CDN
-	return "https://stashdb.org" + ensureLeadingSlash(u)
+	return images[0].URL
 }
 
-func ensureLeadingSlash(s string) string {
-	if strings.HasPrefix(s, "/") {
-		return s
-	}
-	return "/" + s
-}
+// 无用的占位（防止 unused 报错）
+var _ = strings.TrimSpace
 
 func truncate(s string, n int) string {
 	runes := []rune(s)
