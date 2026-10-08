@@ -20,8 +20,8 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-// ===== 改动 1：MaxVersionCode 从 65 改成 66 =====
-var MaxVersionCode = 66
+// ===== 改动 1：MaxVersionCode 从 66 改成 67 =====
+var MaxVersionCode = 67
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -30,6 +30,7 @@ const (
 	accountUserIDUniqueIndexName      = "idx_account_user_id"
 )
 
+// ===== 改动 2：AllTables 末尾加 4 张欧美刮削表 =====
 var AllTables = []any{
 	Migrator{},
 	BackupConfig{}, BackupRecord{},
@@ -41,6 +42,8 @@ var AllTables = []any{
 	DbDownloadTask{}, DbUploadTask{}, UploadSession{}, StrmGenerationTask{}, NotificationChannel{}, TelegramChannelConfig{}, MeoWChannelConfig{}, BarkChannelConfig{},
 	ServerChanChannelConfig{}, CustomWebhookChannelConfig{}, NotificationRule{},
 	AVSettings{}, AVTask{}, AVMedia{}, AVPath{},
+	// ===== 新增：欧美刮削 4 张表 =====
+	AVENSettings{}, AVENTask{}, AVENMedia{}, AVENPath{},
 }
 
 func (*Migrator) TableName() string {
@@ -688,7 +691,6 @@ func Migrate() {
 		helpers.AppLogger.Info("已添加 AV 刮削模块的 av_settings / av_tasks / av_media / av_paths 表")
 		migrator.UpdateVersionCode(db.Db)
 	}
-	// ===== 改动 2：新增 version 65 的迁移块 =====
 	if migrator.VersionCode == 65 {
 		if err := db.Db.AutoMigrate(AVMedia{}, AVTask{}); err != nil {
 			helpers.AppLogger.Errorf("迁移 AV 媒体状态字段失败：%v", err)
@@ -697,7 +699,16 @@ func Migrate() {
 		helpers.AppLogger.Info("已添加 AV 媒体状态字段和任务警告字段")
 		migrator.UpdateVersionCode(db.Db)
 	}
-	// ==========================================
+	// ===== 改动 3：新增 version 66 的迁移块（欧美刮削 4 张表）=====
+	if migrator.VersionCode == 66 {
+		if err := db.Db.AutoMigrate(AVENSettings{}, AVENTask{}, AVENMedia{}, AVENPath{}); err != nil {
+			helpers.AppLogger.Errorf("迁移欧美刮削模块表失败：%v", err)
+			return
+		}
+		helpers.AppLogger.Info("已添加欧美刮削模块的 aven_settings / aven_tasks / aven_media / aven_paths 表")
+		migrator.UpdateVersionCode(db.Db)
+	}
+	// ============================================================
 	if migrator.VersionCode == MaxVersionCode {
 		if !accountIdentityIndexesEnsured {
 			if err := ensureAccountIdentityUniqueIndexes(db.Db); err != nil {
