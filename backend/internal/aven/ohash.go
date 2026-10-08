@@ -19,7 +19,7 @@ import (
 // osHash 计算 + ffprobe 探测
 // 一次下载头 2MB + 尾 64KB，同时完成：
 //   1. 头尾各 64KB 算 osHash
-//   2. 头 2MB 给 ffprobe 解析分辨率/HDR
+//   2. 分辨率探测：优先 ffprobe 直读 URL，失败回退 2MB buffer
 // ============================================================
 
 const (
@@ -48,23 +48,22 @@ func ProbeVideoByURL(videoURL string, headers map[string]string) (*ProbeResult, 
 	}
 
 	// ===== 2. 下载尾部 64KB =====
-	// ===== 改动：downloadRange 返回 3 值，用第三个变量接 error =====
 	var tail []byte
 	if fileSize > oshashTailSize {
 		var tailErr error
 		tail, _, tailErr = downloadRange(videoURL, fileSize-oshashTailSize, fileSize-1, headers)
 		if tailErr != nil {
 			helpers.AppLogger.Warnf("[欧美探测] 下载尾部失败: %v", tailErr)
-			// 尾部失败不致命，osHash 会返回空
 		}
 	}
-	// ==============================================================
 
 	// ===== 3. 算 osHash =====
 	oshash := computeOshash(head, tail, fileSize)
 
-	// ===== 4. ffprobe 探测分辨率/HDR =====
-	resolution, isHDR := probeFromBuffer(head)
+	// ===== 4. 探测分辨率 =====
+	// 优先 ffprobe 直读 URL（可 seek 到 moov，覆盖 VR 尾部 moov 场景）
+	// 失败/未识别再回退 2MB buffer
+	resolution, isHDR := probeResolution(videoURL, head, headers)
 
 	helpers.AppLogger.Infof("[欧美探测] fileSize=%d oshash=%s resolution=%s hdr=%v",
 		fileSize, oshash, resolution, isHDR)
@@ -75,6 +74,80 @@ func ProbeVideoByURL(videoURL string, headers map[string]string) (*ProbeResult, 
 		Resolution: resolution,
 		IsHDR:      isHDR,
 	}, nil
+}
+
+// probeResolution 优先 ffprobe 直读 URL，失败回退 buffer
+func probeResolution(videoURL string, head []byte, headers map[string]string) (string, bool) {
+	res, hdr, err := probeFromURL(videoURL, headers)
+	if err == nil && res != "" {
+		helpers.AppLogger.Infof("[欧美探测] ffprobe 直读 URL 成功: %s hdr=%v", res, hdr)
+		return res, hdr
+	}
+	if err != nil {
+		helpers.AppLogger.Infof("[欧美探测] ffprobe 直读 URL 失败，回退 buffer: %v", err)
+	} else {
+		helpers.AppLogger.Infof("[欧美探测] ffprobe 直读 URL 未识别分辨率，回退 buffer")
+	}
+	return probeFromBuffer(head)
+}
+
+// probeFromURL 让 ffprobe 直接读 URL（带 115/openlist header）
+func probeFromURL(videoURL string, headers map[string]string) (string, bool, error) {
+	args := []string{
+		"-v", "error",
+		"-print_format", "json",
+		"-show_streams",
+		"-analyzeduration", "5000000",
+		"-probesize", "2000000",
+	}
+	// 把 headers 拼成 ffprobe 认识的 -headers 参数
+	if len(headers) > 0 {
+		var sb strings.Builder
+		for k, v := range headers {
+			sb.WriteString(k)
+			sb.WriteString(": ")
+			sb.WriteString(v)
+			sb.WriteString("\r\n")
+		}
+		args = append(args, "-headers", sb.String())
+	}
+	args = append(args, videoURL)
+
+	cmd := exec.Command("ffprobe", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Run() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			return "", false, fmt.Errorf("ffprobe 失败: %v, stderr=%s", err, stderr.String())
+		}
+	case <-time.After(60 * time.Second):
+		_ = cmd.Process.Kill()
+		return "", false, fmt.Errorf("ffprobe 超时")
+	}
+
+	var result struct {
+		Streams []struct {
+			Width    int    `json:"width"`
+			Height   int    `json:"height"`
+			PixFmt   string `json:"pix_fmt"`
+			ColorTrc string `json:"color_transfer"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		return "", false, err
+	}
+	if len(result.Streams) == 0 {
+		return "", false, fmt.Errorf("无视频流")
+	}
+
+	s := result.Streams[0]
+	return classifyResolution(s.Width, s.Height), isHDRPixelFormat(s.PixFmt, s.ColorTrc), nil
 }
 
 // ============================================================
@@ -106,7 +179,6 @@ func downloadRange(videoURL string, start, end int64, headers map[string]string)
 		return nil, 0, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	// 解析文件总大小
 	var fileSize int64
 	if cr := resp.Header.Get("Content-Range"); cr != "" {
 		if slash := strings.LastIndex(cr, "/"); slash > 0 {
@@ -143,7 +215,7 @@ func computeOshash(head, tail []byte, fileSize int64) string {
 }
 
 // ============================================================
-// ffprobe 探测
+// ffprobe 探测（buffer 版，回退用）
 // ============================================================
 
 func probeFromBuffer(data []byte) (string, bool) {
@@ -210,9 +282,7 @@ func probeFromBuffer(data []byte) (string, bool) {
 	}
 
 	s := result.Streams[0]
-	res := classifyResolution(s.Width, s.Height)
-	hdr := isHDRPixelFormat(s.PixFmt, s.ColorTrc)
-	return res, hdr
+	return classifyResolution(s.Width, s.Height), isHDRPixelFormat(s.PixFmt, s.ColorTrc)
 }
 
 // ============================================================
