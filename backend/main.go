@@ -23,9 +23,8 @@ import (
 	emby302https "qmediasync/emby302/util/https"
 	"qmediasync/emby302/util/logs/colors"
 	"qmediasync/emby302/web"
-	// ===== 改动 1：import 加 avscrape =====
+	"qmediasync/internal/aven"
 	"qmediasync/internal/avscrape"
-	// =====================================
 	"qmediasync/internal/backup"
 	"qmediasync/internal/controllers"
 	"qmediasync/internal/db"
@@ -61,11 +60,9 @@ func parseBuildUnixTime(value string) int64 {
 	if value == "" {
 		return 0
 	}
-
 	if timestamp, err := helpers.ParseRFC3339Unix(value); err == nil {
 		return timestamp
 	}
-
 	layouts := []string{
 		"2006-01-02 15:04:05",
 		"2006-01-02",
@@ -76,7 +73,6 @@ func parseBuildUnixTime(value string) int64 {
 			return parsed.Unix()
 		}
 	}
-
 	return 0
 }
 
@@ -89,7 +85,6 @@ type App struct {
 }
 
 func (app *App) Start() {
-	// 启动外网 302 服务
 	startEmby302()
 	if helpers.IsRelease {
 		gin.SetMode(gin.ReleaseMode)
@@ -100,7 +95,6 @@ func (app *App) Start() {
 	app.StartHttpServer(r)
 	app.StartHttpsServer(r)
 	if runtime.GOOS == "windows" {
-		// 监听 Ctrl+C 信号
 		go func() {
 			quit := make(chan os.Signal, 1)
 			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -119,7 +113,6 @@ func (app *App) Start() {
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 		<-quit
 		log.Println("收到停止信号")
-		// 停止应用
 		app.Stop()
 		log.Println("应用程序正常退出")
 	}
@@ -128,18 +121,12 @@ func (app *App) Start() {
 func (app *App) Stop() {
 	realtime.GlobalLifecycle.Shutdown()
 	app.shutdownHTTPServers()
-	// 关闭同步任务执行队列
 	synccron.PauseAllNewSyncQueues()
-	// 关闭上传下载队列
 	models.GlobalDownloadQueue.Stop()
 	models.GlobalUploadQueue.Stop()
-	// 关闭目录监控上传服务
 	directoryupload.StopDirectoryUploadService()
-	// 关闭 STRM 生成 worker
 	syncstrm.StopStrmGenerationWorker()
-	// 关闭定时任务（包含备份定时任务）
 	synccron.GlobalCron.Stop()
-	// 播放清理退出后再释放共享连接池；未完成的目录由下次定时维护回收。
 	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := playback.DefaultManager.Shutdown(cleanupCtx); err != nil {
 		helpers.AppLogger.Warnf("等待 115 多端播放清理退出失败：%v", err)
@@ -148,14 +135,12 @@ func (app *App) Stop() {
 	if err := v115open.ClosePlaybackClient(); err != nil {
 		helpers.AppLogger.Warnf("关闭 115 播放客户端失败：%v", err)
 	}
-	// 停止统计写入 worker，并在关闭数据库前尽量刷完已入队记录。
 	if requestStatWriter != nil {
 		requestStatWriter.Close()
 	}
-	helpers.CloseLogger() // 关闭日志
+	helpers.CloseLogger()
 }
 
-// shutdownHTTPServers 停止接收新请求并等待现有 handler 退出。
 func (app *App) shutdownHTTPServers() {
 	if app.httpServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -180,9 +165,7 @@ func (app *App) StartHttpsServer(r *gin.Engine) {
 		return
 	}
 	go func() {
-		// 在 12332 端口上启动 HTTPS 服务
 		sslHost := ""
-		// 启动 Web Server
 		if !helpers.IsRelease {
 			sslHost = "localhost:12332"
 		} else {
@@ -192,7 +175,6 @@ func (app *App) StartHttpsServer(r *gin.Engine) {
 			Addr:    sslHost,
 			Handler: r,
 		}
-		// 没有证书则回退到普通 HTTP
 		weberr := app.httpsServer.ListenAndServeTLS(certFile, keyFile)
 		if weberr != nil {
 			fmt.Println("ListenAndServe error:", weberr)
@@ -202,7 +184,6 @@ func (app *App) StartHttpsServer(r *gin.Engine) {
 
 func (app *App) StartHttpServer(r *gin.Engine) {
 	host := helpers.GlobalConfig.HttpHost
-	// 同时在 12333 端口上启动 HTTP 服务
 	app.httpServer = &http.Server{
 		Addr:    host,
 		Handler: r,
@@ -219,9 +200,7 @@ func (app *App) StartDatabase() error {
 	if err := helpers.GlobalConfig.Db.Validate(); err != nil {
 		return err
 	}
-	// 根据配置启动数据库连接
 	if helpers.GlobalConfig.Db.Engine == helpers.DbEngineSqlite {
-		// 如果是 SQLite，直接初始化 SQLite 连接
 		sqliteFile := filepath.Join(helpers.ConfigDir, helpers.GlobalConfig.Db.SqliteFile)
 		helpers.AppLogger.Infof("SQLite 数据库文件路径：%s", sqliteFile)
 		db.Db = db.InitSqlite3(sqliteFile)
@@ -231,8 +210,6 @@ func (app *App) StartDatabase() error {
 		}
 		return nil
 	}
-
-	// 初始化数据库配置
 	dbConfig := &database.Config{
 		Host:         helpers.GlobalConfig.Db.PostgresConfig.Host,
 		Port:         helpers.GlobalConfig.Db.PostgresConfig.Port,
@@ -280,7 +257,6 @@ func newApp() {
 		log.Println("App 已经初始化，不能再次初始化")
 		return
 	}
-	// 初始化 App
 	QMSApp = &App{
 		isRelease:   helpers.IsRelease,
 		version:     Version,
@@ -303,7 +279,7 @@ func checkRelease() {
 }
 
 func getRootDir() string {
-	var exPath string = "/app" // 默认使用 Docker 路径
+	var exPath string = "/app"
 	checkRelease()
 	if os.Getenv("TRIM_APPDEST") != "" {
 		helpers.RootDir = os.Getenv("TRIM_APPDEST")
@@ -318,11 +294,10 @@ func getRootDir() string {
 	} else {
 		exPath, _ = os.Getwd()
 	}
-	helpers.RootDir = exPath // 获取当前工作目录
+	helpers.RootDir = exPath
 	return exPath
 }
 
-// 获取用户数据目录
 func getDataAndConfigDir() error {
 	resolvedDir, err := resolveConfigDir("")
 	if err != nil {
@@ -341,13 +316,12 @@ func getDataAndConfigDir() error {
 	var configDir string
 	needMk := false
 	if runtime.GOOS == "windows" {
-		// 使用 AppData 目录，用户有完全控制权限
 		appData := os.Getenv("LOCALAPPDATA")
 		if appData == "" {
 			appData = os.Getenv("APPDATA")
 		}
-		oldConfigDir := filepath.Join(appData, AppName, "config") // 配置目录
-		configDir = filepath.Join(helpers.RootDir, "config")      // 配置目录
+		oldConfigDir := filepath.Join(appData, AppName, "config")
+		configDir = filepath.Join(helpers.RootDir, "config")
 		err := os.MkdirAll(configDir, 0755)
 		if err != nil {
 			fmt.Printf("创建配置目录失败：%v\n", err)
@@ -355,7 +329,6 @@ func getDataAndConfigDir() error {
 		}
 		helpers.ConfigDir = configDir
 		if helpers.PathExists(oldConfigDir) {
-			// 迁移旧配置
 			err := helpers.MoveConfigDir(oldConfigDir, configDir)
 			if err != nil {
 				return fmt.Errorf("迁移旧配置目录失败：%w", err)
@@ -364,7 +337,7 @@ func getDataAndConfigDir() error {
 	} else {
 		if os.Getenv("TRIM_PKGETC") == "" {
 			appData = helpers.RootDir
-			configDir = filepath.Join(appData, "config") // 配置目录
+			configDir = filepath.Join(appData, "config")
 			needMk = true
 			helpers.ConfigDir = configDir
 		} else {
@@ -376,17 +349,13 @@ func getDataAndConfigDir() error {
 			} else {
 				configDir = filepath.Join(configDir, "config")
 				needMk = true
-				// 检查是否需要迁移文件
-				// oldConfigDir 必须存在且不为空
 				if helpers.PathExists(oldConfigDir) && oldConfigDir != configDir {
-					// 检查 oldConfigDir 是否为空目录
 					if !helpers.IsDirEmpty(oldConfigDir) {
 						err := os.MkdirAll(configDir, 0755)
 						if err != nil {
 							log.Printf("创建配置目录失败：%v\n", err)
 							panic("创建配置目录失败")
 						}
-						// 迁移旧配置
 						err = helpers.MoveConfigDir(oldConfigDir, configDir)
 						if err != nil {
 							return fmt.Errorf("迁移旧配置目录失败：%w", err)
@@ -433,7 +402,7 @@ func startEmby302() {
 	}
 	config.C.Emby.Host = models.GlobalEmbyConfig.EmbyUrl
 	config.C.Emby.ImagesOriginal = helpers.GlobalConfig.Emby302.ImagesOriginal
-	config.C.Emby.EpisodesUnplayPrior = false // 关闭剧集排序
+	config.C.Emby.EpisodesUnplayPrior = false
 	certFile := filepath.Join(dataRoot, "server.crt")
 	keyFile := filepath.Join(dataRoot, "server.key")
 	if helpers.PathExists(certFile) && helpers.PathExists(keyFile) {
@@ -451,14 +420,13 @@ func startEmby302() {
 			log.Fatal(colors.ToRed(err.Error()))
 		}
 	}()
-
 }
 
 func initLogger() {
 	logPath := filepath.Join(helpers.ConfigDir, "logs")
-	os.MkdirAll(logPath, 0755) // 如果没有 logs 目录则创建
+	os.MkdirAll(logPath, 0755)
 	syncLogPath := filepath.Join(helpers.ConfigDir, helpers.SyncLogDir())
-	os.MkdirAll(syncLogPath, 0755) // 如果没有同步任务日志目录则创建
+	os.MkdirAll(syncLogPath, 0755)
 	logConfig := helpers.LogConfigSnapshot()
 	helpers.AppLogger = helpers.NewLogger(logConfig.App, true, true)
 	helpers.V115Log = helpers.NewLogger(logConfig.V115, false, true)
@@ -469,9 +437,8 @@ func initLogger() {
 }
 
 func initOthers() {
-	helpers.InitEventBus() // 初始化事件总线
-	models.LoadSettings()  // 从数据库加载设置
-	// 初始化 GitHub 访问管理器
+	helpers.InitEventBus()
+	models.LoadSettings()
 	github.InitManager(models.SettingsGlobal.HttpProxy)
 	helpers.AppLogger.Infof("已加载配置，准备初始化 115 请求队列，线程数：%d", models.SettingsGlobal.FileDetailThreads)
 	qps := models.SettingsGlobal.FileDetailThreads
@@ -479,58 +446,57 @@ func initOthers() {
 		qps = 2
 	}
 	v115open.SetGlobalExecutorConfig(qps, qps*60, qps*3600)
-	models.LoadScrapeSettings()          // 从数据库加载刮削设置
-	models.InitDQ()                      // 初始化下载队列
-	models.InitUQ()                      // 初始化上传队列
-	models.InitNotificationManager()     // 初始化通知管理器
-	controllers.StartListenTelegramBot() // 初始化 Telegram Bot 监听
-	models.GetEmbyConfig()               // 加载 Emby 配置
+	models.LoadScrapeSettings()
+	models.InitDQ()
+	models.InitUQ()
+	models.InitNotificationManager()
+	controllers.StartListenTelegramBot()
+	models.GetEmbyConfig()
 	helpers.SubscribeSync(helpers.V115TokenInValidEvent, models.HandleV115TokenInvalid)
 	helpers.SubscribeSync(helpers.SaveOpenListTokenEvent, models.HandleOpenListTokenSaveSync)
-	models.FailAllRunningSyncTasks() // 将所有运行中的同步任务设置为失败状态
+	models.FailAllRunningSyncTasks()
 
-	// 设置 115 请求队列的非阻塞统计写入回调。
 	requestStatWriter = models.NewRequestStatWriter()
 	v115open.SetGlobalExecutorStatSaver(requestStatWriter.Enqueue)
-	synccron.RefreshOAuthAccessToken() // 启动时刷新一次 115 的访问凭证，避免过期 Token 导致同步失败
+	synccron.RefreshOAuthAccessToken()
 
 	// 启动同步任务队列管理器
 	synccron.InitNewSyncQueueManager()
-	// ===== 改动 2：注册 AV 刮削回调（避免 synccron 和 avscrape 循环依赖）=====
+
+	// ===== 注册 AV 刮削回调 =====
 	synccron.AVScanHandler = func(pathID uint) error {
 		scanner := avscrape.NewScanner(db.Db)
 		return scanner.Scan(pathID)
 	}
-	// =====================================================================
+	// =============================
+
+	// ===== 注册欧美刮削回调 =====
+	synccron.AVENScanHandler = func(pathID uint) error {
+		scanner := aven.NewScannerEN(db.Db)
+		return scanner.Scan(pathID)
+	}
+	// ===============================
+
 	models.InitEmbyLibraryRefreshCoordinator()
 	syncstrm.InitStrmGenerationWorker()
 	directoryupload.InitDirectoryUploadService()
-	// 初始化实时事件中心
 	realtime.GlobalEventHub = realtime.NewEventHub()
 	realtime.GlobalSyncTaskHub = realtime.NewSyncTaskHub()
-	synccron.InitCron()       // 初始化定时任务（包含备份定时任务）
-	synccron.InitSyncCron()   // 初始化同步目录的定时任务
-	synccron.InitScrapeCron() // 初始化刮削目录的自定义定时任务
-	synccron.InitTokenCron()  // 初始化定时刷新 115 的访问凭证
-	// 初始化备份服务
+	synccron.InitCron()
+	synccron.InitSyncCron()
+	synccron.InitScrapeCron()
+	synccron.InitTokenCron()
 	models.InitBackupService()
-	// 将所有刮削中和整理中的记录改为未执行
 	models.ResetScrapePathStatus()
-	// 将所有刮削中改为待刮削
 	models.UpdateScrapeMediaStatus(models.ScrapeMediaStatusScraping, models.ScrapeMediaStatusScanned, 0)
-	// 将所有整理中的记录改为待整理
 	models.UpdateScrapeMediaStatus(models.ScrapeMediaStatusRenaming, models.ScrapeMediaStatusScraped, 0)
-	// 上传中的任务改为待上传
 	models.UpdateUploadingToPending()
-	// 下载中的任务改为待下载
 	models.UpdateDownloadingToPending()
 	helpers.Subscribe(helpers.BackupCronEevent, func(event helpers.Event) {
 		backup.Backup("定时", "定时备份")
 	})
 	helpers.Subscribe(helpers.StrmSyncCompleteEvent, func(event helpers.Event) {
-		// 触发关联的刮削任务
 		scrapePathIds := event.Data.([]uint)
-		// 将任务添加到队列中
 		for _, scrapePathId := range scrapePathIds {
 			scrapePath := models.GetScrapePathByID(scrapePathId)
 			if scrapePath == nil {
@@ -559,51 +525,50 @@ func initOthers() {
 // 设置路由
 func setRouter(r *gin.Engine) {
 	webStatisPath := filepath.Join(helpers.RootDir, "web_statics")
-	// if helpers.IsFnOS {
-	// 	webStatisPath = filepath.Join(helpers.RootDir, "www")
-	// }
 	r.LoadHTMLFiles(filepath.Join(webStatisPath, "index.html"))
-	r.StaticFile("/favicon.ico", filepath.Join(webStatisPath, "favicon.ico")) // 提供站点图标
-	r.StaticFS("/assets", http.Dir(filepath.Join(webStatisPath, "assets")))   // 提供前端静态资源
-	// 返回前端单页应用入口
+	r.StaticFile("/favicon.ico", filepath.Join(webStatisPath, "favicon.ico"))
+	r.StaticFS("/assets", http.Dir(filepath.Join(webStatisPath, "assets")))
 	r.GET("/", func(c *gin.Context) {
 		c.HTML(200, "index.html", gin.H{})
 	})
-	r.POST("/emby/webhook", controllers.Webhook)                           // 接收 Emby 事件回调
-	r.POST("/api/login", controllers.LoginAction)                          // 用户登录
-	r.POST("/api/strm/webhook", controllers.StrmWebhook)                   // 接收外部 STRM 生成任务
-	r.GET("/api/setup/status", controllers.SetupStatusAction)              // 查询首个管理员初始化状态
-	r.POST("/api/setup/admin", controllers.CreateInitialAdminAction)       // 创建首个管理员
-	r.GET("/api/session", controllers.SessionAction)                       // 获取当前登录会话
-	r.GET("/115/url/*filename", controllers.Get115UrlByPickCode)           // 查询 115 直链，按 PickCode 查询，支持 ISO，路径最后一部分为 .扩展名格式
-	r.GET("/115/newurl", controllers.Get115UrlByPickCode)                  // 查询 115 直链，按 PickCode 查询
-	r.GET("/baidupan/url/*filename", controllers.GetBaiduPanUrlByPickCode) // 查询百度网盘直链，按 fs_id 查询，支持 ISO，路径最后一部分为 .扩展名格式
+	r.POST("/emby/webhook", controllers.Webhook)
+	r.POST("/api/login", controllers.LoginAction)
+	r.POST("/api/strm/webhook", controllers.StrmWebhook)
+	r.GET("/api/setup/status", controllers.SetupStatusAction)
+	r.POST("/api/setup/admin", controllers.CreateInitialAdminAction)
+	r.GET("/api/session", controllers.SessionAction)
+	r.GET("/115/url/*filename", controllers.Get115UrlByPickCode)
+	r.GET("/115/newurl", controllers.Get115UrlByPickCode)
+	r.GET("/baidupan/url/*filename", controllers.GetBaiduPanUrlByPickCode)
+	r.GET("/openlist/url", controllers.GetOpenListFileUrl)
+	r.GET("/proxy-115", controllers.Proxy115)
+	r.POST("/api/update-fn-access-path", controllers.UpdateFNPath)
 
-	r.GET("/openlist/url", controllers.GetOpenListFileUrl) // 查询 OpenList 直链
-
-	r.GET("/proxy-115", controllers.Proxy115)                      // 115 CDN 反代路由
-	r.POST("/api/update-fn-access-path", controllers.UpdateFNPath) // 更新飞牛访问路径
-
-	// ===== 改动 3：注册 AV 刮削路由（内部自己创建 /api/avscrape 分组）=====
+	// ===== 注册 AV 刮削路由 =====
 	if err := avscrape.Register(r, db.Db); err != nil {
 		helpers.AppLogger.Errorf("注册 AV 刮削路由失败：%v", err)
 	}
-	// =====================================================================
+	// =============================
+
+	// ===== 注册欧美刮削路由 =====
+	if err := aven.Register(r, db.Db); err != nil {
+		helpers.AppLogger.Errorf("注册欧美刮削路由失败：%v", err)
+	}
+	// ===============================
 
 	// 需要 JWT 验证的 API 路由
 	api := r.Group("/api")
 	api.Use(controllers.JWTAuthMiddleware())
 	{
-		api.GET("/scrape/tmp-image", controllers.ScrapeTmpImage)           // 获取临时图片
-		api.GET("/scrape/records/export", controllers.ExportScrapeRecords) // 导出刮削记录
-		api.GET("/logs/stream", controllers.LogStream)                     // SSE 日志查看
-		api.GET("/events/stream", controllers.EventStream)                 // SSE 事件推送
-		api.GET("/sync/tasks/:id/stream", controllers.SyncTaskStream)      // 同步任务详情实时流
-		api.GET("/logs/old", controllers.GetOldLogs)                       // 通过 HTTP 获取旧日志
-		api.GET("/logs/download", controllers.DownloadLogFile)             // 下载日志文件
-		api.GET("/path/is-fn-os", controllers.IsFnOS)                      // 查询是否是飞牛环境
+		api.GET("/scrape/tmp-image", controllers.ScrapeTmpImage)
+		api.GET("/scrape/records/export", controllers.ExportScrapeRecords)
+		api.GET("/logs/stream", controllers.LogStream)
+		api.GET("/events/stream", controllers.EventStream)
+		api.GET("/sync/tasks/:id/stream", controllers.SyncTaskStream)
+		api.GET("/logs/old", controllers.GetOldLogs)
+		api.GET("/logs/download", controllers.DownloadLogFile)
+		api.GET("/path/is-fn-os", controllers.IsFnOS)
 
-		// 获取应用版本与运行环境信息
 		api.GET("/version", func(c *gin.Context) {
 			c.JSON(http.StatusOK, map[string]any{
 				"version":    Version,
@@ -613,196 +578,187 @@ func setRouter(r *gin.Engine) {
 				"isRelease":  helpers.IsRelease,
 			})
 		})
-		api.POST("/database/delete-all-table", controllers.DeleteAllTabble) // 删除所有表
-		api.GET("/announce", controllers.GetAnnounce)                       // 获取公告
-		api.POST("/database/repair", controllers.RepairDB)                  // 修复数据库表结构和主键序列
-		api.POST("/auth/115-qrcode-open", controllers.GetLoginQrCodeOpen)   // 获取 115 开放平台登录二维码
-		api.POST("/auth/115-qrcode-status", controllers.GetQrCodeStatus)    // 查询 115 二维码扫码状态
-		api.GET("/115/status", controllers.Get115Status)                    // 查询 115 状态
-		api.GET("/115/appids", controllers.GetV115AppIDSources)             // 查询 115 开放平台 APP ID 目录
-		api.GET("/115/oauth-url", controllers.GetOAuthUrl)                  // 获取 115 OAuth 登录地址
-		api.POST("115/oauth-confirm", controllers.ConfirmOAuthCode)         // 确认 115 OAuth 登录
-		api.GET("/115/oauth-status", controllers.GetOAuthStatus)            // 查询 115 OAuth 授权状态
-		api.GET("/115/queue/stats", controllers.GetQueueStats)              // 获取 115 开放平台请求队列统计数据
-		api.POST("/115/queue/rate-limit", controllers.SetQueueRateLimit)    // 设置 115 开放平台请求队列速率限制
-		api.GET("/115/stats/daily", controllers.GetRequestStatsByDay)       // 获取 115 请求统计（按天）
-		api.GET("/115/stats/hourly", controllers.GetRequestStatsByHour)     // 获取 115 请求统计（按小时）
-		api.POST("/115/stats/clean", controllers.CleanOldRequestStats)      // 清理旧的请求统计数据
-		// 百度网盘相关路由
-		api.GET("/baidupan/oauth-url", controllers.GetBaiDuPanOAuthUrl)           // 获取百度网盘 OAuth 登录地址
-		api.POST("/baidupan/oauth-confirm", controllers.ConfirmBaiDuPanOAuthCode) // 确认百度网盘 OAuth 登录
-		api.GET("/baidupan/status", controllers.GetBaiDuPanStatus)                // 查询百度网盘状态
+		api.POST("/database/delete-all-table", controllers.DeleteAllTabble)
+		api.GET("/announce", controllers.GetAnnounce)
+		api.POST("/database/repair", controllers.RepairDB)
+		api.POST("/auth/115-qrcode-open", controllers.GetLoginQrCodeOpen)
+		api.POST("/auth/115-qrcode-status", controllers.GetQrCodeStatus)
+		api.GET("/115/status", controllers.Get115Status)
+		api.GET("/115/appids", controllers.GetV115AppIDSources)
+		api.GET("/115/oauth-url", controllers.GetOAuthUrl)
+		api.POST("115/oauth-confirm", controllers.ConfirmOAuthCode)
+		api.GET("/115/oauth-status", controllers.GetOAuthStatus)
+		api.GET("/115/queue/stats", controllers.GetQueueStats)
+		api.POST("/115/queue/rate-limit", controllers.SetQueueRateLimit)
+		api.GET("/115/stats/daily", controllers.GetRequestStatsByDay)
+		api.GET("/115/stats/hourly", controllers.GetRequestStatsByHour)
+		api.POST("/115/stats/clean", controllers.CleanOldRequestStats)
+		api.GET("/baidupan/oauth-url", controllers.GetBaiDuPanOAuthUrl)
+		api.POST("/baidupan/oauth-confirm", controllers.ConfirmBaiDuPanOAuthCode)
+		api.GET("/baidupan/status", controllers.GetBaiDuPanStatus)
 
-		api.GET("/update/last", controllers.GetLastRelease)         // 获取最新版本
-		api.POST("/update/to-version", controllers.UpdateToVersion) // 获取更新版本
-		api.GET("/update/progress", controllers.UpdateProgress)     // 获取更新进度
-		api.POST("/update/cancel", controllers.CancelUpdate)        // 取消更新
+		api.GET("/update/last", controllers.GetLastRelease)
+		api.POST("/update/to-version", controllers.UpdateToVersion)
+		api.GET("/update/progress", controllers.UpdateProgress)
+		api.POST("/update/cancel", controllers.CancelUpdate)
 
-		api.GET("/user/info", controllers.GetUserInfo)                                      // 获取当前用户信息
-		api.POST("/logout", controllers.LogoutAction)                                       // 退出当前登录会话
-		api.GET("/user/sessions", controllers.ListUserSessions)                             // 获取当前用户登录设备
-		api.DELETE("/user/sessions/:session_id", controllers.RevokeUserSessionAction)       // 撤销指定登录设备
-		api.POST("/user/sessions/revoke-others", controllers.RevokeOtherUserSessionsAction) // 撤销其他登录设备
-		api.GET("/user/two-factor/status", controllers.GetTwoFactorStatus)                  // 获取两步验证状态
-		api.POST("/user/two-factor/setup", controllers.SetupTwoFactor)                      // 创建两步验证配置草稿
-		api.POST("/user/two-factor/enable", controllers.EnableTwoFactor)                    // 启用两步验证
-		api.POST("/user/two-factor/disable", controllers.DisableTwoFactor)                  // 关闭两步验证
-		api.GET("/path/sort-options", controllers.GetBrowseSortOptions)                     // 浏览排序能力
-		api.GET("/path/list", controllers.GetPathList)                                      // 目录列表
-		api.POST("/path/create", controllers.CreateDir)                                     // 创建目录接口
-		api.DELETE("/path", controllers.DeleteDir)                                          // 删除目录接口
-		api.POST("/path/delete-batch", controllers.DeleteFiles)                             // 批量删除网盘文件接口
-		api.POST("/path/move", controllers.MoveFiles)                                       // 批量移动网盘文件接口
-		api.POST("/path/copy", controllers.CopyFiles)                                       // 批量复制网盘文件接口
-		api.POST("/path/rename", controllers.RenameFile)                                    // 重命名网盘文件接口
-		api.GET("/path/files", controllers.GetNetFileList)                                  // 查询网盘文件列表
-		api.POST("/user/change", controllers.ChangePassword)                                // 修改当前用户密码
+		api.GET("/user/info", controllers.GetUserInfo)
+		api.POST("/logout", controllers.LogoutAction)
+		api.GET("/user/sessions", controllers.ListUserSessions)
+		api.DELETE("/user/sessions/:session_id", controllers.RevokeUserSessionAction)
+		api.POST("/user/sessions/revoke-others", controllers.RevokeOtherUserSessionsAction)
+		api.GET("/user/two-factor/status", controllers.GetTwoFactorStatus)
+		api.POST("/user/two-factor/setup", controllers.SetupTwoFactor)
+		api.POST("/user/two-factor/enable", controllers.EnableTwoFactor)
+		api.POST("/user/two-factor/disable", controllers.DisableTwoFactor)
+		api.GET("/path/sort-options", controllers.GetBrowseSortOptions)
+		api.GET("/path/list", controllers.GetPathList)
+		api.POST("/path/create", controllers.CreateDir)
+		api.DELETE("/path", controllers.DeleteDir)
+		api.POST("/path/delete-batch", controllers.DeleteFiles)
+		api.POST("/path/move", controllers.MoveFiles)
+		api.POST("/path/copy", controllers.CopyFiles)
+		api.POST("/path/rename", controllers.RenameFile)
+		api.GET("/path/files", controllers.GetNetFileList)
+		api.POST("/user/change", controllers.ChangePassword)
 
-		api.POST("/setting/http-proxy", controllers.UpdateHttpProxy)    // 更改 HTTP 代理
-		api.GET("/setting/http-proxy", controllers.GetHttpProxy)        // 获取 HTTP 代理
-		api.POST("/setting/test-http-proxy", controllers.TestHttpProxy) // 测试 HTTP 代理
-		api.GET("/setting/log", controllers.GetLogSetting)              // 获取日志设置
-		api.POST("/setting/log", controllers.UpdateLogSetting)          // 更新日志设置
-		// api.GET("/setting/telegram", controllers.GetTelegram)                                      // 获取 Telegram 消息通知配置
-		// api.POST("/setting/telegram", controllers.UpdateTelegram)                                  // 更改 Telegram 消息通知配置
-		// api.POST("/telegram/test", controllers.TestTelegram)                                       // 测试 Telegram 连通性
-		api.GET("/setting/notification/channels", controllers.GetNotificationChannels)             // 获取所有通知渠道
-		api.POST("/setting/notification/channels/telegram", controllers.CreateTelegramChannel)     // 创建 Telegram 渠道
-		api.GET("/setting/notification/channels/telegram/:id", controllers.GetTelegramChannel)     // 查询 Telegram 渠道
-		api.PUT("/setting/notification/channels/telegram", controllers.UpdateTelegramChannel)      // 更新 Telegram 渠道
-		api.POST("/setting/notification/channels/meow", controllers.CreateMeoWChannel)             // 创建 MeoW 渠道
-		api.GET("/setting/notification/channels/meow/:id", controllers.GetMeoWChannel)             // 查询 MeoW 渠道
-		api.PUT("/setting/notification/channels/meow", controllers.UpdateMeoWChannel)              // 更新 MeoW 渠道
-		api.POST("/setting/notification/channels/bark", controllers.CreateBarkChannel)             // 创建 Bark 渠道
-		api.GET("/setting/notification/channels/bark/:id", controllers.GetBarkChannel)             // 查询 Bark 渠道
-		api.PUT("/setting/notification/channels/bark", controllers.UpdateBarkChannel)              // 更新 Bark 渠道
-		api.POST("/setting/notification/channels/serverchan", controllers.CreateServerChanChannel) // 创建 Server 酱渠道
-		api.GET("/setting/notification/channels/serverchan/:id", controllers.GetServerChanChannel) // 查询 Server 酱渠道
-		api.PUT("/setting/notification/channels/serverchan", controllers.UpdateServerChanChannel)  // 更新 Server 酱渠道
-		api.POST("/setting/notification/channels/webhook", controllers.CreateCustomWebhookChannel) // 创建自定义 Webhook 渠道
-		api.GET("/setting/notification/channels/webhook/:id", controllers.GetCustomWebhookChannel) // 查询自定义 Webhook 渠道
-		api.PUT("/setting/notification/channels/webhook", controllers.UpdateCustomWebhookChannel)  // 更新自定义 Webhook 渠道
-		api.POST("/setting/notification/channels/status", controllers.UpdateChannelStatus)         // 启用/禁用渠道
-		api.DELETE("/setting/notification/channels/:id", controllers.DeleteChannel)                // 删除渠道
-		api.GET("/setting/notification/rules", controllers.GetNotificationRules)                   // 获取通知规则
-		api.PUT("/setting/notification/rules", controllers.UpdateNotificationRule)                 // 更新通知规则
-		api.POST("/setting/notification/channels/test", controllers.TestChannelConnection)         // 测试通知渠道连接
-		api.GET("/setting/strm-config", controllers.GetStrmConfig)                                 // 获取 STRM 配置
-		api.POST("/setting/strm-config", controllers.UpdateStrmConfig)                             // 更新 STRM 配置
-		api.GET("/setting/cron", controllers.GetCronNextTime)                                      // 获取 Cron 表达式的下 5 次执行时间
-		api.POST("/cron/validate", controllers.ValidateCron)                                       // 验证 Cron 表达式并返回描述
-		api.POST("/setting/emby/parse", controllers.ParseEmby)                                     // 解析 Emby 媒体信息
-		api.GET("/setting/emby-config", controllers.GetEmbyConfig)                                 // 获取新的 Emby 配置
-		api.POST("/setting/emby-config", controllers.UpdateEmbyConfig)                             // 更新新的 Emby 配置
-		api.POST("/setting/threads", controllers.UpdateThreads)                                    // 更新线程数
-		api.GET("/setting/threads", controllers.GetThreads)                                        // 获取线程数
+		api.POST("/setting/http-proxy", controllers.UpdateHttpProxy)
+		api.GET("/setting/http-proxy", controllers.GetHttpProxy)
+		api.POST("/setting/test-http-proxy", controllers.TestHttpProxy)
+		api.GET("/setting/log", controllers.GetLogSetting)
+		api.POST("/setting/log", controllers.UpdateLogSetting)
+		api.GET("/setting/notification/channels", controllers.GetNotificationChannels)
+		api.POST("/setting/notification/channels/telegram", controllers.CreateTelegramChannel)
+		api.GET("/setting/notification/channels/telegram/:id", controllers.GetTelegramChannel)
+		api.PUT("/setting/notification/channels/telegram", controllers.UpdateTelegramChannel)
+		api.POST("/setting/notification/channels/meow", controllers.CreateMeoWChannel)
+		api.GET("/setting/notification/channels/meow/:id", controllers.GetMeoWChannel)
+		api.PUT("/setting/notification/channels/meow", controllers.UpdateMeoWChannel)
+		api.POST("/setting/notification/channels/bark", controllers.CreateBarkChannel)
+		api.GET("/setting/notification/channels/bark/:id", controllers.GetBarkChannel)
+		api.PUT("/setting/notification/channels/bark", controllers.UpdateBarkChannel)
+		api.POST("/setting/notification/channels/serverchan", controllers.CreateServerChanChannel)
+		api.GET("/setting/notification/channels/serverchan/:id", controllers.GetServerChanChannel)
+		api.PUT("/setting/notification/channels/serverchan", controllers.UpdateServerChanChannel)
+		api.POST("/setting/notification/channels/webhook", controllers.CreateCustomWebhookChannel)
+		api.GET("/setting/notification/channels/webhook/:id", controllers.GetCustomWebhookChannel)
+		api.PUT("/setting/notification/channels/webhook", controllers.UpdateCustomWebhookChannel)
+		api.POST("/setting/notification/channels/status", controllers.UpdateChannelStatus)
+		api.DELETE("/setting/notification/channels/:id", controllers.DeleteChannel)
+		api.GET("/setting/notification/rules", controllers.GetNotificationRules)
+		api.PUT("/setting/notification/rules", controllers.UpdateNotificationRule)
+		api.POST("/setting/notification/channels/test", controllers.TestChannelConnection)
+		api.GET("/setting/strm-config", controllers.GetStrmConfig)
+		api.POST("/setting/strm-config", controllers.UpdateStrmConfig)
+		api.GET("/setting/cron", controllers.GetCronNextTime)
+		api.POST("/cron/validate", controllers.ValidateCron)
+		api.POST("/setting/emby/parse", controllers.ParseEmby)
+		api.GET("/setting/emby-config", controllers.GetEmbyConfig)
+		api.POST("/setting/emby-config", controllers.UpdateEmbyConfig)
+		api.POST("/setting/threads", controllers.UpdateThreads)
+		api.GET("/setting/threads", controllers.GetThreads)
 
-		api.POST("/emby/sync/start", controllers.StartEmbySync)     // 手动启动 Emby 同步
-		api.GET("/emby/sync/status", controllers.GetEmbySyncStatus) // 获取 Emby 同步状态
-		api.GET("/emby/libraries", controllers.GetEmbyLibraries)    // 获取 Emby 媒体库列表
-		// 删除媒体库与同步目录关联
+		api.POST("/emby/sync/start", controllers.StartEmbySync)
+		api.GET("/emby/sync/status", controllers.GetEmbySyncStatus)
+		api.GET("/emby/libraries", controllers.GetEmbyLibraries)
 
-		api.POST("/sync/start", controllers.StartSync)                       // 启动同步
-		api.GET("/sync/records", controllers.GetSyncRecords)                 // 同步列表
-		api.GET("/sync/task", controllers.GetSyncTask)                       // 获取同步任务详情
-		api.GET("/sync/path-list", controllers.GetSyncPathList)              // 获取同步路径列表
-		api.POST("/sync/paths", controllers.CreateSyncPathAggregate)         // 原子创建同步路径
-		api.PUT("/sync/paths/:id", controllers.UpdateSyncPathAggregate)      // 原子更新同步路径
-		api.POST("/sync/path-delete", controllers.DeleteSyncPath)            // 删除同步路径
-		api.POST("/sync/path/stop", controllers.StopSyncByPath)              // 停止同步路径的同步任务
-		api.POST("/sync/path/start", controllers.StartSyncByPath)            // 启动同步路径的同步任务
-		api.POST("/sync/path/full-start", controllers.FullStart115Sync)      // 启动 115 的全量同步任务
-		api.POST("/sync/delete-records", controllers.DelSyncRecords)         // 批量删除同步记录
-		api.POST("/sync/path/toggle-cron", controllers.ToggleSyncByPath)     // 关闭或开启同步目录的定时同步
-		api.GET("/sync/path/:id", controllers.GetSyncPathById)               // 获取同步路径详情
-		api.GET("/sync/path/:id/scrape-paths", controllers.GetRelScrapePath) // 获取同步路径关联的刮削路径
-		api.POST("/sync/path/scrape-paths", controllers.SaveRelScrapePath)   // 更新同步路径关联的刮削路径
-		api.POST("/sync/manual", controllers.ManualSync)                     // 手动同步
+		api.POST("/sync/start", controllers.StartSync)
+		api.GET("/sync/records", controllers.GetSyncRecords)
+		api.GET("/sync/task", controllers.GetSyncTask)
+		api.GET("/sync/path-list", controllers.GetSyncPathList)
+		api.POST("/sync/paths", controllers.CreateSyncPathAggregate)
+		api.PUT("/sync/paths/:id", controllers.UpdateSyncPathAggregate)
+		api.POST("/sync/path-delete", controllers.DeleteSyncPath)
+		api.POST("/sync/path/stop", controllers.StopSyncByPath)
+		api.POST("/sync/path/start", controllers.StartSyncByPath)
+		api.POST("/sync/path/full-start", controllers.FullStart115Sync)
+		api.POST("/sync/delete-records", controllers.DelSyncRecords)
+		api.POST("/sync/path/toggle-cron", controllers.ToggleSyncByPath)
+		api.GET("/sync/path/:id", controllers.GetSyncPathById)
+		api.GET("/sync/path/:id/scrape-paths", controllers.GetRelScrapePath)
+		api.POST("/sync/path/scrape-paths", controllers.SaveRelScrapePath)
+		api.POST("/sync/manual", controllers.ManualSync)
 
-		api.GET("/directory-upload/rules", controllers.ListDirectoryUploadRules)                                  // 获取目录监控上传规则
-		api.POST("/directory-upload/sync-paths/:sync_path_id/scan", controllers.ScanDirectoryUploadSyncPathRules) // 手动触发目录监控补偿扫描
-		api.GET("/directory-upload/runtime-status", controllers.GetDirectoryUploadRuntimeStatuses)                // 获取目录监控运行状态
+		api.GET("/directory-upload/rules", controllers.ListDirectoryUploadRules)
+		api.POST("/directory-upload/sync-paths/:sync_path_id/scan", controllers.ScanDirectoryUploadSyncPathRules)
+		api.GET("/directory-upload/runtime-status", controllers.GetDirectoryUploadRuntimeStatuses)
 
-		api.GET("/account/list", controllers.GetAccountList)                                // 获取开放平台账号列表
-		api.POST("/account/add", controllers.CreateTmpAccount)                              // 创建开放平台账号
-		api.POST("/account/authorization/prepare", controllers.PrepareAccountAuthorization) // 准备更换账号授权
-		api.POST("/account/authorization/cancel", controllers.CancelAccountAuthorization)   // 取消更换账号授权
-		api.POST("/account/update", controllers.UpdateAccountInfo)                          // 更新开放平台账号资料
-		api.POST("/account/delete", controllers.DeleteAccount)                              // 删除开放平台账号
-		api.POST("/account/openlist", controllers.CreateOpenListAccount)                    // 创建 OpenList 账号
+		api.GET("/account/list", controllers.GetAccountList)
+		api.POST("/account/add", controllers.CreateTmpAccount)
+		api.POST("/account/authorization/prepare", controllers.PrepareAccountAuthorization)
+		api.POST("/account/authorization/cancel", controllers.CancelAccountAuthorization)
+		api.POST("/account/update", controllers.UpdateAccountInfo)
+		api.POST("/account/delete", controllers.DeleteAccount)
+		api.POST("/account/openlist", controllers.CreateOpenListAccount)
 
-		// API Key 管理接口
-		api.POST("/api-keys", controllers.CreateAPIKey)                 // 创建 API Key
-		api.GET("/api-keys", controllers.ListAPIKeys)                   // 获取 API Key 列表
-		api.PUT("/api-keys/:id/status", controllers.UpdateAPIKeyStatus) // 更新 API Key 状态
-		api.DELETE("/api-keys/:id", controllers.DeleteAPIKey)           // 删除 API Key
+		api.POST("/api-keys", controllers.CreateAPIKey)
+		api.GET("/api-keys", controllers.ListAPIKeys)
+		api.PUT("/api-keys/:id/status", controllers.UpdateAPIKeyStatus)
+		api.DELETE("/api-keys/:id", controllers.DeleteAPIKey)
 
-		api.GET("/scrape/movie-genre", controllers.GetMovieGenre)                     // 获取电影类别
-		api.GET("/scrape/tvshow-genre", controllers.GetTvshowGenre)                   // 获取电视剧类别
-		api.GET("/scrape/language", controllers.GetLanguage)                          // 获取语言数组
-		api.GET("/scrape/countries", controllers.GetCountries)                        // 获取国家数组
-		api.GET("/scrape/tmdb", controllers.GetTmdbSettings)                          // 获取 TMDB 设置
-		api.POST("/scrape/tmdb", controllers.SaveTmdbSettings)                        // 保存 TMDB 设置
-		api.POST("/scrape/tmdb-test", controllers.TestTmdbSettings)                   // 测试 TMDB 设置
-		api.GET("/scrape/ai-settings", controllers.GetAiSettings)                     // 获取 AI 识别设置
-		api.POST("/scrape/ai-settings", controllers.SaveAiSettings)                   // 保存 AI 识别设置
-		api.POST("/scrape/ai-test", controllers.TestAiSettings)                       // 测试 AI 识别设置
-		api.GET("/scrape/movie-categories", controllers.GetMovieCategories)           // 获取电影分类列表
-		api.GET("/scrape/tvshow-categories", controllers.GetTvshowCategories)         // 获取电视剧分类列表
-		api.POST("/scrape/movie-categories", controllers.SaveMovieCategory)           // 保存电影分类
-		api.POST("/scrape/tvshow-categories", controllers.SaveTvshowCategory)         // 保存电视剧分类
-		api.DELETE("/scrape/movie-categories/:id", controllers.DeleteMovieCategory)   // 删除电影分类
-		api.DELETE("/scrape/tvshow-categories/:id", controllers.DeleteTvshowCategory) // 删除电视剧分类
-		api.GET("/scrape/pathes", controllers.GetScrapePathes)                        // 获取刮削路径列表
-		api.POST("/scrape/pathes", controllers.SaveScrapePath)                        // 保存刮削路径列表
-		api.DELETE("/scrape/pathes/:id", controllers.DeleteScrapePath)                // 删除刮削路径
-		api.GET("/scrape/pathes/:id", controllers.GetScrapePath)                      // 获取刮削路径详情
-		api.POST("/scrape/pathes/start", controllers.ScanScrapePath)                  // 扫描刮削路径
-		api.POST("/scrape/pathes/stop", controllers.StopScrape)                       // 停止刮削任务
-		api.POST("/scrape/pathes/toggle-cron", controllers.ToggleScrapePathCron)      // 关闭或开启刮削路径的定时刮削
-		api.GET("/scrape/records", controllers.GetScrapeRecords)                      // 获取刮削记录
-		api.POST("/scrape/re-scrape", controllers.ReScrape)                           // 重新刮削记录
-		api.POST("/scrape/clear-failed", controllers.ClearFailedScrapeRecords)        // 清除所有刮削失败的记录
-		api.POST("/scrape/truncate-all", controllers.TruncateAllScrapeRecords)        // 一键清空所有刮削记录
-		api.DELETE("/scrape/records", controllers.DeleteScrapeMediaFile)              // 删除刮削记录
-		api.POST("/scrape/finish", controllers.FinishScrapeMediaFile)                 // 完成刮削记录
-		api.POST("/scrape/rename-failed", controllers.RenameFailedScrapeMediaFile)    // 标记所有失败的记录为待整理
-		api.POST("/scrape/sync-pathes", controllers.SaveScrapeStrmPath)               // 保存刮削目录关联的同步目录
-		api.GET("/scrape/sync-pathes", controllers.GetScrapeStrmPaths)                // 获取刮削目录关联的同步目录
-		api.GET("/scrape/tmdb-search", controllers.TmdbSearch)                        // 搜索 TMDB 媒体
+		api.GET("/scrape/movie-genre", controllers.GetMovieGenre)
+		api.GET("/scrape/tvshow-genre", controllers.GetTvshowGenre)
+		api.GET("/scrape/language", controllers.GetLanguage)
+		api.GET("/scrape/countries", controllers.GetCountries)
+		api.GET("/scrape/tmdb", controllers.GetTmdbSettings)
+		api.POST("/scrape/tmdb", controllers.SaveTmdbSettings)
+		api.POST("/scrape/tmdb-test", controllers.TestTmdbSettings)
+		api.GET("/scrape/ai-settings", controllers.GetAiSettings)
+		api.POST("/scrape/ai-settings", controllers.SaveAiSettings)
+		api.POST("/scrape/ai-test", controllers.TestAiSettings)
+		api.GET("/scrape/movie-categories", controllers.GetMovieCategories)
+		api.GET("/scrape/tvshow-categories", controllers.GetTvshowCategories)
+		api.POST("/scrape/movie-categories", controllers.SaveMovieCategory)
+		api.POST("/scrape/tvshow-categories", controllers.SaveTvshowCategory)
+		api.DELETE("/scrape/movie-categories/:id", controllers.DeleteMovieCategory)
+		api.DELETE("/scrape/tvshow-categories/:id", controllers.DeleteTvshowCategory)
+		api.GET("/scrape/pathes", controllers.GetScrapePathes)
+		api.POST("/scrape/pathes", controllers.SaveScrapePath)
+		api.DELETE("/scrape/pathes/:id", controllers.DeleteScrapePath)
+		api.GET("/scrape/pathes/:id", controllers.GetScrapePath)
+		api.POST("/scrape/pathes/start", controllers.ScanScrapePath)
+		api.POST("/scrape/pathes/stop", controllers.StopScrape)
+		api.POST("/scrape/pathes/toggle-cron", controllers.ToggleScrapePathCron)
+		api.GET("/scrape/records", controllers.GetScrapeRecords)
+		api.POST("/scrape/re-scrape", controllers.ReScrape)
+		api.POST("/scrape/clear-failed", controllers.ClearFailedScrapeRecords)
+		api.POST("/scrape/truncate-all", controllers.TruncateAllScrapeRecords)
+		api.DELETE("/scrape/records", controllers.DeleteScrapeMediaFile)
+		api.POST("/scrape/finish", controllers.FinishScrapeMediaFile)
+		api.POST("/scrape/rename-failed", controllers.RenameFailedScrapeMediaFile)
+		api.POST("/scrape/sync-pathes", controllers.SaveScrapeStrmPath)
+		api.GET("/scrape/sync-pathes", controllers.GetScrapeStrmPaths)
+		api.GET("/scrape/tmdb-search", controllers.TmdbSearch)
 
-		api.GET("/upload/queue", controllers.UploadList)                                             // 获取上传队列列表
-		api.POST("/upload/queue/clear-pending", controllers.ClearPendingUploadTasks)                 // 清除上传队列中未开始的任务
-		api.POST("/upload/queue/start", controllers.StartUploadQueue)                                // 启动上传队列
-		api.POST("/upload/queue/stop", controllers.StopUploadQueue)                                  // 停止上传队列
-		api.GET("/upload/queue/status", controllers.UploadQueueStatus)                               // 查询上传队列状态
-		api.POST("/upload/queue/clear-success-failed", controllers.ClearUploadSuccessAndFailedTasks) // 清除上传队列中已完成和失败的任务
-		api.POST("/upload/queue/retry-failed", controllers.RetryFailedUploadTasks)                   // 重试所有失败的上传任务
+		api.GET("/upload/queue", controllers.UploadList)
+		api.POST("/upload/queue/clear-pending", controllers.ClearPendingUploadTasks)
+		api.POST("/upload/queue/start", controllers.StartUploadQueue)
+		api.POST("/upload/queue/stop", controllers.StopUploadQueue)
+		api.GET("/upload/queue/status", controllers.UploadQueueStatus)
+		api.POST("/upload/queue/clear-success-failed", controllers.ClearUploadSuccessAndFailedTasks)
+		api.POST("/upload/queue/retry-failed", controllers.RetryFailedUploadTasks)
 
-		api.GET("/download/queue", controllers.DownloadList)                                             // 获取下载队列列表
-		api.POST("/download/queue/clear-pending", controllers.ClearPendingDownloadTasks)                 // 清除下载队列中未开始的任务
-		api.POST("/download/queue/start", controllers.StartDownloadQueue)                                // 启动下载队列
-		api.POST("/download/queue/stop", controllers.StopDownloadQueue)                                  // 停止下载队列
-		api.GET("/download/queue/status", controllers.DownloadQueueStatus)                               // 查询下载队列状态
-		api.POST("/download/queue/clear-success-failed", controllers.ClearDownloadSuccessAndFailedTasks) // 清除下载队列中已完成和失败的任务
-		api.POST("/download/queue/retry-failed", controllers.RetryFailedDownloadTasks)                   // 重试所有失败的下载任务
+		api.GET("/download/queue", controllers.DownloadList)
+		api.POST("/download/queue/clear-pending", controllers.ClearPendingDownloadTasks)
+		api.POST("/download/queue/start", controllers.StartDownloadQueue)
+		api.POST("/download/queue/stop", controllers.StopDownloadQueue)
+		api.GET("/download/queue/status", controllers.DownloadQueueStatus)
+		api.POST("/download/queue/clear-success-failed", controllers.ClearDownloadSuccessAndFailedTasks)
+		api.POST("/download/queue/retry-failed", controllers.RetryFailedDownloadTasks)
 
-		// 备份与恢复相关路由
-		api.GET("/backup/list", controllers.GetBackupList)               // 获取备份列表
-		api.GET("/backup/records/:id", controllers.GetBackupRecord)      // 获取备份记录详情
-		api.POST("/backup/create", controllers.CreateBackup)             // 创建手动备份
-		api.DELETE("/backup/records/:id", controllers.DeleteBackup)      // 删除备份记录
-		api.POST("/backup/restore", controllers.RestoreFromBackup)       // 从备份恢复
-		api.POST("/backup/upload-restore", controllers.UploadAndRestore) // 上传文件并恢复
-		api.GET("/backup/download/:id", controllers.DownloadBackup)      // 下载备份文件
-		api.GET("/backup/config", controllers.GetBackupConfig)           // 获取备份配置
-		api.PUT("/backup/config", controllers.UpdateBackupConfig)        // 更新备份配置
-		api.GET("/backup/status", controllers.GetBackupStatus)           // 获取备份状态
-
+		api.GET("/backup/list", controllers.GetBackupList)
+		api.GET("/backup/records/:id", controllers.GetBackupRecord)
+		api.POST("/backup/create", controllers.CreateBackup)
+		api.DELETE("/backup/records/:id", controllers.DeleteBackup)
+		api.POST("/backup/restore", controllers.RestoreFromBackup)
+		api.POST("/backup/upload-restore", controllers.UploadAndRestore)
+		api.GET("/backup/download/:id", controllers.DownloadBackup)
+		api.GET("/backup/config", controllers.GetBackupConfig)
+		api.PUT("/backup/config", controllers.UpdateBackupConfig)
+		api.GET("/backup/status", controllers.GetBackupStatus)
 	}
 }
 
-// firstNonEmpty 返回参数中第一个非空字符串，用于按优先级取环境变量/默认值。
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if v != "" {
@@ -812,7 +768,6 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// checkLegacyDatabaseState 在任何数据库写入前拒绝未处理的旧内嵌数据库状态。
 func checkLegacyDatabaseState() error {
 	backupPath := filepath.Join(helpers.ConfigDir, "backups", "migrate.zip")
 	if _, err := os.Lstat(backupPath); err == nil {
@@ -834,21 +789,16 @@ func checkLegacyDatabaseState() error {
 
 func initEnv() bool {
 	log.Printf("当前版本号：%s，发布日期：%s\n", Version, PublishDate)
-	// 将版本写入 helper
 	helpers.Version = Version
 	helpers.ReleaseDate = PublishDate
-	// 加载环境变量配置
 	helpers.LoadEnvFromFile(filepath.Join(helpers.RootDir, "config", ".env"))
-	// 取值优先级：环境变量（config/.env 已经过上面的 LoadEnvFromFile 覆盖真实 env） > 编译期 ldflags 注入值。
 	helpers.DEFAULT_SC_API_KEY = firstNonEmpty(os.Getenv("SC_API_KEY"), SC_API_KEY)
 	helpers.DEFAULT_TMDB_API_KEY = firstNonEmpty(os.Getenv("TMDB_API_KEY"), TMDB_API_KEY)
 	helpers.DEFAULT_TMDB_ACCESS_TOKEN = firstNonEmpty(os.Getenv("TMDB_ACCESS_TOKEN"), TMDB_ACCESS_TOKEN)
-	// FANART_API_KEY：DEFAULT_FANART_API_KEY 保存“环境变量 > ldflags”的默认基线，
-	// 生效值先取默认基线，待加载刮削设置后再由 ScrapeSettings.ApplyKeyOverrides 按“UI 配置 > 默认”刷新。
 	helpers.DEFAULT_FANART_API_KEY = firstNonEmpty(os.Getenv("FANART_API_KEY"), FANART_API_KEY)
 	helpers.FANART_API_KEY = helpers.DEFAULT_FANART_API_KEY
 	helpers.OAuthRelayEncryptionKey = firstNonEmpty(os.Getenv("OAUTH_RELAY_ENCRYPTION_KEY"), OAuthRelayEncryptionKey)
-	initTimeZone() // 设置东 8 区
+	initTimeZone()
 	if err := getDataAndConfigDir(); err != nil {
 		log.Printf("初始化配置目录失败：%v", err)
 		return false
@@ -861,9 +811,7 @@ func initEnv() bool {
 	}
 	ipv4, _ := helpers.GetLocalIP()
 	log.Printf("本机 IPv4 地址：%s\n", ipv4)
-	// 检查配置文件是否存在
 	helpers.IsFirstRun = !helpers.HasConfigFile()
-	// 如果不存在，启动一个简易 Web 服务来配置数据库连接信息
 	if helpers.IsFirstRun {
 		log.Printf("配置文件不存在，启动简单配置服务：%s", helpers.ConfigFilePath())
 		StartConfigWebServer()
@@ -871,7 +819,6 @@ func initEnv() bool {
 	}
 	configPath := helpers.ExistingConfigFilePath()
 	log.Printf("配置文件存在，加载配置文件：%s", configPath)
-	// 如果存在，则加载配置文件，进行其他的初始化工作
 	err := helpers.InitConfig()
 	if err != nil {
 		log.Printf("初始化配置文件失败：%v", err)
@@ -882,7 +829,6 @@ func initEnv() bool {
 		return false
 	}
 	initLogger()
-	// 创建 App
 	newApp()
 	helpers.AppLogger.Infof("当前版本号：%s，发布日期：%s", Version, PublishDate)
 
@@ -896,7 +842,7 @@ func initEnv() bool {
 		return false
 	}
 
-	db.InitCache() // 初始化内存缓存
+	db.InitCache()
 	initOthers()
 	return true
 }
@@ -907,13 +853,10 @@ func parseParams() {
 	flag.BoolVar(&helpers.IsFnOS, "fnos", false, "是否是飞牛环境")
 	flag.StringVar(&update, "update", "", "更新参数")
 	registerAdminRecoveryFlags(flag.CommandLine, &adminRecoveryOptions{})
-	// 解析命令行参数
 	flag.Parse()
-	// 使用参数
 	if helpers.IsFnOS {
 		log.Printf("当前环境为飞牛环境\n")
 	}
-	// 检查是否是更新模式
 	if update != "" && runtime.GOOS == "windows" {
 		Update = true
 	}
@@ -980,7 +923,6 @@ func runUpdateProcess() error {
 
 	appPath := filepath.Join(helpers.RootDir, "QMediaSync.exe")
 	if err := controllers.InstallReleaseFiles(updateDir, helpers.RootDir, "QMediaSync.exe"); err != nil {
-		// 文件替换已回滚，恢复旧版本运行；仍将安装失败返回给更新进程。
 		return errors.Join(err, exec.Command(appPath).Start())
 	}
 	if err := os.RemoveAll(updateDir); err != nil {
@@ -996,23 +938,18 @@ func runUpdateProcess() error {
 func waitForProcessExit(pid int) error {
 	maxWait := 30 * time.Second
 	deadline := time.Now().Add(maxWait)
-
 	for time.Now().Before(deadline) {
-
 		alive, err := helpers.IsProcessAlive(pid)
 		if err != nil {
 			return err
 		}
-		// 检查进程是否已经退出
 		if !alive {
 			fmt.Printf("父进程已退出，等待资源释放…\n")
 			time.Sleep(2 * time.Second)
 			return nil
 		}
-
 		time.Sleep(500 * time.Millisecond)
 	}
-
 	return fmt.Errorf("进程 %d 在 %s 内未退出", pid, maxWait)
 }
 
@@ -1020,39 +957,34 @@ func isInRestrictedDirectory() (bool, string) {
 	if runtime.GOOS != "windows" {
 		return false, ""
 	}
-
 	exePath, err := os.Executable()
 	if err != nil {
 		return false, ""
 	}
 	exeDir := filepath.Dir(exePath)
-
 	driveLetter := strings.ToUpper(string(exeDir[0]))
 	log.Printf("应用程序路径：%s，盘符：%s", exePath, driveLetter)
 	if driveLetter == "C" {
 		return true, "应用程序位于 C 盘，建议将应用程序移动到其他盘符（如 D 盘、E 盘等）以避免权限问题"
 	}
-
 	restrictedPaths := []string{
 		"Program Files",
 		"Program Files (x86)",
 		"ProgramData",
 		"Windows",
 	}
-
 	for _, restrictedPath := range restrictedPaths {
 		log.Printf("检查目录：%s，是否包含受限路径：%s", exeDir, restrictedPath)
 		if strings.Contains(exeDir, restrictedPath) {
 			return true, fmt.Sprintf("应用程序位于受限目录 %s 中，建议将应用程序移动到普通用户目录或其他非系统目录", restrictedPath)
 		}
 	}
-
 	return false, ""
 }
 
 type databaseConfigRequest struct {
 	Engine       helpers.DbEngine     `json:"engine"`
-	PostgresType helpers.PostgresType `json:"postgresType"` // 仅识别旧客户端提交的模式
+	PostgresType helpers.PostgresType `json:"postgresType"`
 	Host         string               `json:"host"`
 	Port         int                  `json:"port"`
 	User         string               `json:"user"`
@@ -1089,12 +1021,10 @@ func StartConfigWebServer() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.Default()
-	// 使用 embed.FS 加载模板
 	data, err := embedFiles.ReadFile("assets/db_config.html")
 	if err != nil {
 		log.Fatal(err)
 	}
-	// 创建内存中的 HTML 文件
 	tmpl := template.Must(template.New("db_config.html").Parse(string(data)))
 	r.SetHTMLTemplate(tmpl)
 
@@ -1121,7 +1051,6 @@ func StartConfigWebServer() {
 			c.JSON(400, gin.H{"success": false, "error": err.Error()})
 			return
 		}
-
 		sslMode := "disable"
 		if req.SSL {
 			sslMode = "require"
@@ -1134,27 +1063,22 @@ func StartConfigWebServer() {
 			return
 		}
 		defer sqlDB.Close()
-
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-
 		if err := sqlDB.PingContext(ctx); err != nil {
 			c.JSON(200, gin.H{"success": false, "error": "连接失败：" + err.Error()})
 			return
 		}
-
 		var dbExists bool
 		err = sqlDB.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", req.Database).Scan(&dbExists)
 		if err != nil {
 			c.JSON(200, gin.H{"success": false, "error": "检查数据库失败：" + err.Error()})
 			return
 		}
-
 		if !dbExists {
 			c.JSON(200, gin.H{"success": true, "message": "数据库连接成功", "dbExists": false})
 			return
 		}
-
 		connStrDb := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 			req.Host, req.Port, req.User, req.Password, req.Database, sslMode)
 		sqlDBDb, err := sql.Open("postgres", connStrDb)
@@ -1163,14 +1087,12 @@ func StartConfigWebServer() {
 			return
 		}
 		defer sqlDBDb.Close()
-
 		var tableCount int
 		err = sqlDBDb.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name NOT LIKE 'gorr_%'").Scan(&tableCount)
 		if err != nil {
 			c.JSON(200, gin.H{"success": true, "message": "数据库连接成功", "dbExists": true, "hasOtherTables": false})
 			return
 		}
-
 		c.JSON(200, gin.H{"success": true, "message": "数据库连接成功", "dbExists": true, "hasOtherTables": tableCount > 0})
 	})
 
@@ -1211,12 +1133,10 @@ func StartConfigWebServer() {
 				}
 			}
 		}
-
 		if err := helpers.SaveConfig(yamlConfig); err != nil {
 			c.JSON(500, gin.H{"error": "保存配置失败：" + err.Error()})
 			return
 		}
-
 		c.JSON(200, gin.H{"success": true, "message": "配置已保存，配置服务已退出。重启后请查看启动日志中的初始化码，并在 Web 页面创建首个管理员。"})
 		go func() {
 			time.Sleep(1 * time.Second)
@@ -1226,7 +1146,6 @@ func StartConfigWebServer() {
 
 	fmt.Printf("配置服务已启动，请在浏览器中访问：http://ip:12333\n")
 	go func() {
-		// 第一次启动建议多等一会儿，因为数据库初始化需要时间
 		time.Sleep(2 * time.Second)
 		helpers.OpenBrowser("http://127.0.0.1:12333")
 	}()
