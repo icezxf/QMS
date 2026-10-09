@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -12,15 +13,16 @@ import (
 )
 
 // ============================================================
-// TPDB GraphQL 客户端（认证方式：Authorization: Bearer）
+// TPDB GraphQL 客户端（认证：Authorization: Bearer）
 // ============================================================
 
 type TPDBClient struct {
 	Endpoint string
 	APIKey   string
 	HTTP     *http.Client
-	mu       sync.Mutex
-	lastReq  time.Time
+
+	mu      sync.Mutex
+	lastReq time.Time
 }
 
 const tpdbMinInterval = 1500 * time.Millisecond
@@ -36,34 +38,127 @@ func NewTPDBClient(endpoint, apiKey string) *TPDBClient {
 	}
 }
 
-// TPDBScene TPDB 返回的场景数据
+// ============================================================
+// 数据结构
+// ============================================================
+
 type TPDBScene struct {
-	ID             string        `json:"id"`
-	Title          string        `json:"title"`
-	Description    string        `json:"description"`
-	Rating         float64       `json:"rating"`
-	Posters        TPDBImages    `json:"posters"`
-	Background     TPDBImages    `json:"background"`
-	BackgroundBack TPDBImages    `json:"background_back"`
-	Performers     []TPDBPerfRef `json:"performers"`
+	ID             string          `json:"id"`
+	Title          string          `json:"title"`
+	Description    string          `json:"description"`
+	Rating         float64         `json:"rating"`
+	Posters        TPDBImageSet    `json:"posters"`
+	Background     TPDBImageSet    `json:"background"`
+	BackgroundBack TPDBImageSet    `json:"background_back"`
+	Performers     []TPDBPerformer `json:"performers"`
 }
 
-type TPDBImages struct {
+type TPDBImageSet struct {
 	Full   string `json:"full"`
 	Large  string `json:"large"`
 	Medium string `json:"medium"`
 	Small  string `json:"small"`
 }
 
-type TPDBPerfRef struct {
+type TPDBPerformer struct {
 	Name string `json:"name"`
 	Face string `json:"face"`
 }
 
-// FindSceneByOshash 通过 oshash 查找 TPDB scene
-func (c *TPDBClient) FindSceneByOshash(oshash string) (*TPDBScene, error) {
+// ============================================================
+// GraphQL 请求
+// ============================================================
+
+type tpdbGQLRequest struct {
+	Query     string                 `json:"query"`
+	Variables map[string]interface{} `json:"variables"`
+}
+
+type tpdbGQLResponse struct {
+	Data   json.RawMessage `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+func (c *TPDBClient) doGraphQL(query string, variables map[string]interface{}, out interface{}) error {
 	if c.APIKey == "" {
-		return nil, fmt.Errorf("TPDB API Key 未配置")
+		return fmt.Errorf("TPDB API Key 未配置")
+	}
+
+	c.mu.Lock()
+	elapsed := time.Since(c.lastReq)
+	if elapsed < tpdbMinInterval {
+		c.mu.Unlock()
+		time.Sleep(tpdbMinInterval - elapsed)
+		c.mu.Lock()
+	}
+	c.lastReq = time.Now()
+	c.mu.Unlock()
+
+	payload, _ := json.Marshal(tpdbGQLRequest{Query: query, Variables: variables})
+
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+			helpers.AppLogger.Infof("[TPDB] 第 %d 次重试", attempt)
+		}
+
+		req, err := http.NewRequest("POST", c.Endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return fmt.Errorf("构造请求失败: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		req.Header.Set("User-Agent", "QMediaSync/1.0")
+
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("请求失败: %w", err)
+			continue
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusUnauthorized {
+			return fmt.Errorf("TPDB 认证失败（HTTP 401）：请检查 API Key")
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			lastErr = fmt.Errorf("TPDB 限流（HTTP 429）")
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("TPDB HTTP %d: %s", resp.StatusCode, truncate(string(body), 200))
+		}
+
+		var gr tpdbGQLResponse
+		if err := json.Unmarshal(body, &gr); err != nil {
+			return fmt.Errorf("解析响应失败: %w", err)
+		}
+		if len(gr.Errors) > 0 {
+			return fmt.Errorf("TPDB GraphQL 错误: %s", gr.Errors[0].Message)
+		}
+		if err := json.Unmarshal(gr.Data, out); err != nil {
+			return fmt.Errorf("解析 data 失败: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("重试 %d 次均失败: %v", maxAttempts, lastErr)
+}
+
+// ============================================================
+// 公开方法
+// ============================================================
+
+// FindSceneByOshash 通过 oshash 查找 TPDB scene
+// 未命中返回 (nil, nil)
+func (c *TPDBClient) FindSceneByOshash(oshash string) (*TPDBScene, error) {
+	if oshash == "" {
+		return nil, fmt.Errorf("空 oshash")
 	}
 
 	const query = `query($f: [[FingerprintQueryInput!]!]!) {
@@ -81,83 +176,32 @@ func (c *TPDBClient) FindSceneByOshash(oshash string) (*TPDBScene, error) {
 
 	variables := map[string]interface{}{
 		"f": [][]map[string]string{
-			{{"algorithm": "OSHASH", "hash": oshash}},
+			{
+				{
+					"hash":      oshash,
+					"algorithm": "OSHASH",
+				},
+			},
 		},
 	}
 
-	var resp struct {
-		Data struct {
-			Scenes [][]TPDBScene `json:"findScenesBySceneFingerprints"`
-		} `json:"data"`
+	var result struct {
+		FindScenesBySceneFingerprints [][]*TPDBScene `json:"findScenesBySceneFingerprints"`
 	}
 
-	if err := c.doGraphQL(query, variables, &resp); err != nil {
+	err := c.doGraphQL(query, variables, &result)
+	if err != nil {
 		return nil, err
 	}
 
-	if len(resp.Data.Scenes) == 0 || len(resp.Data.Scenes[0]) == 0 {
+	if len(result.FindScenesBySceneFingerprints) == 0 ||
+		len(result.FindScenesBySceneFingerprints[0]) == 0 {
+		helpers.AppLogger.Infof("[TPDB] oshash %s 未命中", oshash)
 		return nil, nil
 	}
-	return &resp.Data.Scenes[0][0], nil
-}
 
-// doGraphQL 统一请求（带限速 + 重试）
-func (c *TPDBClient) doGraphQL(query string, variables map[string]interface{}, out interface{}) error {
-	c.mu.Lock()
-	elapsed := time.Since(c.lastReq)
-	if elapsed < tpdbMinInterval {
-		c.mu.Unlock()
-		time.Sleep(tpdbMinInterval - elapsed)
-		c.mu.Lock()
-	}
-	c.lastReq = time.Now()
-	c.mu.Unlock()
-
-	payload, _ := json.Marshal(map[string]interface{}{
-		"query":     query,
-		"variables": variables,
-	})
-
-	const maxAttempts = 3
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if attempt > 1 {
-			time.Sleep(time.Duration(attempt) * 2 * time.Second)
-			helpers.AppLogger.Infof("[TPDB] 第 %d 次重试", attempt)
-		}
-
-		req, err := http.NewRequest("POST", c.Endpoint, bytes.NewReader(payload))
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := c.HTTP.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		var gqlResp struct {
-			Data   json.RawMessage `json:"data"`
-			Errors []struct {
-				Message string `json:"message"`
-			} `json:"errors"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&gqlResp); err != nil {
-			resp.Body.Close()
-			lastErr = err
-			continue
-		}
-		resp.Body.Close()
-
-		if len(gqlResp.Errors) > 0 {
-			lastErr = fmt.Errorf("GraphQL 错误: %s", gqlResp.Errors[0].Message)
-			continue
-		}
-
-		return json.Unmarshal(gqlResp.Data, out)
-	}
-	return lastErr
+	scene := result.FindScenesBySceneFingerprints[0][0]
+	helpers.AppLogger.Infof("[TPDB] oshash %s → scene %s (%s) rating=%.2f",
+		oshash, scene.ID, scene.Title, scene.Rating)
+	return scene, nil
 }
