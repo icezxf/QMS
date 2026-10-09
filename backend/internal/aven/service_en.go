@@ -177,6 +177,14 @@ func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.Scrape
 		return warnings
 	}
 
+	// ===== Google 全量优先：直接切引擎 =====
+	// 勾了"全部走 Google" + 有 Key 时，绕开 DeepL/Gemini，直接用 Google Cloud
+	if cfg.GoogleTranslateForAll && cfg.GoogleTranslateAPIKey != "" {
+		helpers.AppLogger.Infof("[欧美翻译] 切换到 Google Cloud 引擎（全量）")
+		tr.Engine = "google_cloud"
+	}
+	// ==========================================
+
 	r.PlotOriginal = r.Plot
 
 	if cfg.TranslateTitle && r.Title != "" {
