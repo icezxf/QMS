@@ -55,11 +55,9 @@ func redactURL(raw string) string {
 }
 
 // ============================================================
-// 图片裁剪：从横版图裁出 2:3 竖版
+// 图片裁剪：从横版图裁出 2:3 竖版（仅作兜底）
 // ============================================================
 
-// cropToPoster 从横版图（或任意图）裁出 2:3 竖版
-// 策略：从左侧裁（欧美截图通常是左侧主体）
 func cropToPoster(src []byte) ([]byte, bool) {
 	img, _, err := image.Decode(bytes.NewReader(src))
 	if err != nil {
@@ -72,17 +70,12 @@ func cropToPoster(src []byte) ([]byte, bool) {
 		return nil, false
 	}
 
-	// 目标：2:3 竖版，高不变，宽 = 高 * 2/3
 	targetW := imgH * 2 / 3
 	if targetW > imgW {
-		// 图比 2:3 还窄，不能用高度裁
-		// 反过来，宽不变，高 = 宽 * 3/2
 		targetH := imgW * 3 / 2
 		if targetH > imgH {
-			// 实在不行，整体返回
 			return src, false
 		}
-		// 从顶部裁
 		dst := image.NewRGBA(image.Rect(0, 0, imgW, targetH))
 		draw.Draw(dst, dst.Bounds(), img, image.Point{0, 0}, draw.Src)
 		var out bytes.Buffer
@@ -92,7 +85,6 @@ func cropToPoster(src []byte) ([]byte, bool) {
 		return out.Bytes(), true
 	}
 
-	// 从左侧裁 targetW 宽
 	dst := image.NewRGBA(image.Rect(0, 0, targetW, imgH))
 	draw.Draw(dst, dst.Bounds(), img, image.Point{0, 0}, draw.Src)
 	var out bytes.Buffer
@@ -102,7 +94,6 @@ func cropToPoster(src []byte) ([]byte, bool) {
 	return out.Bytes(), true
 }
 
-// resizeToMin 如果小于 minW x minH，等比放大
 func resizeToMin(src []byte, minW, minH int) ([]byte, bool) {
 	img, _, err := image.Decode(bytes.NewReader(src))
 	if err != nil {
@@ -142,7 +133,9 @@ func resizeToMin(src []byte, minW, minH int) ([]byte, bool) {
 // ============================================================
 
 // PrepareMetaFilesN 生成欧美元数据文件（NFO + poster + fanart + 剧照）
-// 返回 (files, warnings, error)
+// 图片来源：
+//   poster → r.Poster（由 service_en.go 从 TPDB posters.full 填充，800x1200 竖版）
+//   fanart → r.ImageCandidates 里挑横版（由 service_en.go 从 StashDB images 填充）
 func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) ([]avscrape.LocalFile, []string, error) {
 	var warnings []string
 	if r == nil {
@@ -157,20 +150,31 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 
 	files := []avscrape.LocalFile{}
 
-	// ===== 选 poster 和 fanart =====
+	// ===== 1. poster：优先用 TPDB posters.full（已是 800x1200 竖版）=====
 	var posterData, fanartData []byte
 
-	candidates := r.ImageCandidates
-	if len(candidates) == 0 && r.Poster != "" {
-		candidates = append(candidates, r.Poster)
+	if r.Poster != "" {
+		data, err := downloadImage(r.Poster)
+		if err != nil {
+			helpers.AppLogger.Warnf("[欧美元数据] poster 下载失败: %s => %v", redactURL(r.Poster), err)
+			warnings = append(warnings, fmt.Sprintf("poster 下载失败: %v", err))
+		} else {
+			imgCfg, _, _ := image.DecodeConfig(bytes.NewReader(data))
+			helpers.AppLogger.Infof("[欧美元数据] poster 来自 TPDB: %dx%d (%s)",
+				imgCfg.Width, imgCfg.Height, redactURL(r.Poster))
+			posterData = data
+		}
+	} else {
+		helpers.AppLogger.Infof("[欧美元数据] r.Poster 为空，poster 将走兜底")
 	}
 
-	helpers.AppLogger.Infof("[欧美元数据] 待筛选图片共 %d 张", len(candidates))
+	// ===== 2. fanart：从 StashDB images 里挑横版（width > height）=====
+	candidates := r.ImageCandidates
+	helpers.AppLogger.Infof("[欧美元数据] fanart 候选共 %d 张", len(candidates))
 	for i, url := range candidates {
 		data, err := downloadImage(url)
 		if err != nil {
 			helpers.AppLogger.Warnf("[欧美元数据]   [%d] 下载失败: %s => %v", i, redactURL(url), err)
-			warnings = append(warnings, fmt.Sprintf("图片下载失败: %s", redactURL(url)))
 			continue
 		}
 		imgCfg, _, err := image.DecodeConfig(bytes.NewReader(data))
@@ -178,23 +182,31 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 			continue
 		}
 		helpers.AppLogger.Infof("[欧美元数据]   [%d] %dx%d (%s)", i, imgCfg.Width, imgCfg.Height, redactURL(url))
-
-		// 第一张作为 fanart（横版优先）
-		if fanartData == nil {
+		if imgCfg.Width > imgCfg.Height {
 			fanartData = data
 			r.Fanart = url
-			helpers.AppLogger.Infof("[欧美元数据]   → 作为 fanart")
+			helpers.AppLogger.Infof("[欧美元数据]   → 选为 fanart（横版 %dx%d）", imgCfg.Width, imgCfg.Height)
+			break
 		}
-		// 尝试从第一张裁出 poster
-		if posterData == nil {
+	}
+
+	// ===== 3. poster 兜底：从候选图里裁 =====
+	if posterData == nil && len(candidates) > 0 {
+		if data, err := downloadImage(candidates[0]); err == nil {
 			if cropped, ok := cropToPoster(data); ok {
 				posterData = cropped
-				r.Poster = url
-				helpers.AppLogger.Infof("[欧美元数据]   → poster 从图裁出")
+				helpers.AppLogger.Infof("[欧美元数据] poster 兜底：从候选图裁出")
 			}
 		}
-		if posterData != nil && fanartData != nil {
-			break
+	}
+
+	// ===== 4. fanart 兜底：用第一张候选 =====
+	if fanartData == nil && len(candidates) > 0 {
+		if data, err := downloadImage(candidates[0]); err == nil {
+			fanartData = data
+			r.Fanart = candidates[0]
+			helpers.AppLogger.Infof("[欧美元数据] fanart 兜底：用第一张候选")
+			warnings = append(warnings, "fanart 未找到横版图，使用兜底")
 		}
 	}
 
@@ -226,7 +238,6 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 			}
 		}
 	}
-	// ==================
 
 	// ===== 写 poster =====
 	if posterData != nil {
@@ -259,248 +270,3 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 	// ===== 剧照 =====
 	successCount := 0
 	failCount := 0
-	for i, url := range r.PreviewImages {
-		remoteName := fmt.Sprintf("extrafanart/fanart%d.jpg", i+1)
-		localPath := filepath.Join(tmpDir, fmt.Sprintf("fanart%d.jpg", i+1))
-		if err := helpers.DownloadFile(url, localPath, ""); err == nil {
-			files = append(files, avscrape.LocalFile{LocalPath: localPath, RemoteName: remoteName})
-			successCount++
-		} else {
-			failCount++
-		}
-	}
-	if failCount > 0 {
-		warnings = append(warnings, fmt.Sprintf("剧照部分下载失败: 成功 %d, 失败 %d", successCount, failCount))
-	}
-
-	// ===== 预告片（如果 urls 里有 mp4 链接）=====
-	if r.Trailer != "" {
-		p := filepath.Join(tmpDir, "trailer.strm")
-		if err := os.WriteFile(p, []byte(r.Trailer), 0644); err == nil {
-			files = append(files, avscrape.LocalFile{LocalPath: p, RemoteName: "trailers/trailer.strm"})
-		}
-	}
-
-	// ===== NFO =====
-	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
-	if err := os.WriteFile(nfoPath, []byte(GenerateNFON(r)), 0644); err != nil {
-		return nil, warnings, fmt.Errorf("写 NFO 失败: %w", err)
-	}
-	files = append(files, avscrape.LocalFile{LocalPath: nfoPath, RemoteName: baseName + ".nfo"})
-
-	return files, warnings, nil
-}
-
-// ============================================================
-// 整理（移动视频文件）
-// ============================================================
-
-// OrganizeN 移动视频到目标目录
-func OrganizeN(fs avscrape.FileSystem, path *models.AVENPath, media *models.AVENMedia, videoPaths []string, r *avscrape.ScrapeResult) (string, error) {
-	relDir := renderTemplateN(path.NameTemplate, media)
-	if relDir == "" {
-		relDir = media.Title
-	}
-	targetDir := strings.TrimRight(path.TargetPath, "/") + "/" + relDir
-	if err := fs.MkdirAll(targetDir); err != nil {
-		return "", err
-	}
-	helpers.AppLogger.Infof("[欧美整理] 目标目录: %s", targetDir)
-
-	resSuffix := ""
-	if r != nil {
-		resSuffix = resolutionSuffix(r.Resolution)
-	}
-
-	for _, srcPath := range videoPaths {
-		originalName := filepath.Base(srcPath)
-		ext := filepath.Ext(originalName)
-		newName := media.Title + resSuffix + ext
-		newPath := targetDir + "/" + newName
-
-		if fs.Exists(newPath) {
-			helpers.AppLogger.Infof("[欧美整理] 目标已存在，跳过: %s", newName)
-			continue
-		}
-
-		switch path.MoveMethod {
-		case "copy":
-			if err := fs.Copy(srcPath, targetDir); err != nil {
-				helpers.AppLogger.Warnf("[欧美整理] 复制失败 %s: %v", srcPath, err)
-				continue
-			}
-			if originalName != newName {
-				oldPath := targetDir + "/" + originalName
-				if err := fs.Rename(oldPath, newName); err != nil {
-					helpers.AppLogger.Warnf("[欧美整理] 重命名失败 %s: %v", oldPath, err)
-				}
-			}
-		default:
-			if err := fs.Move(srcPath, targetDir, newName); err != nil {
-				helpers.AppLogger.Warnf("[欧美整理] 移动失败 %s: %v", srcPath, err)
-				continue
-			}
-		}
-		helpers.AppLogger.Infof("[欧美整理] %s → %s", originalName, newName)
-	}
-
-	return targetDir, nil
-}
-
-// ============================================================
-// 模板渲染（欧美：{actor} / {studio} / {title} / {year} / {code}）
-// ============================================================
-
-func renderTemplateN(tpl string, media *models.AVENMedia) string {
-	if tpl == "" {
-		// 默认模板：按演员分
-		return defaultNameTemplateN(media)
-	}
-
-	var actors []avscrape.Actor
-	if media.Actors != "" {
-		_ = json.Unmarshal([]byte(media.Actors), &actors)
-	}
-
-	names := make([]string, 0, len(actors))
-	for _, a := range actors {
-		if a.Name != "" {
-			names = append(names, a.Name)
-		}
-	}
-
-	actorDir := ""
-	switch {
-	case len(names) == 0:
-		actorDir = "Unknown"
-	case len(names) <= 3:
-		actorDir = strings.Join(names, ",")
-	default:
-		actorDir = "多人作品"
-	}
-	allActors := strings.Join(names, ", ")
-	allActorsPath := sanitizePathN(allActors)
-	if len(names) >= 2 {
-		allActorsPath = "多人作品/" + sanitizePathN(allActors)
-	}
-
-	replacer := strings.NewReplacer(
-		"{actor}", sanitizePathN(actorDir),
-		"{actors}", allActorsPath,
-		"{title}", sanitizePathN(media.Title),
-		"{year}", extractYearN(media.ReleaseDate),
-		"{studio}", sanitizePathN(media.Studio),
-		"{series}", sanitizePathN(media.Series),
-		"{code}", sanitizePathN(media.StashID),
-	)
-
-	result := replacer.Replace(tpl)
-	result = strings.Trim(result, "/")
-	for strings.Contains(result, "//") {
-		result = strings.ReplaceAll(result, "//", "/")
-	}
-	parts := strings.Split(result, "/")
-	cleaned := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			cleaned = append(cleaned, p)
-		}
-	}
-	return strings.Join(cleaned, "/")
-}
-
-func defaultNameTemplateN(media *models.AVENMedia) string {
-	var actors []avscrape.Actor
-	if media.Actors != "" {
-		_ = json.Unmarshal([]byte(media.Actors), &actors)
-	}
-	names := make([]string, 0, len(actors))
-	for _, a := range actors {
-		if a.Name != "" {
-			names = append(names, a.Name)
-		}
-	}
-	actorDir := "Unknown"
-	if len(names) == 1 {
-		actorDir = names[0]
-	} else if len(names) >= 2 && len(names) <= 3 {
-		actorDir = strings.Join(names, ",")
-	} else if len(names) > 3 {
-		actorDir = "多人作品"
-	}
-	return sanitizePathN(actorDir) + "/" + sanitizePathN(media.Title)
-}
-
-func sanitizePathN(s string) string {
-	if s == "" {
-		return ""
-	}
-	replacer := strings.NewReplacer(
-		"/", "_", "\\", "_", ":", "：", "*", "_",
-		"?", "？", "\"", "'", "<", "《", ">", "》", "|", "_",
-	)
-	return strings.TrimSpace(replacer.Replace(s))
-}
-
-func extractYearN(date string) string {
-	if len(date) >= 4 {
-		return date[:4]
-	}
-	return ""
-}
-
-func resolutionSuffix(res string) string {
-	switch res {
-	case "8K":
-		return "-8K"
-	case "7K":
-		return "-7K"
-	case "6K":
-		return "-6K"
-	case "5K":
-		return "-5K"
-	case "4K":
-		return "-4K"
-	}
-	return ""
-}
-
-// ============================================================
-// 水印判定（欧美版，复用 avscrape.ApplyWatermark）
-// ============================================================
-
-// buildWatermarksN 欧美水印判定（逻辑与日本 AV 一致，但用 aven.Config）
-func buildWatermarksN(r *avscrape.ScrapeResult, cfg *Config) []avscrape.WatermarkItem {
-	var items []avscrape.WatermarkItem
-
-	allTags := append([]string{}, r.Genres...)
-	allTags = append(allTags, r.ExtraTags...)
-	joined := strings.ToLower(strings.Join(allTags, ","))
-
-	if cfg.Watermark8K && (strings.Contains(joined, "8k") || r.Resolution == "8K") {
-		items = append(items, avscrape.WatermarkItem{PngName: "8k.png", Label: "8K"})
-	} else if cfg.Watermark7K && (strings.Contains(joined, "7k") || r.Resolution == "7K") {
-		items = append(items, avscrape.WatermarkItem{PngName: "7k.png", Label: "7K"})
-	} else if cfg.Watermark6K && (strings.Contains(joined, "6k") || r.Resolution == "6K") {
-		items = append(items, avscrape.WatermarkItem{PngName: "6k.png", Label: "6K"})
-	} else if cfg.Watermark5K && (strings.Contains(joined, "5k") || r.Resolution == "5K") {
-		items = append(items, avscrape.WatermarkItem{PngName: "5k.png", Label: "5K"})
-	} else if cfg.Watermark4K && (strings.Contains(joined, "4k") || r.Resolution == "4K") {
-		items = append(items, avscrape.WatermarkItem{PngName: "4k.png", Label: "4K"})
-	}
-
-	if cfg.WatermarkSubtitle && (r.HasChineseSub || strings.Contains(joined, "字幕") || strings.Contains(joined, "中字")) {
-		items = append(items, avscrape.WatermarkItem{PngName: "字幕.png", Label: "字幕"})
-	}
-	if cfg.WatermarkCrack && strings.Contains(joined, "破解") {
-		items = append(items, avscrape.WatermarkItem{PngName: "破解.png", Label: "破解"})
-	}
-	if cfg.WatermarkLeak && strings.Contains(joined, "流出") {
-		items = append(items, avscrape.WatermarkItem{PngName: "流出.png", Label: "流出"})
-	}
-	if cfg.WatermarkUncensored && (r.IsUncensored || strings.Contains(joined, "无码")) {
-		items = append(items, avscrape.WatermarkItem{PngName: "无码.png", Label: "无码"})
-	}
-	return items
-}
