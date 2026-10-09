@@ -91,15 +91,19 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 	r.IsHDR = pr.IsHDR
 	r.ExtraTags = buildExtraTagsN(r, cfg)
 
-	// 3.5 填充 fanart 候选（StashDB images，用于后续挑横版）
-	if len(r.ImageCandidates) == 0 {
-		for _, img := range scene.Images {
-			if img.URL != "" {
-				r.ImageCandidates = append(r.ImageCandidates, img.URL)
-			}
+	// 3.5 强制用 scene.Images 覆盖 fanart 候选
+	//     关键：SceneToResult 可能把 studio logo / performer 头像也塞进去了，
+	//     这里必须清空重填，只用 scene 级图片。
+	r.ImageCandidates = nil
+	for _, img := range scene.Images {
+		if img.URL != "" {
+			r.ImageCandidates = append(r.ImageCandidates, img.URL)
 		}
 	}
 	helpers.AppLogger.Infof("[欧美] fanart 候选图片 %d 张", len(r.ImageCandidates))
+	for i, u := range r.ImageCandidates {
+		helpers.AppLogger.Infof("[欧美]   [%d] %s", i, u)
+	}
 
 	var warnings []string
 
@@ -110,10 +114,13 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 			helpers.AppLogger.Warnf("[TPDB] 查询失败: %v", tpdbErr)
 			warnings = append(warnings, fmt.Sprintf("TPDB 查询失败: %v", tpdbErr))
 		} else if tpdbScene != nil {
-			// poster
-			if tpdbScene.Posters.Full != "" {
+			// poster 优先用 TPDB 的 800x1200 竖版（JPEG 优先，避免 WebP 解码失败）
+			if tpdbScene.Posters.Large != "" {
+				r.Poster = tpdbScene.Posters.Large
+				helpers.AppLogger.Infof("[TPDB] 补充 poster(large): %s", redactURL(tpdbScene.Posters.Large))
+			} else if tpdbScene.Posters.Full != "" {
 				r.Poster = tpdbScene.Posters.Full
-				helpers.AppLogger.Infof("[TPDB] 补充 poster: %s", redactURL(tpdbScene.Posters.Full))
+				helpers.AppLogger.Infof("[TPDB] 补充 poster(full): %s", redactURL(tpdbScene.Posters.Full))
 			}
 			// rating
 			if tpdbScene.Rating > 0 {
