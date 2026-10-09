@@ -103,14 +103,14 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 
 	var warnings []string
 
-	// 4. 查 TPDB 补充 poster / rating / plot（可选，未配置自动跳过）
+	// 4. 查 TPDB 补充 poster / rating / plot / studio（可选）
 	if tpdb := s.GetTPDB(); tpdb != nil {
 		tpdbScene, tpdbErr := tpdb.FindSceneByOshash(pr.Oshash)
 		if tpdbErr != nil {
 			helpers.AppLogger.Warnf("[TPDB] 查询失败: %v", tpdbErr)
 			warnings = append(warnings, fmt.Sprintf("TPDB 查询失败: %v", tpdbErr))
 		} else if tpdbScene != nil {
-			// poster 优先用 TPDB 的 800x1200 竖版
+			// poster
 			if tpdbScene.Posters.Full != "" {
 				r.Poster = tpdbScene.Posters.Full
 				helpers.AppLogger.Infof("[TPDB] 补充 poster: %s", redactURL(tpdbScene.Posters.Full))
@@ -120,23 +120,29 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 				r.Rating = tpdbScene.Rating
 				helpers.AppLogger.Infof("[TPDB] 补充 rating: %.2f", tpdbScene.Rating)
 			}
-			// Plot 兜底：StashDB 的 details 为空时，用 TPDB 的 details
+			// plot 兜底：StashDB 的 details 为空时用
 			if r.Plot == "" {
-				plot := tpdbScene.GetPlot()
-				if plot != "" {
+				if plot := tpdbScene.GetPlot(); plot != "" {
 					r.Plot = plot
-					helpers.AppLogger.Infof("[TPDB] 补充 plot（StashDB 为空）: %s", truncate(plot, 50))
+					helpers.AppLogger.Infof("[TPDB] 补充 plot: %s", truncate(plot, 50))
+				}
+			}
+			// studio 兜底
+			if r.Studio == "" {
+				if studio := tpdbScene.GetStudio(); studio != "" {
+					r.Studio = studio
+					helpers.AppLogger.Infof("[TPDB] 补充 studio: %s", studio)
 				}
 			}
 		} else {
-			helpers.AppLogger.Infof("[TPDB] oshash %s 未命中，poster/rating/plot 留空", pr.Oshash)
-			warnings = append(warnings, "TPDB 未命中，poster/rating/plot 缺失")
+			helpers.AppLogger.Infof("[TPDB] oshash %s 未命中", pr.Oshash)
+			warnings = append(warnings, "TPDB 未命中")
 		}
 	} else {
 		helpers.AppLogger.Infof("[TPDB] 未配置或未启用，跳过补充")
 	}
 
-	// 5. 翻译（只译标题/剧情/标签，和原逻辑一致）
+	// 5. 翻译（只译标题/剧情/标签）
 	if cfg.EnableTranslate {
 		tr := avscrape.NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.SourceLang = "en"
