@@ -43,7 +43,7 @@ func (s *ServiceEN) GetStashDB() *StashDBClient {
 	return NewStashDBClient(cfg.StashDBEndpoint, cfg.StashDBAPIKey)
 }
 
-// GetTPDB 新增：获取 TPDB 客户端（未配置或未启用返回 nil）
+// GetTPDB 获取 TPDB 客户端（未配置或未启用返回 nil）
 func (s *ServiceEN) GetTPDB() *TPDBClient {
 	cfg := s.GetConfig()
 	if !cfg.EnableTPDB || cfg.TPDBAPIKey == "" {
@@ -103,7 +103,7 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 
 	var warnings []string
 
-	// 4. 查 TPDB 补充 poster + rating（可选，未配置自动跳过）
+	// 4. 查 TPDB 补充 poster / rating / plot（可选，未配置自动跳过）
 	if tpdb := s.GetTPDB(); tpdb != nil {
 		tpdbScene, tpdbErr := tpdb.FindSceneByOshash(pr.Oshash)
 		if tpdbErr != nil {
@@ -120,9 +120,17 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 				r.Rating = tpdbScene.Rating
 				helpers.AppLogger.Infof("[TPDB] 补充 rating: %.2f", tpdbScene.Rating)
 			}
+			// Plot 兜底：StashDB 的 details 为空时，用 TPDB 的 details
+			if r.Plot == "" {
+				plot := tpdbScene.GetPlot()
+				if plot != "" {
+					r.Plot = plot
+					helpers.AppLogger.Infof("[TPDB] 补充 plot（StashDB 为空）: %s", truncate(plot, 50))
+				}
+			}
 		} else {
-			helpers.AppLogger.Infof("[TPDB] oshash %s 未命中，poster/rating 留空", pr.Oshash)
-			warnings = append(warnings, "TPDB 未命中，poster/rating 缺失")
+			helpers.AppLogger.Infof("[TPDB] oshash %s 未命中，poster/rating/plot 留空", pr.Oshash)
+			warnings = append(warnings, "TPDB 未命中，poster/rating/plot 缺失")
 		}
 	} else {
 		helpers.AppLogger.Infof("[TPDB] 未配置或未启用，跳过补充")
@@ -149,7 +157,7 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 	return r, pr.Oshash, nil
 }
 
-// translateResultN 欧美翻译（保持不变）
+// translateResultN 欧美翻译
 func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.ScrapeResult, cfg *Config) []string {
 	var warnings []string
 	if r == nil {
@@ -188,7 +196,7 @@ func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.Scrape
 	return warnings
 }
 
-// buildExtraTagsN 欧美附加标签（保持不变）
+// buildExtraTagsN 欧美附加标签
 func buildExtraTagsN(r *avscrape.ScrapeResult, cfg *Config) []string {
 	var tags []string
 	if cfg.ExtraTagResolution && r.Resolution != "" {
@@ -206,7 +214,7 @@ func buildExtraTagsN(r *avscrape.ScrapeResult, cfg *Config) []string {
 	return tags
 }
 
-// ===== 暂停操作（以下全部保持不变）=====
+// ===== 暂停操作 =====
 
 func (s *ServiceEN) ReleaseMedia(id uint) error {
 	media := models.GetAVENMediaByID(id)
