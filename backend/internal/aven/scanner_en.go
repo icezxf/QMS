@@ -1,424 +1,526 @@
 package aven
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/draw"
+	"image/jpeg"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"io"
+	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"qmediasync/internal/avscrape"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
-
-	"gorm.io/gorm"
 )
 
-// ===== 扫描过滤器：只处理指定 oshash =====
-var (
-	scanFilterNMu       sync.Mutex
-	scanFilterNOshashes map[string]bool
-)
+// ============================================================
+// 图片下载
+// ============================================================
 
-func SetScanFilterN(oshashes []string) {
-	scanFilterNMu.Lock()
-	defer scanFilterNMu.Unlock()
-	if len(oshashes) == 0 {
-		scanFilterNOshashes = nil
-		return
-	}
-	scanFilterNOshashes = make(map[string]bool, len(oshashes))
-	for _, c := range oshashes {
-		scanFilterNOshashes[c] = true
-	}
-}
+var httpClientForImage = &http.Client{Timeout: 30 * time.Second}
 
-func shouldProcessOshash(oshash string) bool {
-	scanFilterNMu.Lock()
-	defer scanFilterNMu.Unlock()
-	if len(scanFilterNOshashes) == 0 {
-		return true
-	}
-	return scanFilterNOshashes[oshash]
-}
-
-func clearScanFilterN() {
-	scanFilterNMu.Lock()
-	defer scanFilterNMu.Unlock()
-	scanFilterNOshashes = nil
-}
-// ==========================================
-
-// ===== 源目录清理：没有 >1G 视频的子目录整个删除 =====
-const (
-	cleanupBigVideoSizeEN      = int64(1) << 30 // 1G
-	cleanupDeleteIntervalEN    = 500 * time.Millisecond
-	cleanupMaxDeletesPerScanEN = 100
-)
-
-var videoExtsN = map[string]bool{
-	".mp4": true, ".mkv": true, ".avi": true, ".wmv": true,
-	".mov": true, ".flv": true, ".ts": true, ".m2ts": true,
-	".iso": true, ".rmvb": true, ".strm": true,
-}
-
-// cleanupSourceDirN 递归清理源目录下的残留子目录
-// 规则：源目录本身保留，源目录下的任意子目录，如果连同所有子目录、
-// 所有文件都没有 >1G 的视频，就整个删除
-func cleanupSourceDirN(fs avscrape.FileSystem, srcDir string) {
-	entries, err := fs.ListDetailed(srcDir)
-	if err != nil {
-		helpers.AppLogger.Warnf("[欧美清理] 列出源目录失败 %s: %v", srcDir, err)
-		return
-	}
-
-	deleted := 0
-	for _, e := range entries {
-		if !e.IsDir {
-			continue
-		}
-		cleanupDirRecursiveN(fs, e.Path, &deleted)
-	}
-
-	if deleted > 0 {
-		helpers.AppLogger.Infof("[欧美清理] 本次共删除 %d 个残留目录", deleted)
-	}
-}
-
-// cleanupDirRecursiveN 后序遍历目录树
-// 返回 true 表示这个目录已经被删掉
-func cleanupDirRecursiveN(fs avscrape.FileSystem, dir string, deleted *int) bool {
-	entries, err := fs.ListDetailed(dir)
-	if err != nil {
-		// 列不出来就不动它，保守
-		return false
-	}
-
-	hasBigVideo := false
-
-	// 1. 先递归处理子目录
-	for _, e := range entries {
-		if !e.IsDir {
-			continue
-		}
-		subRemoved := cleanupDirRecursiveN(fs, e.Path, deleted)
-		if !subRemoved {
-			// 子目录还在，说明里面（含深层）有 >1G 视频
-			hasBigVideo = true
-		}
-	}
-
-	// 2. 再检查当前目录的直接文件
-	if !hasBigVideo {
-		for _, e := range entries {
-			if e.IsDir {
-				continue
-			}
-			if !isVideoNameN(e.Name) {
-				continue
-			}
-			if e.Size > cleanupBigVideoSizeEN {
-				hasBigVideo = true
-				break
-			}
-		}
-	}
-
-	// 还有大视频，保留
-	if hasBigVideo {
-		return false
-	}
-
-	// 达到单次上限就停
-	if *deleted >= cleanupMaxDeletesPerScanEN {
-		helpers.AppLogger.Warnf("[欧美清理] 已达到单次删除上限 %d，跳过 %s",
-			cleanupMaxDeletesPerScanEN, dir)
-		return false
-	}
-
-	// 节流：每次删除之前 sleep，避免连续 Del 请求
-	if *deleted > 0 && cleanupDeleteIntervalEN > 0 {
-		time.Sleep(cleanupDeleteIntervalEN)
-	}
-
-	// 删除整个目录
-	if err := fs.DeleteDir(dir); err != nil {
-		helpers.AppLogger.Warnf("[欧美清理] 删除目录失败 %s: %v", dir, err)
-		return false
-	}
-	*deleted++
-	helpers.AppLogger.Infof("[欧美清理] 已删除残留目录: %s", dir)
-	return true
-}
-
-// isVideoNameN 判断文件名是否视频
-func isVideoNameN(name string) bool {
-	ext := strings.ToLower(filepath.Ext(name))
-	return videoExtsN[ext]
-}
-// ==================================================
-
-type ScannerEN struct {
-	DB  *gorm.DB
-	Svc *ServiceEN
-}
-
-func NewScannerEN(db *gorm.DB) *ScannerEN {
-	return &ScannerEN{DB: db, Svc: NewServiceEN(db)}
-}
-
-func (s *ScannerEN) Scan(pathID uint) error {
-	var path models.AVENPath
-	if err := s.DB.First(&path, pathID).Error; err != nil {
-		return err
-	}
-	if !path.Enable {
-		return fmt.Errorf("目录未启用: %d", pathID)
-	}
-
-	defer clearScanFilterN()
-
-	tempAVPath := &models.AVPath{
-		ID:           path.ID,
-		SourceType:   path.SourceType,
-		AccountID:    path.AccountID,
-		SourcePath:   path.SourcePath,
-		TargetPath:   path.TargetPath,
-		Mode:         path.Mode,
-		MoveMethod:   path.MoveMethod,
-		NameTemplate: path.NameTemplate,
-		Enable:       path.Enable,
-	}
-	fs, err := avscrape.NewFileSystem(tempAVPath)
-	if err != nil {
-		return fmt.Errorf("创建文件系统失败: %w", err)
-	}
-
-	// ===== 扫描前：清理没有 >1G 视频的残留子目录 =====
-	helpers.AppLogger.Infof("[欧美扫描] 开始清理源目录: %s", path.SourcePath)
-	cleanupSourceDirN(fs, path.SourcePath)
-	// =================================================
-
-	// 遍历视频
-	videoFiles, err := walkVideosEN(fs, path.SourcePath, 0)
-	if err != nil {
-		return fmt.Errorf("遍历目录失败: %w", err)
-	}
-	helpers.AppLogger.Infof("[欧美扫描] 目录 %s 共找到 %d 个视频文件", path.SourcePath, len(videoFiles))
-
-	for _, videoPath := range videoFiles {
-		if err := s.processVideo(fs, &path, videoPath); err != nil {
-			helpers.AppLogger.Warnf("[欧美扫描] %s 处理失败: %v", videoPath, err)
-			continue
-		}
-	}
-
-	// ===== 扫描后：再清理一次（清本轮搬走后的空壳目录）=====
-	helpers.AppLogger.Infof("[欧美扫描] 扫描结束，二次清理源目录: %s", path.SourcePath)
-	cleanupSourceDirN(fs, path.SourcePath)
-	// =====================================================
-
-	s.DB.Model(&path).Update("last_scan_at", time.Now())
-	return nil
-}
-
-func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, videoPath string) error {
-	fileName := filepath.Base(videoPath)
-	helpers.AppLogger.Infof("[欧美扫描] 处理: %s", fileName)
-
-	// 1. 拿直链
-	videoURL, err := fs.GetURL(videoPath)
-	if err != nil {
-		return fmt.Errorf("获取直链失败: %w", err)
-	}
-
-	// 2. 从 avscrape 缓存取 header（含 115 UA）
-	headers := map[string]string{}
-	if h := avscrape.GetURLHeader(videoURL); h != nil {
-		for k, vs := range h {
-			for _, v := range vs {
-				headers[k] = v
-			}
-		}
-	}
-
-	// 3. 探测 osHash + 刮削
-	result, oshash, err := s.Svc.ScrapeByURL(videoURL, headers)
-
-	if oshash != "" && !shouldProcessOshash(oshash) {
-		helpers.AppLogger.Infof("[欧美扫描] %s 不在本次过滤范围内，跳过", oshash)
-		return nil
-	}
-
-	if err != nil {
-		if oshash == "" {
-			oshash = computeOshashFromName(fileName)
-		}
-		s.pauseMedia("", videoPath, oshash, err.Error(), nil)
-		return err
-	}
-
-	if result == nil {
-		return fmt.Errorf("刮削结果为空")
-	}
-
-	// 4. 检查是否已存在
-	var existing models.AVENMedia
-	if err := s.DB.Where("oshash = ?", oshash).First(&existing).Error; err == nil {
-		if existing.Status == "paused" {
-			helpers.AppLogger.Infof("[欧美扫描] %s 处于暂停状态，跳过", oshash)
-			return nil
-		}
-	}
-
-	// 5. 生成元数据
-	baseName := sanitizePathN(result.Title)
-	if baseName == "" {
-		baseName = sanitizePathN(strings.TrimSuffix(fileName, filepath.Ext(fileName)))
-	}
-	files, prepWarnings, err := PrepareMetaFilesN(baseName, result, s.Svc.GetConfig())
-	allWarnings := append([]string{}, result.Warnings...)
-	allWarnings = append(allWarnings, prepWarnings...)
-	if err != nil {
-		s.pauseMedia(baseName, videoPath, oshash, fmt.Sprintf("生成元数据失败: %v", err), allWarnings)
-		return err
-	}
-
-	// 6. 检查完整性
-	if missing := checkMetadataMissingEN(result); missing != "" {
-		reason := fmt.Sprintf("元数据缺失: %s", missing)
-		s.pauseMedia(baseName, videoPath, oshash, reason, allWarnings)
-		return fmt.Errorf("%s", reason)
-	}
-
-	// 7. 整理视频
-	media := MediaFromResultN(result, oshash, result.FileSize)
-	if media == nil {
-		return fmt.Errorf("构造 media 失败")
-	}
-	targetDir, err := OrganizeN(fs, path, media, []string{videoPath}, result)
-	if err != nil {
-		s.pauseMedia(baseName, videoPath, oshash, fmt.Sprintf("整理失败: %v", err), allWarnings)
-		return err
-	}
-
-	// 8. 上传
-	if len(files) > 0 {
-		if _, err := fs.QueueUploads(files, targetDir, path.AccountID, path.SourceType); err != nil {
-			s.pauseMedia(baseName, videoPath, oshash, fmt.Sprintf("加入上传队列失败: %v", err), allWarnings)
-			return err
-		}
-	}
-
-	// 9. 保存到数据库
-	s.saveMedia(result, oshash, targetDir, allWarnings)
-
-	helpers.AppLogger.Infof("[欧美扫描] %s 刮削完成", fileName)
-	return nil
-}
-
-func (s *ScannerEN) saveMedia(r *avscrape.ScrapeResult, oshash, targetPath string, warnings []string) {
-	media := MediaFromResultN(r, oshash, r.FileSize)
-	if media == nil {
-		return
-	}
-	media.Status = "completed"
-	media.TargetPath = targetPath
-
-	var existing models.AVENMedia
-	if err := s.DB.Where("oshash = ?", oshash).First(&existing).Error; err == nil {
-		media.ID = existing.ID
-		media.CreatedAt = existing.CreatedAt
-		s.DB.Save(media)
-		s.recordTask(media.ID, oshash, targetPath, "done", "刮削完成", warnings)
-	} else {
-		s.DB.Create(media)
-		s.recordTask(media.ID, oshash, targetPath, "done", "刮削完成", warnings)
-	}
-}
-
-func (s *ScannerEN) pauseMedia(code, filePath, oshash, reason string, warnings []string) {
-	helpers.AppLogger.Warnf("[欧美暂停] %s: %s", oshash, reason)
-
-	var media *models.AVENMedia
-	if oshash != "" {
-		media = models.GetAVENMediaByOshash(oshash)
-	}
-	if media == nil {
-		media = &models.AVENMedia{
-			Oshash:      oshash,
-			Status:      "paused",
-			PauseReason: reason,
-			PausedAt:    time.Now(),
-		}
-		s.DB.Create(media)
-	} else {
-		s.DB.Model(media).Updates(map[string]any{
-			"status":       "paused",
-			"pause_reason": reason,
-			"paused_at":    time.Now(),
-		})
-	}
-	s.recordTask(media.ID, oshash, filePath, "paused", reason, warnings)
-}
-
-func (s *ScannerEN) recordTask(mediaID uint, oshash, filePath, status, msg string, warnings []string) {
-	warningsJSON, _ := json.Marshal(warnings)
-	s.DB.Create(&models.AVENTask{
-		MediaId:  mediaID,
-		Oshash:   oshash,
-		FilePath: filePath,
-		Status:   status,
-		Message:  msg,
-		Warnings: string(warningsJSON),
-	})
-}
-
-func checkMetadataMissingEN(r *avscrape.ScrapeResult) string {
-	if r == nil {
-		return "ScrapeResult 为空"
-	}
-	var missing []string
-	if r.Title == "" {
-		missing = append(missing, "Title")
-	}
-	if r.Plot == "" {
-		missing = append(missing, "Plot")
-	}
-	if r.Poster == "" {
-		missing = append(missing, "Poster")
-	}
-	if len(r.Actors) == 0 {
-		missing = append(missing, "Actors")
-	}
-	return strings.Join(missing, ", ")
-}
-
-func walkVideosEN(fs avscrape.FileSystem, root string, depth int) ([]string, error) {
-	if depth > 10 {
-		return nil, nil
-	}
-	entries, err := fs.ListDetailed(root)
+func downloadImage(url string) ([]byte, error) {
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
-	var videos []string
-	for _, e := range entries {
-		if e.IsDir {
-			sub, err := walkVideosEN(fs, e.Path, depth+1)
-			if err == nil {
-				videos = append(videos, sub...)
-			}
-			continue
-		}
-		if videoExtsN[strings.ToLower(filepath.Ext(e.Name))] {
-			videos = append(videos, e.Path)
-		}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("Accept", "image/*")
+
+	resp, err := httpClientForImage.Do(req)
+	if err != nil {
+		return nil, err
 	}
-	return videos, nil
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
 }
 
-func computeOshashFromName(name string) string {
-	return "nohash-" + sanitizePathN(name)
+func redactURL(raw string) string {
+	if len(raw) > 200 {
+		return raw[:200] + "..."
+	}
+	return raw
+}
+
+// ============================================================
+// 图片裁剪：从横版图裁出 2:3 竖版（仅作 poster 兜底）
+// ============================================================
+
+// cropToPoster 从横版图（或任意图）裁出 2:3 竖版
+// 策略：从左侧裁（欧美截图通常是左侧主体）
+func cropToPoster(src []byte) ([]byte, bool) {
+	img, _, err := image.Decode(bytes.NewReader(src))
+	if err != nil {
+		return nil, false
+	}
+	bounds := img.Bounds()
+	imgW := bounds.Dx()
+	imgH := bounds.Dy()
+	if imgW < 2 || imgH < 2 {
+		return nil, false
+	}
+
+	// 目标：2:3 竖版，高不变，宽 = 高 * 2/3
+	targetW := imgH * 2 / 3
+	if targetW > imgW {
+		// 图比 2:3 还窄，反过来用高度裁
+		targetH := imgW * 3 / 2
+		if targetH > imgH {
+			return src, false
+		}
+		dst := image.NewRGBA(image.Rect(0, 0, imgW, targetH))
+		draw.Draw(dst, dst.Bounds(), img, image.Point{0, 0}, draw.Src)
+		var out bytes.Buffer
+		if err := jpeg.Encode(&out, dst, &jpeg.Options{Quality: 92}); err != nil {
+			return nil, false
+		}
+		return out.Bytes(), true
+	}
+
+	// 从左侧裁 targetW 宽
+	dst := image.NewRGBA(image.Rect(0, 0, targetW, imgH))
+	draw.Draw(dst, dst.Bounds(), img, image.Point{0, 0}, draw.Src)
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, dst, &jpeg.Options{Quality: 92}); err != nil {
+		return nil, false
+	}
+	return out.Bytes(), true
+}
+
+// resizeToMin 如果小于 minW x minH，等比放大
+func resizeToMin(src []byte, minW, minH int) ([]byte, bool) {
+	img, _, err := image.Decode(bytes.NewReader(src))
+	if err != nil {
+		return nil, false
+	}
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	if w >= minW && h >= minH {
+		return nil, false
+	}
+	scaleW := float64(minW) / float64(w)
+	scaleH := float64(minH) / float64(h)
+	scale := scaleW
+	if scaleH > scale {
+		scale = scaleH
+	}
+	newW := int(float64(w) * scale)
+	newH := int(float64(h) * scale)
+
+	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
+	for y := 0; y < newH; y++ {
+		for x := 0; x < newW; x++ {
+			srcX := x * w / newW
+			srcY := y * h / newH
+			dst.Set(x, y, img.At(bounds.Min.X+srcX, bounds.Min.Y+srcY))
+		}
+	}
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, dst, &jpeg.Options{Quality: 92}); err != nil {
+		return nil, false
+	}
+	return out.Bytes(), true
+}
+
+// ============================================================
+// 生成元数据文件
+// ============================================================
+
+// PrepareMetaFilesN 生成欧美元数据文件（NFO + poster + fanart + 剧照）
+//
+// 图片来源（由 service_en.go 提前填好）：
+//   poster → r.Poster，来自 TPDB posters.full（800x1200 竖版，直接下）
+//   fanart → r.ImageCandidates（StashDB images），挑 width > height 的第一张
+//
+// 兜底策略：
+//   poster 为空 → 从候选图里裁 2:3
+//   fanart 为空 → 用第一张候选图（并打 warning）
+//
+// 注意：r.Poster / r.Fanart 保持为远程 URL 不变，前端直接加载；
+//      本地文件只用于上传，不覆盖这两个字段。
+func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) ([]avscrape.LocalFile, []string, error) {
+	var warnings []string
+	if r == nil {
+		return nil, warnings, nil
+	}
+
+	tmpDir := filepath.Join(helpers.ConfigDir, "tmp", "aven", baseName)
+	os.RemoveAll(tmpDir)
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		return nil, warnings, fmt.Errorf("创建临时目录失败: %w", err)
+	}
+
+	files := []avscrape.LocalFile{}
+	var posterData, fanartData []byte
+
+	// ===== 1. poster：TPDB posters.full（已是 800x1200 竖版）=====
+	if r.Poster != "" {
+		data, err := downloadImage(r.Poster)
+		if err != nil {
+			helpers.AppLogger.Warnf("[欧美元数据] poster 下载失败: %s => %v", redactURL(r.Poster), err)
+			warnings = append(warnings, fmt.Sprintf("poster 下载失败: %v", err))
+		} else {
+			imgCfg, _, _ := image.DecodeConfig(bytes.NewReader(data))
+			helpers.AppLogger.Infof("[欧美元数据] poster 来自 TPDB: %dx%d (%s)",
+				imgCfg.Width, imgCfg.Height, redactURL(r.Poster))
+			posterData = data
+		}
+	} else {
+		helpers.AppLogger.Infof("[欧美元数据] r.Poster 为空，poster 走兜底")
+	}
+
+	// ===== 2. fanart：从 StashDB 候选图里挑横版（width > height）=====
+	candidates := r.ImageCandidates
+	helpers.AppLogger.Infof("[欧美元数据] fanart 候选共 %d 张", len(candidates))
+	for i, url := range candidates {
+		data, err := downloadImage(url)
+		if err != nil {
+			helpers.AppLogger.Warnf("[欧美元数据]   [%d] 下载失败: %s => %v", i, redactURL(url), err)
+			continue
+		}
+		imgCfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+		if err != nil {
+			continue
+		}
+		helpers.AppLogger.Infof("[欧美元数据]   [%d] %dx%d (%s)",
+			i, imgCfg.Width, imgCfg.Height, redactURL(url))
+		if imgCfg.Width > imgCfg.Height {
+			fanartData = data
+			r.Fanart = url
+			helpers.AppLogger.Infof("[欧美元数据]   → 选为 fanart（横版 %dx%d）", imgCfg.Width, imgCfg.Height)
+			break
+		}
+	}
+
+	// ===== 3. poster 兜底：从第一张候选裁出 2:3 =====
+	if posterData == nil && len(candidates) > 0 {
+		if data, err := downloadImage(candidates[0]); err == nil {
+			if cropped, ok := cropToPoster(data); ok {
+				posterData = cropped
+				helpers.AppLogger.Infof("[欧美元数据] poster 兜底：从候选图裁出")
+			}
+		}
+	}
+
+	// ===== 4. fanart 兜底：用第一张候选 =====
+	if fanartData == nil && len(candidates) > 0 {
+		if data, err := downloadImage(candidates[0]); err == nil {
+			fanartData = data
+			r.Fanart = candidates[0]
+			helpers.AppLogger.Infof("[欧美元数据] fanart 兜底：用第一张候选")
+			warnings = append(warnings, "fanart 未找到横版图，使用兜底")
+		}
+	}
+
+	// 放大 poster 到 500x750
+	if posterData != nil {
+		if resized, ok := resizeToMin(posterData, 500, 750); ok {
+			posterData = resized
+		}
+	}
+
+	// ===== 打水印 =====
+	wmItems := buildWatermarksN(r, cfg)
+	if len(wmItems) > 0 {
+		helpers.AppLogger.Infof("[欧美水印] 需要打水印 %d 个", len(wmItems))
+		if posterData != nil {
+			if wm, err := avscrape.ApplyWatermark(posterData, wmItems); err == nil {
+				posterData = wm
+				helpers.AppLogger.Infof("[欧美水印] poster 水印完成")
+			} else {
+				warnings = append(warnings, fmt.Sprintf("poster 水印失败: %v", err))
+			}
+		}
+		if fanartData != nil {
+			if wm, err := avscrape.ApplyWatermark(fanartData, wmItems); err == nil {
+				fanartData = wm
+				helpers.AppLogger.Infof("[欧美水印] fanart 水印完成")
+			} else {
+				warnings = append(warnings, fmt.Sprintf("fanart 水印失败: %v", err))
+			}
+		}
+	}
+
+	// ===== 写 poster（不覆盖 r.Poster，保持远程 URL）=====
+	if posterData != nil {
+		p := filepath.Join(tmpDir, "poster.jpg")
+		if err := os.WriteFile(p, posterData, 0644); err == nil {
+			files = append(files, avscrape.LocalFile{LocalPath: p, RemoteName: "poster.jpg"})
+		}
+	} else {
+		warnings = append(warnings, "poster 未生成")
+	}
+
+	// ===== 写 fanart + thumb（不覆盖 r.Fanart，保持远程 URL）=====
+	if fanartData != nil {
+		p := filepath.Join(tmpDir, "fanart.jpg")
+		if err := os.WriteFile(p, fanartData, 0644); err == nil {
+			files = append(files, avscrape.LocalFile{LocalPath: p, RemoteName: "fanart.jpg"})
+		}
+		p2 := filepath.Join(tmpDir, "thumb.jpg")
+		if err := os.WriteFile(p2, fanartData, 0644); err == nil {
+			files = append(files, avscrape.LocalFile{LocalPath: p2, RemoteName: "thumb.jpg"})
+		}
+	} else {
+		warnings = append(warnings, "fanart 未生成")
+	}
+
+	// ===== 剧照 =====
+	successCount := 0
+	failCount := 0
+	for i, url := range r.PreviewImages {
+		remoteName := fmt.Sprintf("extrafanart/fanart%d.jpg", i+1)
+		localPath := filepath.Join(tmpDir, fmt.Sprintf("fanart%d.jpg", i+1))
+		if err := helpers.DownloadFile(url, localPath, ""); err == nil {
+			files = append(files, avscrape.LocalFile{LocalPath: localPath, RemoteName: remoteName})
+			successCount++
+		} else {
+			failCount++
+		}
+	}
+	if failCount > 0 {
+		warnings = append(warnings, fmt.Sprintf("剧照部分下载失败: 成功 %d, 失败 %d", successCount, failCount))
+	}
+
+	// ===== 预告片（如果 urls 里有 mp4 链接）=====
+	if r.Trailer != "" {
+		p := filepath.Join(tmpDir, "trailer.strm")
+		if err := os.WriteFile(p, []byte(r.Trailer), 0644); err == nil {
+			files = append(files, avscrape.LocalFile{LocalPath: p, RemoteName: "trailers/trailer.strm"})
+		}
+	}
+
+	// ===== NFO =====
+	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
+	if err := os.WriteFile(nfoPath, []byte(GenerateNFON(r)), 0644); err != nil {
+		return nil, warnings, fmt.Errorf("写 NFO 失败: %w", err)
+	}
+	files = append(files, avscrape.LocalFile{LocalPath: nfoPath, RemoteName: baseName + ".nfo"})
+
+	return files, warnings, nil
+}
+
+// ============================================================
+// 整理（移动视频文件）
+// ============================================================
+
+// OrganizeN 移动视频到目标目录
+func OrganizeN(fs avscrape.FileSystem, path *models.AVENPath, media *models.AVENMedia, videoPaths []string, r *avscrape.ScrapeResult) (string, error) {
+	relDir := renderTemplateN(path.NameTemplate, media)
+	if relDir == "" {
+		relDir = media.Title
+	}
+	targetDir := strings.TrimRight(path.TargetPath, "/") + "/" + relDir
+	if err := fs.MkdirAll(targetDir); err != nil {
+		return "", err
+	}
+	helpers.AppLogger.Infof("[欧美整理] 目标目录: %s", targetDir)
+
+	resSuffix := ""
+	if r != nil {
+		resSuffix = resolutionSuffix(r.Resolution)
+	}
+
+	for _, srcPath := range videoPaths {
+		originalName := filepath.Base(srcPath)
+		ext := filepath.Ext(originalName)
+		newName := media.Title + resSuffix + ext
+		newPath := targetDir + "/" + newName
+
+		if fs.Exists(newPath) {
+			helpers.AppLogger.Infof("[欧美整理] 目标已存在，跳过: %s", newName)
+			continue
+		}
+
+		switch path.MoveMethod {
+		case "copy":
+			if err := fs.Copy(srcPath, targetDir); err != nil {
+				helpers.AppLogger.Warnf("[欧美整理] 复制失败 %s: %v", srcPath, err)
+				continue
+			}
+			if originalName != newName {
+				oldPath := targetDir + "/" + originalName
+				if err := fs.Rename(oldPath, newName); err != nil {
+					helpers.AppLogger.Warnf("[欧美整理] 重命名失败 %s: %v", oldPath, err)
+				}
+			}
+		default:
+			if err := fs.Move(srcPath, targetDir, newName); err != nil {
+				helpers.AppLogger.Warnf("[欧美整理] 移动失败 %s: %v", srcPath, err)
+				continue
+			}
+		}
+		helpers.AppLogger.Infof("[欧美整理] %s → %s", originalName, newName)
+	}
+
+	return targetDir, nil
+}
+
+// ============================================================
+// 模板渲染（欧美：{actor} / {studio} / {title} / {year} / {code}）
+// ============================================================
+
+func renderTemplateN(tpl string, media *models.AVENMedia) string {
+	if tpl == "" {
+		return defaultNameTemplateN(media)
+	}
+
+	var actors []avscrape.Actor
+	if media.Actors != "" {
+		_ = json.Unmarshal([]byte(media.Actors), &actors)
+	}
+
+	names := make([]string, 0, len(actors))
+	for _, a := range actors {
+		if a.Name != "" {
+			names = append(names, a.Name)
+		}
+	}
+
+	actorDir := ""
+	switch {
+	case len(names) == 0:
+		actorDir = "Unknown"
+	case len(names) <= 3:
+		actorDir = strings.Join(names, ",")
+	default:
+		actorDir = "多人作品"
+	}
+	allActors := strings.Join(names, ", ")
+	allActorsPath := sanitizePathN(allActors)
+	if len(names) >= 2 {
+		allActorsPath = "多人作品/" + sanitizePathN(allActors)
+	}
+
+	replacer := strings.NewReplacer(
+		"{actor}", sanitizePathN(actorDir),
+		"{actors}", allActorsPath,
+		"{title}", sanitizePathN(media.Title),
+		"{year}", extractYearN(media.ReleaseDate),
+		"{studio}", sanitizePathN(media.Studio),
+		"{series}", sanitizePathN(media.Series),
+		"{code}", sanitizePathN(media.StashID),
+	)
+
+	result := replacer.Replace(tpl)
+	result = strings.Trim(result, "/")
+	for strings.Contains(result, "//") {
+		result = strings.ReplaceAll(result, "//", "/")
+	}
+	parts := strings.Split(result, "/")
+	cleaned := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			cleaned = append(cleaned, p)
+		}
+	}
+	return strings.Join(cleaned, "/")
+}
+
+func defaultNameTemplateN(media *models.AVENMedia) string {
+	var actors []avscrape.Actor
+	if media.Actors != "" {
+		_ = json.Unmarshal([]byte(media.Actors), &actors)
+	}
+	names := make([]string, 0, len(actors))
+	for _, a := range actors {
+		if a.Name != "" {
+			names = append(names, a.Name)
+		}
+	}
+	actorDir := "Unknown"
+	if len(names) == 1 {
+		actorDir = names[0]
+	} else if len(names) >= 2 && len(names) <= 3 {
+		actorDir = strings.Join(names, ",")
+	} else if len(names) > 3 {
+		actorDir = "多人作品"
+	}
+	return sanitizePathN(actorDir) + "/" + sanitizePathN(media.Title)
+}
+
+func sanitizePathN(s string) string {
+	if s == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(
+		"/", "_", "\\", "_", ":", "：", "*", "_",
+		"?", "？", "\"", "'", "<", "《", ">", "》", "|", "_",
+	)
+	return strings.TrimSpace(replacer.Replace(s))
+}
+
+func extractYearN(date string) string {
+	if len(date) >= 4 {
+		return date[:4]
+	}
+	return ""
+}
+
+func resolutionSuffix(res string) string {
+	switch res {
+	case "8K":
+		return "-8K"
+	case "7K":
+		return "-7K"
+	case "6K":
+		return "-6K"
+	case "5K":
+		return "-5K"
+	case "4K":
+		return "-4K"
+	}
+	return ""
+}
+
+// ============================================================
+// 水印判定（欧美版，复用 avscrape.ApplyWatermark）
+// ============================================================
+
+// buildWatermarksN 欧美水印判定（逻辑与日本 AV 一致，但用 aven.Config）
+func buildWatermarksN(r *avscrape.ScrapeResult, cfg *Config) []avscrape.WatermarkItem {
+	var items []avscrape.WatermarkItem
+
+	allTags := append([]string{}, r.Genres...)
+	allTags = append(allTags, r.ExtraTags...)
+	joined := strings.ToLower(strings.Join(allTags, ","))
+
+	if cfg.Watermark8K && (strings.Contains(joined, "8k") || r.Resolution == "8K") {
+		items = append(items, avscrape.WatermarkItem{PngName: "8k.png", Label: "8K"})
+	} else if cfg.Watermark7K && (strings.Contains(joined, "7k") || r.Resolution == "7K") {
+		items = append(items, avscrape.WatermarkItem{PngName: "7k.png", Label: "7K"})
+	} else if cfg.Watermark6K && (strings.Contains(joined, "6k") || r.Resolution == "6K") {
+		items = append(items, avscrape.WatermarkItem{PngName: "6k.png", Label: "6K"})
+	} else if cfg.Watermark5K && (strings.Contains(joined, "5k") || r.Resolution == "5K") {
+		items = append(items, avscrape.WatermarkItem{PngName: "5k.png", Label: "5K"})
+	} else if cfg.Watermark4K && (strings.Contains(joined, "4k") || r.Resolution == "4K") {
+		items = append(items, avscrape.WatermarkItem{PngName: "4k.png", Label: "4K"})
+	}
+
+	if cfg.WatermarkSubtitle && (r.HasChineseSub || strings.Contains(joined, "字幕") || strings.Contains(joined, "中字")) {
+		items = append(items, avscrape.WatermarkItem{PngName: "字幕.png", Label: "字幕"})
+	}
+	if cfg.WatermarkCrack && strings.Contains(joined, "破解") {
+		items = append(items, avscrape.WatermarkItem{PngName: "破解.png", Label: "破解"})
+	}
+	if cfg.WatermarkLeak && strings.Contains(joined, "流出") {
+		items = append(items, avscrape.WatermarkItem{PngName: "流出.png", Label: "流出"})
+	}
+	if cfg.WatermarkUncensored && (r.IsUncensored || strings.Contains(joined, "无码")) {
+		items = append(items, avscrape.WatermarkItem{PngName: "无码.png", Label: "无码"})
+	}
+	return items
 }
