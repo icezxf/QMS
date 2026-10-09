@@ -42,6 +42,15 @@ func (s *ServiceEN) GetStashDB() *StashDBClient {
 	}
 	return NewStashDBClient(cfg.StashDBEndpoint, cfg.StashDBAPIKey)
 }
+
+// GetTPDB 新增：获取 TPDB 客户端（未配置或未启用返回 nil）
+func (s *ServiceEN) GetTPDB() *TPDBClient {
+	cfg := s.GetConfig()
+	if !cfg.EnableTPDB || cfg.TPDBAPIKey == "" {
+		return nil
+	}
+	return NewTPDBClient(cfg.TPDBEndpoint, cfg.TPDBAPIKey)
+}
 // ==========================================================
 
 // ScrapeByURL 通过视频 URL 刮削
@@ -65,7 +74,7 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 		return nil, "", fmt.Errorf("osHash 为空（文件可能太小）")
 	}
 
-	// 2. 查 StashDB
+	// 2. 查 StashDB（主匹配源）
 	scene, err := stashDB.FindSceneByOshash(pr.Oshash)
 	if err != nil {
 		return nil, pr.Oshash, fmt.Errorf("查询 StashDB 失败: %w", err)
@@ -82,8 +91,44 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 	r.IsHDR = pr.IsHDR
 	r.ExtraTags = buildExtraTagsN(r, cfg)
 
-	// 4. 翻译
+	// 3.5 填充 fanart 候选（StashDB images，用于后续挑横版）
+	if len(r.ImageCandidates) == 0 {
+		for _, img := range scene.Images {
+			if img.URL != "" {
+				r.ImageCandidates = append(r.ImageCandidates, img.URL)
+			}
+		}
+	}
+	helpers.AppLogger.Infof("[欧美] fanart 候选图片 %d 张", len(r.ImageCandidates))
+
 	var warnings []string
+
+	// 4. 查 TPDB 补充 poster + rating（可选，未配置自动跳过）
+	if tpdb := s.GetTPDB(); tpdb != nil {
+		tpdbScene, tpdbErr := tpdb.FindSceneByOshash(pr.Oshash)
+		if tpdbErr != nil {
+			helpers.AppLogger.Warnf("[TPDB] 查询失败: %v", tpdbErr)
+			warnings = append(warnings, fmt.Sprintf("TPDB 查询失败: %v", tpdbErr))
+		} else if tpdbScene != nil {
+			// poster 优先用 TPDB 的 800x1200 竖版
+			if tpdbScene.Posters.Full != "" {
+				r.Poster = tpdbScene.Posters.Full
+				helpers.AppLogger.Infof("[TPDB] 补充 poster: %s", redactURL(tpdbScene.Posters.Full))
+			}
+			// rating
+			if tpdbScene.Rating > 0 {
+				r.Rating = tpdbScene.Rating
+				helpers.AppLogger.Infof("[TPDB] 补充 rating: %.2f", tpdbScene.Rating)
+			}
+		} else {
+			helpers.AppLogger.Infof("[TPDB] oshash %s 未命中，poster/rating 留空", pr.Oshash)
+			warnings = append(warnings, "TPDB 未命中，poster/rating 缺失")
+		}
+	} else {
+		helpers.AppLogger.Infof("[TPDB] 未配置或未启用，跳过补充")
+	}
+
+	// 5. 翻译（只译标题/剧情/标签，和原逻辑一致）
 	if cfg.EnableTranslate {
 		tr := avscrape.NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.SourceLang = "en"
@@ -104,7 +149,7 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 	return r, pr.Oshash, nil
 }
 
-// translateResultN 欧美翻译
+// translateResultN 欧美翻译（保持不变）
 func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.ScrapeResult, cfg *Config) []string {
 	var warnings []string
 	if r == nil {
@@ -143,7 +188,7 @@ func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.Scrape
 	return warnings
 }
 
-// buildExtraTagsN 欧美附加标签
+// buildExtraTagsN 欧美附加标签（保持不变）
 func buildExtraTagsN(r *avscrape.ScrapeResult, cfg *Config) []string {
 	var tags []string
 	if cfg.ExtraTagResolution && r.Resolution != "" {
@@ -161,7 +206,7 @@ func buildExtraTagsN(r *avscrape.ScrapeResult, cfg *Config) []string {
 	return tags
 }
 
-// ===== 暂停操作 =====
+// ===== 暂停操作（以下全部保持不变）=====
 
 func (s *ServiceEN) ReleaseMedia(id uint) error {
 	media := models.GetAVENMediaByID(id)
