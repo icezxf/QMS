@@ -44,13 +44,13 @@ func NewStashDBClient(endpoint, apiKey string) *StashDBClient {
 // ============================================================
 
 type StashScene struct {
-	ID          string  `json:"id"`
-	Title       string  `json:"title"`
-	Details     string  `json:"details"`
-	ReleaseDate string  `json:"release_date"` // "2019-04-23"
-	Duration    int     `json:"duration"`     // 秒
-	Code        *string `json:"code"`         // 可能 null
-	Director    *string `json:"director"`     // 可能 null
+	ID       string  `json:"id"`
+	Title    string  `json:"title"`
+	Details  string  `json:"details"`
+	Date     string  `json:"date"`     // 修复：release_date → date
+	Duration int     `json:"duration"` // 秒
+	Code     *string `json:"code"`
+	Director *string `json:"director"`
 
 	Studio *StashStudio `json:"studio"`
 
@@ -73,7 +73,7 @@ type StashPerformerRef struct {
 type StashPerformer struct {
 	ID      string       `json:"id"`
 	Name    string       `json:"name"`
-	Gender  string       `json:"gender"` // "FEMALE" / "MALE"
+	Gender  string       `json:"gender"`
 	Aliases []string     `json:"aliases"`
 	Images  []StashImage `json:"images"`
 }
@@ -115,7 +115,6 @@ func (c *StashDBClient) doGraphQL(query string, variables map[string]interface{}
 		return fmt.Errorf("StashDB API Key 未配置")
 	}
 
-	// 限速
 	c.mu.Lock()
 	elapsed := time.Since(c.lastReq)
 	if elapsed < stashDBMinInterval {
@@ -188,7 +187,7 @@ const sceneFields = `
 	id
 	title
 	details
-	release_date
+	date
 	duration
 	code
 	director
@@ -215,8 +214,6 @@ const sceneFields = `
 // 公开方法
 // ============================================================
 
-// FindSceneByOshash 用 osHash 精确查找场景
-// 未命中返回 (nil, nil)
 func (c *StashDBClient) FindSceneByOshash(oshash string) (*StashScene, error) {
 	if oshash == "" {
 		return nil, fmt.Errorf("空 oshash")
@@ -260,24 +257,19 @@ func (c *StashDBClient) FindSceneByOshash(oshash string) (*StashScene, error) {
 }
 
 // SearchScene 模糊搜索（osHash 未命中时的兜底）
+// 修复：StashDB 的 query 是 searchScene（单数），返回 [Scene!]! 数组
 func (c *StashDBClient) SearchScene(term string) ([]*StashScene, error) {
 	if strings.TrimSpace(term) == "" {
 		return nil, fmt.Errorf("空搜索词")
 	}
 
 	query := fmt.Sprintf(`query SearchScenes($term: String!) {
-		searchScenes(term: $term) {
-			count
-			scenes {%s
-			}
+		searchScene(term: $term) {%s
 		}
 	}`, sceneFields)
 
 	var result struct {
-		SearchScenes struct {
-			Count  int           `json:"count"`
-			Scenes []*StashScene `json:"scenes"`
-		} `json:"searchScenes"`
+		SearchScene []*StashScene `json:"searchScene"`
 	}
 
 	err := c.doGraphQL(query, map[string]interface{}{"term": term}, &result)
@@ -285,11 +277,10 @@ func (c *StashDBClient) SearchScene(term string) ([]*StashScene, error) {
 		return nil, err
 	}
 
-	helpers.AppLogger.Infof("[StashDB] 搜索 %q 命中 %d 个场景", term, result.SearchScenes.Count)
-	return result.SearchScenes.Scenes, nil
+	helpers.AppLogger.Infof("[StashDB] 搜索 %q 命中 %d 个场景", term, len(result.SearchScene))
+	return result.SearchScene, nil
 }
 
-// FindSceneByID 按 ID 查询（用于 fallback）
 func (c *StashDBClient) FindSceneByID(id string) (*StashScene, error) {
 	if id == "" {
 		return nil, fmt.Errorf("空 scene id")
@@ -323,8 +314,15 @@ func PrimaryImageURL(images []StashImage) string {
 	return images[0].URL
 }
 
-// 无用的占位（防止 unused 报错）
-var _ = strings.TrimSpace
+// HorizontalImageURL 返回第一张横版图 URL（width > height），用于 fanart
+func HorizontalImageURL(images []StashImage) string {
+	for _, img := range images {
+		if img.Width > img.Height {
+			return img.URL
+		}
+	}
+	return ""
+}
 
 func truncate(s string, n int) string {
 	runes := []rune(s)
