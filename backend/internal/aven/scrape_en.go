@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	_ "golang.org/x/image/webp" // 兜底：CDN 万一忽略 Accept 头仍返回 WebP
+
 	"qmediasync/internal/avscrape"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
@@ -28,13 +30,17 @@ import (
 
 var httpClientForImage = &http.Client{Timeout: 30 * time.Second}
 
+// downloadImage 下载图片
+//
+// 关键：Accept 头明确写 JPEG/PNG/GIF，避免 CDN 返回 WebP/AVIF
+// （Go 标准库 image.Decode 不支持 WebP/AVIF，会报 0x0）
 func downloadImage(url string) ([]byte, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
-	req.Header.Set("Accept", "image/*")
+	req.Header.Set("Accept", "image/jpeg,image/png,image/gif")
 
 	resp, err := httpClientForImage.Do(req)
 	if err != nil {
@@ -141,8 +147,8 @@ func resizeToMin(src []byte, minW, minH int) ([]byte, bool) {
 // PrepareMetaFilesN 生成欧美元数据文件（NFO + poster + fanart + 剧照）
 //
 // 图片来源（由 service_en.go 提前填好）：
-//   poster → r.Poster，来自 TPDB posters.full（800x1200 竖版，直接下）
-//   fanart → r.ImageCandidates（StashDB images），挑 width > height 的第一张
+//   poster → r.Poster，来自 TPDB posters.large（JPEG）
+//   fanart → r.ImageCandidates（StashDB scene.Images），挑 width > height 的第一张
 //
 // 兜底策略：
 //   poster 为空 → 从候选图里裁 2:3
@@ -165,23 +171,30 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 	files := []avscrape.LocalFile{}
 	var posterData, fanartData []byte
 
-	// ===== 1. poster：TPDB posters.full（已是 800x1200 竖版）=====
+	// ===== 1. poster：TPDB posters.large（JPEG）=====
 	if r.Poster != "" {
 		data, err := downloadImage(r.Poster)
 		if err != nil {
 			helpers.AppLogger.Warnf("[欧美元数据] poster 下载失败: %s => %v", redactURL(r.Poster), err)
 			warnings = append(warnings, fmt.Sprintf("poster 下载失败: %v", err))
 		} else {
-			imgCfg, _, _ := image.DecodeConfig(bytes.NewReader(data))
-			helpers.AppLogger.Infof("[欧美元数据] poster 来自 TPDB: %dx%d (%s)",
-				imgCfg.Width, imgCfg.Height, redactURL(r.Poster))
-			posterData = data
+			imgCfg, _, decErr := image.DecodeConfig(bytes.NewReader(data))
+			if decErr != nil {
+				helpers.AppLogger.Warnf("[欧美元数据] poster 解码失败（%d 字节）: %v，跳过",
+					len(data), decErr)
+				warnings = append(warnings, fmt.Sprintf("poster 解码失败: %v", decErr))
+				// 不清空 r.Poster，前端仍能加载远程 URL
+			} else {
+				helpers.AppLogger.Infof("[欧美元数据] poster 来自 TPDB: %dx%d (%s)",
+					imgCfg.Width, imgCfg.Height, redactURL(r.Poster))
+				posterData = data
+			}
 		}
 	} else {
 		helpers.AppLogger.Infof("[欧美元数据] r.Poster 为空，poster 走兜底")
 	}
 
-	// ===== 2. fanart：从 StashDB 候选图里挑横版（width > height）=====
+	// ===== 2. fanart：从 StashDB scene.Images 里挑横版（width > height）=====
 	candidates := r.ImageCandidates
 	helpers.AppLogger.Infof("[欧美元数据] fanart 候选共 %d 张", len(candidates))
 	for i, url := range candidates {
@@ -192,6 +205,7 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 		}
 		imgCfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 		if err != nil {
+			helpers.AppLogger.Warnf("[欧美元数据]   [%d] 解码失败: %s => %v", i, redactURL(url), err)
 			continue
 		}
 		helpers.AppLogger.Infof("[欧美元数据]   [%d] %dx%d (%s)",
