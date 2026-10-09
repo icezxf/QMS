@@ -17,6 +17,7 @@ import (
 // TPDB REST API 客户端
 //   - GraphQL 的 Scene 类型没有 rating / posters / background 字段
 //   - REST 端点 api.theporndb.net/scenes?hash=xxx 才全
+//   - 认证：Authorization: Bearer <API Key>
 // ============================================================
 
 type TPDBClient struct {
@@ -30,14 +31,24 @@ type TPDBClient struct {
 
 const tpdbMinInterval = 1500 * time.Millisecond
 
+// NewTPDBClient 创建 TPDB 客户端
+// endpoint 兼容用户填 GraphQL URL（自动映射到 api 子域名）
 func NewTPDBClient(endpoint, apiKey string) *TPDBClient {
+	// TPDB REST 端点在 api.theporndb.net 子域名
 	base := "https://api.theporndb.net"
-	// 兼容用户传 GraphQL endpoint
+
 	if endpoint != "" {
 		if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
-			base = u.Scheme + "://" + u.Host
+			host := u.Host
+			// 用户传主域名时，换成 api 子域名
+			switch host {
+			case "theporndb.net", "www.theporndb.net":
+				host = "api.theporndb.net"
+			}
+			base = u.Scheme + "://" + host
 		}
 	}
+
 	return &TPDBClient{
 		BaseURL: base,
 		APIKey:  apiKey,
@@ -50,17 +61,17 @@ func NewTPDBClient(endpoint, apiKey string) *TPDBClient {
 // ============================================================
 
 type TPDBScene struct {
-	ID          string       `json:"id"`
-	Title       string       `json:"title"`
-	Description string       `json:"description"`
-	Date        string       `json:"date"`
-	Duration    int          `json:"duration"`
-	Rating      float64      `json:"rating"`
-	Posters     TPDBImageSet `json:"posters"`
-	Background  TPDBImageSet `json:"background"`
-	BackgroundBack TPDBImageSet `json:"background_back"`
-	Performers  []TPDBPerformer `json:"performers"`
-	Site        *TPDBSite    `json:"site"`
+	ID             string          `json:"id"`
+	Title          string          `json:"title"`
+	Description    string          `json:"description"`
+	Date           string          `json:"date"`
+	Duration       int             `json:"duration"`
+	Rating         float64         `json:"rating"`
+	Posters        TPDBImageSet    `json:"posters"`
+	Background     TPDBImageSet    `json:"background"`
+	BackgroundBack TPDBImageSet    `json:"background_back"`
+	Performers     []TPDBPerformer `json:"performers"`
+	Site           *TPDBSite       `json:"site"`
 }
 
 type TPDBImageSet struct {
@@ -80,12 +91,12 @@ type TPDBSite struct {
 	Name string `json:"name"`
 }
 
-// GetPlot 剧情（REST 是 description）
+// GetPlot 剧情（REST 字段为 description）
 func (s *TPDBScene) GetPlot() string {
 	return s.Description
 }
 
-// GetStudio 片商名（REST 里是 site.name）
+// GetStudio 片商名（REST 字段为 site.name）
 func (s *TPDBScene) GetStudio() string {
 	if s.Site != nil {
 		return s.Site.Name
@@ -169,7 +180,8 @@ func (c *TPDBClient) FindSceneByOshash(oshash string) (*TPDBScene, error) {
 
 		var parsed tpdbRESTResp
 		if err := json.Unmarshal(body, &parsed); err != nil {
-			return nil, fmt.Errorf("解析响应失败: %w", err)
+			return nil, fmt.Errorf("解析响应失败: %w（前 100 字节: %s）",
+				err, truncate(string(body), 100))
 		}
 
 		if len(parsed.Data) == 0 {
