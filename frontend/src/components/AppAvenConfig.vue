@@ -6,6 +6,7 @@
 
       <el-form-item label="启用 StashDB">
         <el-switch v-model="config.enable_stashdb" />
+        <span class="hint">（主数据源：标题 / 剧情 / 演员 / 标签）</span>
       </el-form-item>
       <el-form-item label="StashDB 地址" v-if="config.enable_stashdb">
         <el-input v-model="config.stashdb_endpoint" placeholder="https://stashdb.org/graphql" />
@@ -18,6 +19,25 @@
           placeholder="在 stashdb.org → Settings → API Key 生成"
         />
         <span class="hint">（必需，否则无法查询）</span>
+      </el-form-item>
+
+      <el-divider content-position="left">TPDB（补充源）</el-divider>
+
+      <el-form-item label="启用 TPDB">
+        <el-switch v-model="config.enable_tpdb" />
+        <span class="hint">（补充 poster / rating）</span>
+      </el-form-item>
+      <el-form-item label="TPDB 地址" v-if="config.enable_tpdb">
+        <el-input v-model="config.tpdb_endpoint" placeholder="https://theporndb.net/graphql" />
+      </el-form-item>
+      <el-form-item label="TPDB API Key" v-if="config.enable_tpdb">
+        <el-input
+          v-model="config.tpdb_api_key"
+          type="password"
+          show-password
+          placeholder="在 theporndb.net → 用户设置 → API Tokens 生成"
+        />
+        <span class="hint">（必需，否则无法补充 poster/rating）</span>
       </el-form-item>
 
       <el-divider content-position="left">翻译</el-divider>
@@ -160,6 +180,10 @@ interface AvenConfig {
   stashdb_endpoint: string
   stashdb_api_key: string
 
+  enable_tpdb: boolean
+  tpdb_endpoint: string
+  tpdb_api_key: string
+
   enable_translate: boolean
   translate_title: boolean
   translate_plot: boolean
@@ -195,6 +219,10 @@ const config = ref<AvenConfig>({
   enable_stashdb: true,
   stashdb_endpoint: 'https://stashdb.org/graphql',
   stashdb_api_key: '',
+
+  enable_tpdb: true,
+  tpdb_endpoint: 'https://theporndb.net/graphql',
+  tpdb_api_key: '',
 
   enable_translate: false,
   translate_title: true,
