@@ -19,7 +19,7 @@ func SceneToResult(scene *StashScene) *avscrape.ScrapeResult {
 		OriginalTitle: scene.Title,
 		Plot:          scene.Details,
 		PlotOriginal:  scene.Details, // 保存原文
-		ReleaseDate:   scene.ReleaseDate,
+		ReleaseDate:   scene.Date,
 		Runtime:       scene.Duration / 60,
 		Source:        "stashdb",
 	}
