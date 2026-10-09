@@ -43,14 +43,19 @@ func NewTPDBClient(endpoint, apiKey string) *TPDBClient {
 // ============================================================
 
 type TPDBScene struct {
-	ID             string          `json:"id"`
-	Title          string          `json:"title"`
-	Description    string          `json:"description"`
-	Rating         float64         `json:"rating"`
-	Posters        TPDBImageSet    `json:"posters"`
-	Background     TPDBImageSet    `json:"background"`
+	ID          string       `json:"id"`
+	Title       string       `json:"title"`
+	Details     string       `json:"details"`     // TPDB 的剧情字段名
+	Description string       `json:"description"` // 兼容旧版 / 某些 endpoint
+	Date        string       `json:"date"`
+	Duration    int          `json:"duration"`
+	Rating      float64      `json:"rating"`
+	Posters     TPDBImageSet `json:"posters"`
+	Background  TPDBImageSet `json:"background"`
+	// 注意：TPDB 的 background_back 是横版图，fanart 兜底用
 	BackgroundBack TPDBImageSet    `json:"background_back"`
 	Performers     []TPDBPerformer `json:"performers"`
+	Studio         *TPDBStudio     `json:"studio"`
 }
 
 type TPDBImageSet struct {
@@ -63,6 +68,18 @@ type TPDBImageSet struct {
 type TPDBPerformer struct {
 	Name string `json:"name"`
 	Face string `json:"face"`
+}
+
+type TPDBStudio struct {
+	Name string `json:"name"`
+}
+
+// GetPlot 统一返回剧情（优先 details，回退 description）
+func (s *TPDBScene) GetPlot() string {
+	if s.Details != "" {
+		return s.Details
+	}
+	return s.Description
 }
 
 // ============================================================
@@ -161,16 +178,20 @@ func (c *TPDBClient) FindSceneByOshash(oshash string) (*TPDBScene, error) {
 		return nil, fmt.Errorf("空 oshash")
 	}
 
+	// 注意：字段名用 details（TPDB schema 里是 details，不是 description）
 	const query = `query($f: [[FingerprintQueryInput!]!]!) {
 		findScenesBySceneFingerprints(fingerprints: $f) {
 			id
 			title
-			description
+			details
+			date
+			duration
 			rating
 			posters { full large medium small }
 			background { full large medium small }
 			background_back { full large medium small }
 			performers { name face }
+			studio { name }
 		}
 	}`
 
