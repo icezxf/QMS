@@ -147,6 +147,9 @@ func resizeToMin(src []byte, minW, minH int) ([]byte, bool) {
 // 兜底策略：
 //   poster 为空 → 从候选图里裁 2:3
 //   fanart 为空 → 用第一张候选图（并打 warning）
+//
+// 注意：r.Poster / r.Fanart 保持为远程 URL 不变，前端直接加载；
+//      本地文件只用于上传，不覆盖这两个字段。
 func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) ([]avscrape.LocalFile, []string, error) {
 	var warnings []string
 	if r == nil {
@@ -250,31 +253,27 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 		}
 	}
 
-	// ===== 写 poster =====
+	// ===== 写 poster（不覆盖 r.Poster，保持远程 URL）=====
 	if posterData != nil {
 		p := filepath.Join(tmpDir, "poster.jpg")
 		if err := os.WriteFile(p, posterData, 0644); err == nil {
 			files = append(files, avscrape.LocalFile{LocalPath: p, RemoteName: "poster.jpg"})
-			r.Poster = "poster.jpg"
 		}
 	} else {
-		r.Poster = ""
 		warnings = append(warnings, "poster 未生成")
 	}
 
-	// ===== 写 fanart + thumb =====
+	// ===== 写 fanart + thumb（不覆盖 r.Fanart，保持远程 URL）=====
 	if fanartData != nil {
 		p := filepath.Join(tmpDir, "fanart.jpg")
 		if err := os.WriteFile(p, fanartData, 0644); err == nil {
 			files = append(files, avscrape.LocalFile{LocalPath: p, RemoteName: "fanart.jpg"})
-			r.Fanart = "fanart.jpg"
 		}
 		p2 := filepath.Join(tmpDir, "thumb.jpg")
 		if err := os.WriteFile(p2, fanartData, 0644); err == nil {
 			files = append(files, avscrape.LocalFile{LocalPath: p2, RemoteName: "thumb.jpg"})
 		}
 	} else {
-		r.Fanart = ""
 		warnings = append(warnings, "fanart 未生成")
 	}
 
