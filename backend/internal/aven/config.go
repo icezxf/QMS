@@ -15,13 +15,18 @@ type Config struct {
 	StashDBEndpoint string `json:"stashdb_endpoint"`
 	StashDBAPIKey   string `json:"stashdb_api_key"`
 
+	// ===== TPDB（补充 poster + rating）=====
+	EnableTPDB   bool   `json:"enable_tpdb"`
+	TPDBEndpoint string `json:"tpdb_endpoint"`
+	TPDBAPIKey   string `json:"tpdb_api_key"`
+
 	// ===== 翻译 =====
 	EnableTranslate      bool   `json:"enable_translate"`
-	TranslateTitle       bool   `json:"translate_title"`   // 是否翻译标题
-	TranslatePlot        bool   `json:"translate_plot"`    // 是否翻译简介
-	TranslateTags        bool   `json:"translate_tags"`    // 是否翻译标签
-	TranslateEngine      string `json:"translate_engine"`  // gemini / deepl / bing / google_free / google_cloud
-	TranslateTarget      string `json:"translate_target"`  // zh
+	TranslateTitle       bool   `json:"translate_title"`
+	TranslatePlot        bool   `json:"translate_plot"`
+	TranslateTags        bool   `json:"translate_tags"`
+	TranslateEngine      string `json:"translate_engine"`
+	TranslateTarget      string `json:"translate_target"`
 	TranslateDeepLKey    string `json:"translate_deepl_key"`
 	TranslateBingKey     string `json:"translate_bing_key"`
 	TranslateBingRegion  string `json:"translate_bing_region"`
@@ -33,12 +38,12 @@ type Config struct {
 	GoogleTranslateForTags bool   `json:"google_translate_for_tags"`
 	GoogleTranslateForAll  bool   `json:"google_translate_for_all"`
 
-	// ===== 附加标签（和日本 AV 一致）=====
+	// ===== 附加标签 =====
 	ExtraTagResolution bool `json:"extra_tag_resolution"`
 	ExtraTagUncensored bool `json:"extra_tag_uncensored"`
 	ExtraTagChineseSub bool `json:"extra_tag_chinese_sub"`
 
-	// ===== 水印（和日本 AV 一致）=====
+	// ===== 水印 =====
 	Watermark4K bool `json:"watermark_4k"`
 	Watermark5K bool `json:"watermark_5k"`
 	Watermark6K bool `json:"watermark_6k"`
@@ -54,6 +59,9 @@ type Config struct {
 var defaultConfig = Config{
 	EnableStashDB:   true,
 	StashDBEndpoint: "https://stashdb.org/graphql",
+
+	EnableTPDB:   true,
+	TPDBEndpoint: "https://theporndb.net/graphql",
 
 	EnableTranslate:      false,
 	TranslateTitle:       true,
