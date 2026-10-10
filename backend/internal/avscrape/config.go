@@ -63,6 +63,8 @@ var defaultConfig = Config{
 	EnableJavDBRating:    false,
 	PreferChineseSource:  true,
 
+	WatermarkWidthPercent: 15,   // 默认 15%
+
 	EnableOshashMatch: false,
 
 	Watermark4K: true,
@@ -75,6 +77,8 @@ var defaultConfig = Config{
 	WatermarkCrack:      true,
 	WatermarkLeak:       true,
 	WatermarkUncensored: true,
+	
+	WatermarkWidthPercent int `json:"watermark_width_percent"`   // ← 新增：水印宽度占图片宽度的百分比
 
 	ExtraTagResolution: true,
 	ExtraTagUncensored: true,
