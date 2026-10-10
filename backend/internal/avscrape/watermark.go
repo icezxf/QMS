@@ -89,10 +89,14 @@ func applyWatermark(imgData []byte, items []WatermarkItem) ([]byte, error) {
 
 		wmW := wmImg.Bounds().Dx()
 		wmH := wmImg.Bounds().Dy()
-		targetW := w * 8 / 100
-		if targetW < 60 {
-			targetW = 60
+
+		// ===== 水印宽度 = 图片宽度的 15%（原来 8%，太小）=====
+		targetW := w * 15 / 100
+		if targetW < 120 {
+			targetW = 120
 		}
+		// =====================================================
+
 		scale := float64(targetW) / float64(wmW)
 		targetH := int(float64(wmH) * scale)
 
