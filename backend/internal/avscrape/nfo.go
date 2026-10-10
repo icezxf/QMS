@@ -35,7 +35,7 @@ func GenerateNFO(r *ScrapeResult) string {
 	if r.Runtime > 0 {
 		sb.WriteString(fmt.Sprintf("  <runtime>%d</runtime>\n", r.Runtime))
 	}
-	// ===== 改动：日期截断到 YYYY-MM-DD，兼容 Kodi/Emby 标准 =====
+	// ===== 日期截断到 YYYY-MM-DD，兼容 Kodi/Emby 标准 =====
 	if r.ReleaseDate != "" {
 		dateOnly := r.ReleaseDate
 		if len(dateOnly) > 10 {
@@ -151,5 +151,6 @@ func MediaFromResult(r *ScrapeResult) *models.AVMedia {
 		NFOContent:    GenerateNFO(r),
 		Source:        r.Source,
 		Oshash:        r.Oshash,
+		Resolution:    r.Resolution,   // ← 加这一行
 	}
 }
