@@ -54,6 +54,8 @@ type Config struct {
 	WatermarkCrack      bool `json:"watermark_crack"`
 	WatermarkLeak       bool `json:"watermark_leak"`
 	WatermarkUncensored bool `json:"watermark_uncensored"`
+
+	WatermarkWidthPercent int `json:"watermark_width_percent"`   // ← 新增
 }
 
 var defaultConfig = Config{
@@ -85,6 +87,8 @@ var defaultConfig = Config{
 	WatermarkCrack:      true,
 	WatermarkLeak:       true,
 	WatermarkUncensored: true,
+
+	WatermarkWidthPercent: 15,
 }
 
 func LoadConfig(db *gorm.DB) (*Config, error) {
