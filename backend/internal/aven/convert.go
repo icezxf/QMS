@@ -26,10 +26,7 @@ func SceneToResult(scene *StashScene) *avscrape.ScrapeResult {
 
 	if scene.Studio != nil {
 		r.Studio = scene.Studio.Name
-		// 片商 logo 作为 fanart 候选
-		if len(scene.Studio.Images) > 0 {
-			r.ImageCandidates = append(r.ImageCandidates, scene.Studio.Images[0].URL)
-		}
+		// 不加 studio logo 到 ImageCandidates（会污染 fanart 候选）
 	}
 
 	// ===== 演员：过滤男优 =====
