@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"embed"
 	"image"
+	_ "image/jpeg"   // 新增：识别 JPEG
 	"image/draw"
 	"image/jpeg"
 	"image/png"
+	_ "image/png"    // 保留：识别 PNG
 
 	"qmediasync/internal/helpers"
 )
@@ -79,12 +81,12 @@ func applyWatermark(imgData []byte, items []WatermarkItem, widthPercent int) ([]
 
 	// ===== 水印宽度百分比 =====
 	if widthPercent <= 0 {
-		widthPercent = 15 // 默认 15%
+		widthPercent = 15
 	}
 	if widthPercent > 50 {
-		widthPercent = 50 // 上限 50%
+		widthPercent = 50
 	}
-	minW := w * 5 / 100 // 最小 5%
+	minW := w * 5 / 100
 	if minW < 60 {
 		minW = 60
 	}
@@ -96,7 +98,8 @@ func applyWatermark(imgData []byte, items []WatermarkItem, widthPercent int) ([]
 			helpers.AppLogger.Warnf("[AV水印] 读取水印图失败: %s => %v", item.PngName, err)
 			continue
 		}
-		wmImg, err := png.Decode(bytes.NewReader(pngData))
+		// 用 image.Decode 自动识别格式（支持 JPEG/PNG/GIF）
+		wmImg, _, err := image.Decode(bytes.NewReader(pngData))
 		if err != nil {
 			helpers.AppLogger.Warnf("[AV水印] 解码水印图失败: %s => %v", item.PngName, err)
 			continue
