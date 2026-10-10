@@ -737,6 +737,7 @@ func renderTemplate(tpl string, media *models.AVMedia) string {
 		actorDir = "多人作品"
 	}
 
+	// {actors} 最多显示前 5 个名字，超出部分用 "等K人" 代替
 	const maxActorsInPath = 5
 	allActorsPath := ""
 	switch {
@@ -765,6 +766,7 @@ func renderTemplate(tpl string, media *models.AVMedia) string {
 		"{label}", sanitizePath(media.Label),
 		"{series}", sanitizePath(media.Series),
 		"{director}", sanitizePath(media.Director),
+		"{resolution}", sanitizePath(media.Resolution), // ← 就是加这一行
 	)
 
 	result := replacer.Replace(tpl)
