@@ -55,13 +55,27 @@ func SetScanFilter(codes []string) {
 	}
 }
 
-func shouldProcessCode(code string) bool {
+// takeScanFilter 取出 filter 快照并立即清空
+// 关键：filter 只在本次扫描生效，不污染其他并发扫描
+func takeScanFilter() map[string]bool {
 	scanFilterMu.Lock()
 	defer scanFilterMu.Unlock()
 	if len(scanFilterCodes) == 0 {
+		return nil
+	}
+	cp := make(map[string]bool, len(scanFilterCodes))
+	for k, v := range scanFilterCodes {
+		cp[k] = v
+	}
+	scanFilterCodes = nil
+	return cp
+}
+
+func shouldProcessCodeSnapshot(code string, snapshot map[string]bool) bool {
+	if len(snapshot) == 0 {
 		return true
 	}
-	return scanFilterCodes[code]
+	return snapshot[code]
 }
 
 func clearScanFilter() {
@@ -128,12 +142,16 @@ func (s *Scanner) Scan(pathID uint) error {
 		groups[code].Files = append(groups[code].Files, fullPath)
 	}
 
-	// ===== 扫描开始时读取 filter 并清空（保证只在本次生效）=====
-	defer clearScanFilter()
-	// ==========================================================
+	// ===== 扫描开始时取出 filter 快照并立即清空 =====
+	// 之后即使 SetScanFilter 被调用（用户点重启/放行），也不影响本次扫描
+	filterSnapshot := takeScanFilter()
+	if len(filterSnapshot) > 0 {
+		helpers.AppLogger.Infof("[AV扫描] 本次仅处理 %d 个番号", len(filterSnapshot))
+	}
+	// =================================================
 
 	for _, code := range order {
-		if !shouldProcessCode(code) {
+		if !shouldProcessCodeSnapshot(code, filterSnapshot) {
 			helpers.AppLogger.Infof("[AV扫描] 番号 %s 不在本次过滤范围内，跳过", code)
 			continue
 		}
@@ -144,6 +162,10 @@ func (s *Scanner) Scan(pathID uint) error {
 		if err := s.DB.Where("code = ?", code).First(&existing).Error; err == nil {
 			if existing.Status == "paused" {
 				helpers.AppLogger.Infof("[AV扫描] 番号 %s 处于暂停状态，跳过（原因：%s）", code, existing.PauseReason)
+				continue
+			}
+			if existing.Status == "completed" {
+				helpers.AppLogger.Infof("[AV扫描] 番号 %s 已完成，跳过", code)
 				continue
 			}
 		}
@@ -193,7 +215,6 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 	scrapeWarnings := result.Warnings
 
 	// ===== 步骤 1.5：翻译错误 → 暂停 =====
-	// 注意：演员匹配不到中文名的 warning 不带 TranslateErrorPrefix，不会触发这里
 	if HasTranslateError(scrapeWarnings) {
 		reason := "翻译错误（详见警告列表）"
 		if skipPause {
@@ -224,7 +245,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		}
 	}
 
-	// ===== 步骤 4：准备元数据文件（提取 poster/fanart，生成 NFO）=====
+	// ===== 步骤 4：准备元数据文件 =====
 	helpers.AppLogger.Infof("[AV扫描] %s 步骤 3/5: 生成元数据文件", code)
 	files, prepWarnings, err := s.prepareMetaFiles(media.Code, result, cfg)
 	allWarnings := append([]string{}, scrapeWarnings...)
@@ -251,7 +272,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		}
 	}
 
-	// ===== 步骤 6：整理（移动视频文件）=====
+	// ===== 步骤 6：整理 =====
 	helpers.AppLogger.Infof("[AV扫描] %s 步骤 5/5: 整理视频文件", code)
 	media = MediaFromResult(result)
 	targetDir, err := s.organize(fs, path, media, g.Files, result, cfg)
@@ -487,7 +508,6 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 	return targetDir, nil
 }
 
-// prepareMetaFiles 生成元数据，返回 (files, warnings, error)
 func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config) ([]LocalFile, []string, error) {
 	var warnings []string
 	if r == nil {
@@ -737,7 +757,6 @@ func renderTemplate(tpl string, media *models.AVMedia) string {
 		actorDir = "多人作品"
 	}
 
-	// {actors} 最多显示前 5 个名字，超出部分用 "等K人" 代替
 	const maxActorsInPath = 5
 	allActorsPath := ""
 	switch {
@@ -766,7 +785,7 @@ func renderTemplate(tpl string, media *models.AVMedia) string {
 		"{label}", sanitizePath(media.Label),
 		"{series}", sanitizePath(media.Series),
 		"{director}", sanitizePath(media.Director),
-		"{resolution}", sanitizePath(media.Resolution), // ← 就是加这一行
+		"{resolution}", sanitizePath(media.Resolution),
 	)
 
 	result := replacer.Replace(tpl)
