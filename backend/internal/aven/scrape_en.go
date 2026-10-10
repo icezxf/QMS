@@ -426,6 +426,7 @@ func renderTemplateN(tpl string, media *models.AVENMedia) string {
 		"{studio}", sanitizePathN(media.Studio),
 		"{series}", sanitizePathN(media.Series),
 		"{code}", sanitizePathN(media.StashID),
+		"{resolution}", sanitizePathN(media.Resolution), // ← 就是加这一行
 	)
 
 	result := replacer.Replace(tpl)
