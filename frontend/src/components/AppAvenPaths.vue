@@ -90,14 +90,16 @@
         </el-form-item>
 
         <el-form-item label="命名模板">
-          <el-input v-model="form.name_template" placeholder="{actor}/{title}" />
+          <el-input v-model="form.name_template" placeholder="{resolution}/{actors}/{title}" />
           <div class="template-hint">
-            可用变量：<code>{actor}</code> 首个演员、
+            可用变量：<code>{resolution}</code> 分辨率、
+            <code>{actor}</code> 首个演员、
             <code>{actors}</code> 全部演员、
             <code>{title}</code> 标题、
             <code>{year}</code> 年份、
             <code>{studio}</code> 片商、
-            <code>{series}</code> 系列
+            <code>{series}</code> 系列、
+            <code>{code}</code> StashDB ID
           </div>
         </el-form-item>
 
@@ -158,6 +160,8 @@ const dialogVisible = ref(false)
 const editId = ref<number | null>(null)
 const accountList = ref<any[]>([])
 
+const DEFAULT_NAME_TEMPLATE = '{resolution}/{actors}/{title}'
+
 const form = ref({
   name: '',
   source_type: '115',
@@ -166,7 +170,7 @@ const form = ref({
   target_path: '',
   mode: 'scrape_and_rename',
   move_method: 'move',
-  name_template: '{actor}/{title}',
+  name_template: DEFAULT_NAME_TEMPLATE,
   enable: true,
 })
 
@@ -226,7 +230,7 @@ const openAdd = () => {
     target_path: '',
     mode: 'scrape_and_rename',
     move_method: 'move',
-    name_template: '{actor}/{title}',
+    name_template: DEFAULT_NAME_TEMPLATE,
     enable: true,
   }
   dialogVisible.value = true
@@ -242,7 +246,7 @@ const openEdit = (row: any) => {
     target_path: row.target_path,
     mode: row.mode,
     move_method: row.move_method,
-    name_template: row.name_template || '{actor}/{title}',
+    name_template: row.name_template || DEFAULT_NAME_TEMPLATE,
     enable: row.enable,
   }
   dialogVisible.value = true
