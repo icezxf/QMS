@@ -1,6 +1,7 @@
 package aven
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,9 @@ import (
 
 	"gorm.io/gorm"
 )
+
+// ErrFilteredOut 该 oshash 不在本次扫描的 filter 范围内，调用方应静默跳过
+var ErrFilteredOut = errors.New("filtered out")
 
 type ServiceEN struct {
 	DB *gorm.DB
@@ -57,7 +61,10 @@ func (s *ServiceEN) GetTPDB() *TPDBClient {
 //
 // headers 由调用方（scanner_en.go）从 FS 层缓存里取好传进来，
 // 内含 115 / OpenList 的 UA，不带会导致直链下载 403。
-func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*avscrape.ScrapeResult, string, error) {
+//
+// filter 非空时：探测出 oshash 后立即检查，不在 filter 里直接返回 ErrFilteredOut，
+// 不查询 StashDB / TPDB，也不调用翻译（避免白跑网络和烧配额）。
+func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filter map[string]bool) (*avscrape.ScrapeResult, string, error) {
 	stashDB := s.GetStashDB()
 	if stashDB == nil {
 		return nil, "", fmt.Errorf("StashDB 未配置或 API Key 为空")
@@ -73,6 +80,12 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 	if pr.Oshash == "" {
 		return nil, "", fmt.Errorf("osHash 为空（文件可能太小）")
 	}
+
+	// 1.5 提前检查 filter（避免白跑 StashDB + TPDB + 翻译）
+	if len(filter) > 0 && !filter[pr.Oshash] {
+		return nil, pr.Oshash, ErrFilteredOut
+	}
+	// ==========================================================
 
 	// 2. 查 StashDB（主匹配源）
 	scene, err := stashDB.FindSceneByOshash(pr.Oshash)
@@ -92,8 +105,6 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 	r.ExtraTags = buildExtraTagsN(r, cfg)
 
 	// 3.5 强制用 scene.Images 覆盖 fanart 候选
-	//     关键：SceneToResult 可能把 studio logo / performer 头像也塞进去了，
-	//     这里必须清空重填，只用 scene 级图片。
 	r.ImageCandidates = nil
 	for _, img := range scene.Images {
 		if img.URL != "" {
@@ -114,7 +125,6 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 			helpers.AppLogger.Warnf("[TPDB] 查询失败: %v", tpdbErr)
 			warnings = append(warnings, fmt.Sprintf("TPDB 查询失败: %v", tpdbErr))
 		} else if tpdbScene != nil {
-			// poster 优先用 TPDB 的 800x1200 竖版（JPEG 优先，避免 WebP 解码失败）
 			if tpdbScene.Posters.Large != "" {
 				r.Poster = tpdbScene.Posters.Large
 				helpers.AppLogger.Infof("[TPDB] 补充 poster(large): %s", redactURL(tpdbScene.Posters.Large))
@@ -122,19 +132,16 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string) (*av
 				r.Poster = tpdbScene.Posters.Full
 				helpers.AppLogger.Infof("[TPDB] 补充 poster(full): %s", redactURL(tpdbScene.Posters.Full))
 			}
-			// rating
 			if tpdbScene.Rating > 0 {
 				r.Rating = tpdbScene.Rating
 				helpers.AppLogger.Infof("[TPDB] 补充 rating: %.2f", tpdbScene.Rating)
 			}
-			// plot 兜底：StashDB 的 details 为空时用
 			if r.Plot == "" {
 				if plot := tpdbScene.GetPlot(); plot != "" {
 					r.Plot = plot
 					helpers.AppLogger.Infof("[TPDB] 补充 plot: %s", truncate(plot, 50))
 				}
 			}
-			// studio 兜底
 			if r.Studio == "" {
 				if studio := tpdbScene.GetStudio(); studio != "" {
 					r.Studio = studio
@@ -178,12 +185,10 @@ func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.Scrape
 	}
 
 	// ===== Google 全量优先：直接切引擎 =====
-	// 勾了"全部走 Google" + 有 Key 时，绕开 DeepL/Gemini，直接用 Google Cloud
 	if cfg.GoogleTranslateForAll && cfg.GoogleTranslateAPIKey != "" {
 		helpers.AppLogger.Infof("[欧美翻译] 切换到 Google Cloud 引擎（全量）")
 		tr.Engine = "google_cloud"
 	}
-	// ==========================================
 
 	r.PlotOriginal = r.Plot
 
