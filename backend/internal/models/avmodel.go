@@ -53,6 +53,8 @@ type AVMedia struct {
 	Source        string    `gorm:"size:32" json:"source"`
 	Oshash        string    `gorm:"index;size:64" json:"oshash"`
 
+	Resolution    string    `gorm:"size:16" json:"resolution"`   // ← 加这一行
+
 	Status        string    `gorm:"size:32;index;default:'pending'" json:"status"`
 	ProgressStage string    `gorm:"size:64" json:"progress_stage"`
 	PauseReason   string    `gorm:"type:text" json:"pause_reason"`
