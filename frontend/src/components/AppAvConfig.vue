@@ -165,6 +165,18 @@
         <el-switch v-model="config.watermark_uncensored" />
       </el-form-item>
 
+      <el-form-item label="水印大小 (%)">
+        <el-input-number
+          v-model="config.watermark_width_percent"
+          :min="5"
+          :max="50"
+          :step="1"
+          controls-position="right"
+          style="width: 200px"
+        />
+        <span class="hint">水印宽度占图片宽度的百分比（推荐 15-20）</span>
+      </el-form-item>
+
       <el-form-item>
         <el-button type="primary" @click="saveConfig">保存</el-button>
       </el-form-item>
@@ -214,6 +226,7 @@ interface AVConfig {
   watermark_crack: boolean
   watermark_leak: boolean
   watermark_uncensored: boolean
+  watermark_width_percent: number
 }
 
 const config = ref<AVConfig>({
@@ -253,6 +266,7 @@ const config = ref<AVConfig>({
   watermark_crack: true,
   watermark_leak: true,
   watermark_uncensored: true,
+  watermark_width_percent: 15,
 })
 
 const loadConfig = async () => {
