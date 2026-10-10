@@ -292,13 +292,134 @@ func (q *NewSyncQueuePerType) executeTask(task *NewSyncTask) {
 	}
 }
 
+// ========== 补全：STRM 同步执行 ==========
 func (q *NewSyncQueuePerType) executeStrmSync(task *NewSyncTask) {
-	// ... 现有代码不变 ...
-}
+	if task.ID == 0 {
+		// 手动同步
+		account, err := models.GetAccountById(task.AccountId)
+		if err != nil {
+			logError("获取账号失败，ID=%d，错误=%v", task.AccountId, err)
+			return
+		}
+		q.strmSync = syncstrm.NewSyncStrmByPath(account, task.SourcePath, task.SourcePathId, task.TargetPath, task.IsFile)
+		if q.strmSync == nil {
+			logError("创建同步任务失败")
+			return
+		}
+	} else {
+		syncPath := models.GetSyncPathById(task.ID)
+		if syncPath == nil {
+			logError("获取同步目录失败，ID=%d", task.ID)
+			return
+		}
 
-func (q *NewSyncQueuePerType) executeScrape(task *NewSyncTask) {
-	// ... 现有代码不变 ...
+		if syncPath.SourceType != q.sourceType {
+			logError("同步目录类型不匹配：预期=%s，实际=%s", q.sourceType, syncPath.SourceType)
+			return
+		}
+
+		logInfo("开始执行 STRM 同步任务：ID=%d", task.ID)
+		q.strmSync = syncstrm.NewSyncStrmFromSyncPath(syncPath)
+		if q.strmSync == nil {
+			logError("创建同步任务失败")
+			return
+		}
+	}
+
+	// 触发 STRM 同步任务开始事件
+	startPayload := map[string]any{
+		"task_id": task.ID,
+	}
+	if q.strmSync != nil && q.strmSync.Sync != nil {
+		startPayload["sync_id"] = q.strmSync.Sync.ID
+		startPayload["sync_path_id"] = q.strmSync.Sync.SyncPathId
+		startPayload["log_path"] = models.SyncLogRelativePath(q.strmSync.Sync.ID)
+	}
+	realtime.BroadcastEvent(realtime.EventStrmSyncTaskStart, startPayload)
+
+	defer func() {
+		q.strmSync = nil
+	}()
+	if startErr := q.strmSync.Start(); startErr == nil {
+		logInfo("STRM 同步任务执行成功：ID=%d", task.ID)
+		// 触发 STRM 同步任务完成事件
+		completePayload := map[string]any{
+			"task_id": task.ID,
+			"success": true,
+		}
+		if q.strmSync != nil && q.strmSync.Sync != nil {
+			completePayload["sync_id"] = q.strmSync.Sync.ID
+			completePayload["sync_path_id"] = q.strmSync.Sync.SyncPathId
+			completePayload["log_path"] = models.SyncLogRelativePath(q.strmSync.Sync.ID)
+		}
+		realtime.BroadcastEvent(realtime.EventStrmSyncTaskComplete, completePayload)
+	} else {
+		logError("STRM 同步任务执行失败：ID=%d，错误=%v", task.ID, startErr)
+		// 触发 STRM 同步任务完成事件（失败）
+		completePayload := map[string]any{
+			"task_id": task.ID,
+			"success": false,
+			"error":   startErr.Error(),
+		}
+		if q.strmSync != nil && q.strmSync.Sync != nil {
+			completePayload["sync_id"] = q.strmSync.Sync.ID
+			completePayload["sync_path_id"] = q.strmSync.Sync.SyncPathId
+			completePayload["log_path"] = models.SyncLogRelativePath(q.strmSync.Sync.ID)
+		}
+		realtime.BroadcastEvent(realtime.EventStrmSyncTaskComplete, completePayload)
+	}
 }
+// ==========================================
+
+// ========== 补全：刮削整理执行 ==========
+func (q *NewSyncQueuePerType) executeScrape(task *NewSyncTask) {
+	scrapePath := models.GetScrapePathByID(task.ID)
+	if scrapePath == nil {
+		logError("获取刮削目录失败，ID=%d", task.ID)
+		return
+	}
+
+	if scrapePath.SourceType != q.sourceType {
+		logError("刮削目录类型不匹配：预期=%s，实际=%s", q.sourceType, scrapePath.SourceType)
+		return
+	}
+
+	logInfo("开始执行刮削任务：ID=%d", task.ID)
+
+	// 触发刮削任务开始事件
+	realtime.BroadcastEvent(realtime.EventScraperTaskStart, map[string]any{
+		"task_id":   task.ID,
+		"path_name": scrapePath.SourcePath,
+	})
+
+	q.scrapeInstance = scrape.NewScrape(scrapePath)
+	if q.scrapeInstance == nil {
+		logError("创建刮削任务失败")
+		return
+	}
+	defer func() {
+		q.scrapeInstance = nil
+	}()
+
+	if success := q.scrapeInstance.Start(); success {
+		logInfo("刮削任务执行成功：ID=%d", task.ID)
+		// 触发刮削任务完成事件
+		realtime.BroadcastEvent(realtime.EventScraperTaskComplete, map[string]any{
+			"task_id":   task.ID,
+			"path_name": scrapePath.SourcePath,
+			"success":   true,
+		})
+	} else {
+		logError("刮削任务执行失败：ID=%d", task.ID)
+		// 触发刮削任务完成事件（失败）
+		realtime.BroadcastEvent(realtime.EventScraperTaskComplete, map[string]any{
+			"task_id":   task.ID,
+			"path_name": scrapePath.SourcePath,
+			"success":   false,
+		})
+	}
+}
+// ==========================================
 
 func (q *NewSyncQueuePerType) executeAVScrape(task *NewSyncTask) {
 	avPath := models.GetAVPathByID(task.ID)
