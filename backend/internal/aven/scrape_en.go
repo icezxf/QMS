@@ -250,7 +250,7 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 	if len(wmItems) > 0 {
 		helpers.AppLogger.Infof("[欧美水印] 需要打水印 %d 个", len(wmItems))
 		if posterData != nil {
-			if wm, err := avscrape.ApplyWatermark(posterData, wmItems); err == nil {
+			if wm, err := avscrape.ApplyWatermark(posterData, wmItems, cfg.WatermarkWidthPercent); err == nil {
 				posterData = wm
 				helpers.AppLogger.Infof("[欧美水印] poster 水印完成")
 			} else {
@@ -258,7 +258,7 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 			}
 		}
 		if fanartData != nil {
-			if wm, err := avscrape.ApplyWatermark(fanartData, wmItems); err == nil {
+			if wm, err := avscrape.ApplyWatermark(fanartData, wmItems, cfg.WatermarkWidthPercent); err == nil {
 				fanartData = wm
 				helpers.AppLogger.Infof("[欧美水印] fanart 水印完成")
 			} else {
