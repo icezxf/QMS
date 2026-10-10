@@ -42,8 +42,6 @@ var (
 	scanFilterCodes map[string]bool
 )
 
-// SetScanFilter 设置扫描过滤器，只处理指定番号
-// 传空则清除过滤器（处理全部）
 func SetScanFilter(codes []string) {
 	scanFilterMu.Lock()
 	defer scanFilterMu.Unlock()
@@ -135,12 +133,10 @@ func (s *Scanner) Scan(pathID uint) error {
 	// ==========================================================
 
 	for _, code := range order {
-		// ===== 过滤：只处理指定番号 =====
 		if !shouldProcessCode(code) {
 			helpers.AppLogger.Infof("[AV扫描] 番号 %s 不在本次过滤范围内，跳过", code)
 			continue
 		}
-		// ================================
 
 		g := groups[code]
 
@@ -195,6 +191,20 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 	}
 	result := r
 	scrapeWarnings := result.Warnings
+
+	// ===== 步骤 1.5：翻译错误 → 暂停 =====
+	// 注意：演员匹配不到中文名的 warning 不带 TranslateErrorPrefix，不会触发这里
+	if HasTranslateError(scrapeWarnings) {
+		reason := "翻译错误（详见警告列表）"
+		if skipPause {
+			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
+		} else {
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, scrapeWarnings)
+			return fmt.Errorf("%s", reason)
+		}
+	}
+	// =====================================
+
 	media := MediaFromResult(result)
 
 	// ===== 步骤 2：演员过滤 + 共演标签 =====
@@ -229,7 +239,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		}
 	}
 
-	// ===== 步骤 5：检查元数据完整性（此时 r.Poster/r.Fanart 是最终值）=====
+	// ===== 步骤 5：检查元数据完整性 =====
 	helpers.AppLogger.Infof("[AV扫描] %s 步骤 4/5: 检查元数据完整性", code)
 	if missing := checkMetadataMissing(result); missing != "" {
 		reason := fmt.Sprintf("元数据缺失: %s", missing)
@@ -656,7 +666,6 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 	return files, warnings, nil
 }
 
-// recordTask 新增 warnings 参数
 func (s *Scanner) recordTask(mediaId uint, code, filePath, status, msg, provider string, warnings []string) {
 	warningsJSON, _ := json.Marshal(warnings)
 	s.DB.Create(&models.AVTask{
@@ -728,7 +737,6 @@ func renderTemplate(tpl string, media *models.AVMedia) string {
 		actorDir = "多人作品"
 	}
 
-	// {actors} 最多显示前 5 个名字，超出部分用 "等K人" 代替
 	const maxActorsInPath = 5
 	allActorsPath := ""
 	switch {
