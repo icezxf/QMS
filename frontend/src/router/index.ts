@@ -140,7 +140,7 @@ const AppAvConfig = createAsyncRouteComponent(
 )
 // =================================
 
-// ===== 改动 1：欧美刮削组件 =====
+// ===== 欧美刮削组件 =====
 const AppAvenLibrary = createAsyncRouteComponent(
   'AppAvenLibrary',
   () => import('@/components/AppAvenLibrary.vue'),
@@ -162,6 +162,13 @@ const AppAvenConfig = createAsyncRouteComponent(
   () => import('@/components/AppAvenConfig.vue'),
 )
 // ================================
+
+// ===== 改动：Emby 演员联动组件 =====
+const AppActorLink = createAsyncRouteComponent(
+  'AppActorLink',
+  () => import('@/components/AppActorLink.vue'),
+)
+// ===================================
 
 // 定义路由元信息类型
 declare module 'vue-router' {
@@ -559,7 +566,7 @@ const routes: RouteRecordRaw[] = [
   },
   // =================================
 
-  // ===== 改动 2：欧美刮削路由 =====
+  // ===== 欧美刮削路由 =====
   {
     path: '/aven',
     name: 'aven',
@@ -656,6 +663,26 @@ const routes: RouteRecordRaw[] = [
     },
   },
   // =================================
+
+  // ===== 改动：Emby 演员联动路由 =====
+  {
+    path: '/actor-link',
+    name: 'actor-link',
+    component: AppActorLink,
+    meta: {
+      title: 'Emby 演员联动',
+      page: {
+        title: 'Emby 演员联动',
+        description: '管理演员库并与 Emby / StashDB 联动',
+        icon: 'User',
+        variant: 'management',
+      },
+      requiresAuth: true,
+      icon: 'User',
+      showInMenu: true,
+    },
+  },
+  // ===================================
 
   {
     path: '/transfer',
