@@ -63,9 +63,6 @@ var videoExtsN = map[string]bool{
 	".iso": true, ".rmvb": true, ".strm": true,
 }
 
-// cleanupSourceDirN 递归清理源目录下的残留子目录
-// 规则：源目录本身保留，源目录下的任意子目录，如果连同所有子目录、
-// 所有文件都没有 >1G 的视频，就整个删除
 func cleanupSourceDirN(fs avscrape.FileSystem, srcDir string) {
 	entries, err := fs.ListDetailed(srcDir)
 	if err != nil {
@@ -86,30 +83,24 @@ func cleanupSourceDirN(fs avscrape.FileSystem, srcDir string) {
 	}
 }
 
-// cleanupDirRecursiveN 后序遍历目录树
-// 返回 true 表示这个目录已经被删掉
 func cleanupDirRecursiveN(fs avscrape.FileSystem, dir string, deleted *int) bool {
 	entries, err := fs.ListDetailed(dir)
 	if err != nil {
-		// 列不出来就不动它，保守
 		return false
 	}
 
 	hasBigVideo := false
 
-	// 1. 先递归处理子目录
 	for _, e := range entries {
 		if !e.IsDir {
 			continue
 		}
 		subRemoved := cleanupDirRecursiveN(fs, e.Path, deleted)
 		if !subRemoved {
-			// 子目录还在，说明里面（含深层）有 >1G 视频
 			hasBigVideo = true
 		}
 	}
 
-	// 2. 再检查当前目录的直接文件
 	if !hasBigVideo {
 		for _, e := range entries {
 			if e.IsDir {
@@ -125,24 +116,20 @@ func cleanupDirRecursiveN(fs avscrape.FileSystem, dir string, deleted *int) bool
 		}
 	}
 
-	// 还有大视频，保留
 	if hasBigVideo {
 		return false
 	}
 
-	// 达到单次上限就停
 	if *deleted >= cleanupMaxDeletesPerScanEN {
 		helpers.AppLogger.Warnf("[欧美清理] 已达到单次删除上限 %d，跳过 %s",
 			cleanupMaxDeletesPerScanEN, dir)
 		return false
 	}
 
-	// 节流：每次删除之前 sleep，避免连续 Del 请求
 	if *deleted > 0 && cleanupDeleteIntervalEN > 0 {
 		time.Sleep(cleanupDeleteIntervalEN)
 	}
 
-	// 删除整个目录
 	if err := fs.DeleteDir(dir); err != nil {
 		helpers.AppLogger.Warnf("[欧美清理] 删除目录失败 %s: %v", dir, err)
 		return false
@@ -152,7 +139,6 @@ func cleanupDirRecursiveN(fs avscrape.FileSystem, dir string, deleted *int) bool
 	return true
 }
 
-// isVideoNameN 判断文件名是否视频
 func isVideoNameN(name string) bool {
 	ext := strings.ToLower(filepath.Ext(name))
 	return videoExtsN[ext]
@@ -263,7 +249,22 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		return fmt.Errorf("刮削结果为空")
 	}
 
-	// 4. 检查是否已存在
+	// 4. 提前算 baseName（暂停时也要用）
+	baseName := sanitizePathN(result.Title)
+	if baseName == "" {
+		baseName = sanitizePathN(strings.TrimSuffix(fileName, filepath.Ext(fileName)))
+	}
+
+	// 4.5 检查是否有翻译错误 → 暂停
+	//     注意：演员匹配不到中文名的 warning 不带 TranslateErrorPrefix，不会触发这里
+	if avscrape.HasTranslateError(result.Warnings) {
+		reason := "翻译错误（详见警告列表）"
+		s.pauseMedia(baseName, videoPath, oshash, reason, result.Warnings)
+		helpers.AppLogger.Warnf("[欧美暂停] %s 翻译失败，已暂停", oshash)
+		return fmt.Errorf("%s", reason)
+	}
+
+	// 5. 检查是否已存在
 	var existing models.AVENMedia
 	if err := s.DB.Where("oshash = ?", oshash).First(&existing).Error; err == nil {
 		if existing.Status == "paused" {
@@ -272,11 +273,7 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		}
 	}
 
-	// 5. 生成元数据
-	baseName := sanitizePathN(result.Title)
-	if baseName == "" {
-		baseName = sanitizePathN(strings.TrimSuffix(fileName, filepath.Ext(fileName)))
-	}
+	// 6. 生成元数据
 	files, prepWarnings, err := PrepareMetaFilesN(baseName, result, s.Svc.GetConfig())
 	allWarnings := append([]string{}, result.Warnings...)
 	allWarnings = append(allWarnings, prepWarnings...)
@@ -285,14 +282,14 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		return err
 	}
 
-	// 6. 检查完整性
+	// 7. 检查完整性
 	if missing := checkMetadataMissingEN(result); missing != "" {
 		reason := fmt.Sprintf("元数据缺失: %s", missing)
 		s.pauseMedia(baseName, videoPath, oshash, reason, allWarnings)
 		return fmt.Errorf("%s", reason)
 	}
 
-	// 7. 整理视频
+	// 8. 整理视频
 	media := MediaFromResultN(result, oshash, result.FileSize)
 	if media == nil {
 		return fmt.Errorf("构造 media 失败")
@@ -303,7 +300,7 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		return err
 	}
 
-	// 8. 上传
+	// 9. 上传
 	if len(files) > 0 {
 		if _, err := fs.QueueUploads(files, targetDir, path.AccountID, path.SourceType); err != nil {
 			s.pauseMedia(baseName, videoPath, oshash, fmt.Sprintf("加入上传队列失败: %v", err), allWarnings)
@@ -311,7 +308,7 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		}
 	}
 
-	// 9. 保存到数据库
+	// 10. 保存到数据库
 	s.saveMedia(result, oshash, targetDir, allWarnings)
 
 	helpers.AppLogger.Infof("[欧美扫描] %s 刮削完成", fileName)
