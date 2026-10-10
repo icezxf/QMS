@@ -589,13 +589,13 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 	}
 
 	if posterData != nil && len(watermarks) > 0 {
-		if wm, err := applyWatermark(posterData, watermarks); err == nil {
+		if wm, err := applyWatermark(posterData, watermarks, cfg.WatermarkWidthPercent); err == nil {
 			posterData = wm
 			helpers.AppLogger.Infof("[AV水印] poster 已打水印")
 		}
 	}
 	if fanartData != nil && len(watermarks) > 0 {
-		if wm, err := applyWatermark(fanartData, watermarks); err == nil {
+		if wm, err := applyWatermark(fanartData, watermarks, cfg.WatermarkWidthPercent); err == nil {
 			fanartData = wm
 			helpers.AppLogger.Infof("[AV水印] fanart 已打水印")
 		}
