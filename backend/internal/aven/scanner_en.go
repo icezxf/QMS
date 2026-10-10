@@ -34,13 +34,20 @@ func SetScanFilterN(oshashes []string) {
 	}
 }
 
-func shouldProcessOshash(oshash string) bool {
+// takeScanFilterN 取出 filter 快照并立即清空
+// 关键：filter 只在本次扫描生效，不污染其他并发扫描
+func takeScanFilterN() map[string]bool {
 	scanFilterNMu.Lock()
 	defer scanFilterNMu.Unlock()
 	if len(scanFilterNOshashes) == 0 {
-		return true
+		return nil
 	}
-	return scanFilterNOshashes[oshash]
+	cp := make(map[string]bool, len(scanFilterNOshashes))
+	for k, v := range scanFilterNOshashes {
+		cp[k] = v
+	}
+	scanFilterNOshashes = nil
+	return cp
 }
 
 func clearScanFilterN() {
@@ -52,7 +59,7 @@ func clearScanFilterN() {
 
 // ===== 源目录清理：没有 >1G 视频的子目录整个删除 =====
 const (
-	cleanupBigVideoSizeEN      = int64(1) << 30 // 1G
+	cleanupBigVideoSizeEN      = int64(1) << 30
 	cleanupDeleteIntervalEN    = 500 * time.Millisecond
 	cleanupMaxDeletesPerScanEN = 100
 )
@@ -163,7 +170,13 @@ func (s *ScannerEN) Scan(pathID uint) error {
 		return fmt.Errorf("目录未启用: %d", pathID)
 	}
 
-	defer clearScanFilterN()
+	// ===== 扫描开始时取出 filter 快照并立即清空 =====
+	// 之后即使 SetScanFilterN 被调用（用户点重启/放行），也不影响本次扫描
+	filterSnapshot := takeScanFilterN()
+	if len(filterSnapshot) > 0 {
+		helpers.AppLogger.Infof("[欧美扫描] 本次仅处理 %d 个 oshash", len(filterSnapshot))
+	}
+	// =================================================
 
 	tempAVPath := &models.AVPath{
 		ID:           path.ID,
@@ -181,12 +194,9 @@ func (s *ScannerEN) Scan(pathID uint) error {
 		return fmt.Errorf("创建文件系统失败: %w", err)
 	}
 
-	// ===== 扫描前：清理没有 >1G 视频的残留子目录 =====
 	helpers.AppLogger.Infof("[欧美扫描] 开始清理源目录: %s", path.SourcePath)
 	cleanupSourceDirN(fs, path.SourcePath)
-	// =================================================
 
-	// 遍历视频
 	videoFiles, err := walkVideosEN(fs, path.SourcePath, 0)
 	if err != nil {
 		return fmt.Errorf("遍历目录失败: %w", err)
@@ -194,22 +204,20 @@ func (s *ScannerEN) Scan(pathID uint) error {
 	helpers.AppLogger.Infof("[欧美扫描] 目录 %s 共找到 %d 个视频文件", path.SourcePath, len(videoFiles))
 
 	for _, videoPath := range videoFiles {
-		if err := s.processVideo(fs, &path, videoPath); err != nil {
+		if err := s.processVideo(fs, &path, videoPath, filterSnapshot); err != nil {
 			helpers.AppLogger.Warnf("[欧美扫描] %s 处理失败: %v", videoPath, err)
 			continue
 		}
 	}
 
-	// ===== 扫描后：再清理一次（清本轮搬走后的空壳目录）=====
 	helpers.AppLogger.Infof("[欧美扫描] 扫描结束，二次清理源目录: %s", path.SourcePath)
 	cleanupSourceDirN(fs, path.SourcePath)
-	// =====================================================
 
 	s.DB.Model(&path).Update("last_scan_at", time.Now())
 	return nil
 }
 
-func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, videoPath string) error {
+func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, videoPath string, filterSnapshot map[string]bool) error {
 	fileName := filepath.Base(videoPath)
 	helpers.AppLogger.Infof("[欧美扫描] 处理: %s", fileName)
 
@@ -229,10 +237,11 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		}
 	}
 
-	// 3. 探测 osHash + 刮削
-	result, oshash, err := s.Svc.ScrapeByURL(videoURL, headers)
+	// 3. 探测 + 刮削（带 filter 快照，提前过滤）
+	result, oshash, err := s.Svc.ScrapeByURL(videoURL, headers, filterSnapshot)
 
-	if oshash != "" && !shouldProcessOshash(oshash) {
+	// 3.5 filter 命中 → 静默跳过（此时只有探测，没有查 StashDB/TPDB/翻译）
+	if err == ErrFilteredOut {
 		helpers.AppLogger.Infof("[欧美扫描] %s 不在本次过滤范围内，跳过", oshash)
 		return nil
 	}
@@ -249,14 +258,13 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		return fmt.Errorf("刮削结果为空")
 	}
 
-	// 4. 提前算 baseName（暂停时也要用）
+	// 4. 提前算 baseName
 	baseName := sanitizePathN(result.Title)
 	if baseName == "" {
 		baseName = sanitizePathN(strings.TrimSuffix(fileName, filepath.Ext(fileName)))
 	}
 
-	// 4.5 检查是否有翻译错误 → 暂停
-	//     注意：演员匹配不到中文名的 warning 不带 TranslateErrorPrefix，不会触发这里
+	// 4.5 翻译错误 → 暂停
 	if avscrape.HasTranslateError(result.Warnings) {
 		reason := "翻译错误（详见警告列表）"
 		s.pauseMedia(baseName, videoPath, oshash, reason, result.Warnings)
@@ -269,6 +277,10 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 	if err := s.DB.Where("oshash = ?", oshash).First(&existing).Error; err == nil {
 		if existing.Status == "paused" {
 			helpers.AppLogger.Infof("[欧美扫描] %s 处于暂停状态，跳过", oshash)
+			return nil
+		}
+		if existing.Status == "completed" {
+			helpers.AppLogger.Infof("[欧美扫描] %s 已完成，跳过", oshash)
 			return nil
 		}
 	}
