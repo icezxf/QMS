@@ -187,29 +187,38 @@ func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.Scrape
 
 	r.PlotOriginal = r.Plot
 
+	// 标题
 	if cfg.TranslateTitle && r.Title != "" {
 		if t, err := tr.Translate(r.Title); err == nil && t != "" && t != r.Title {
 			old := r.Title
 			r.Title = t
 			helpers.AppLogger.Infof("[欧美翻译] 标题: %s -> %s", truncate(old, 30), truncate(t, 30))
 		} else if err != nil {
-			warnings = append(warnings, fmt.Sprintf("标题翻译失败: %v", err))
+			warnings = append(warnings,
+				avscrape.TranslateErrorPrefix+fmt.Sprintf("标题翻译失败: %v", err))
 		}
 	}
 
+	// 简介
 	if cfg.TranslatePlot && r.Plot != "" {
 		if t, err := tr.Translate(r.Plot); err == nil && t != "" {
 			r.Plot = t
 			helpers.AppLogger.Infof("[欧美翻译] 简介: %s", truncate(t, 50))
 		} else if err != nil {
-			warnings = append(warnings, fmt.Sprintf("简介翻译失败: %v", err))
+			warnings = append(warnings,
+				avscrape.TranslateErrorPrefix+fmt.Sprintf("简介翻译失败: %v", err))
 		}
 	}
 
+	// 标签：一旦失败就停止循环，避免刷屏
 	if cfg.TranslateTags {
 		for i, g := range r.Genres {
 			if t, err := tr.Translate(g); err == nil && t != "" && t != g {
 				r.Genres[i] = t
+			} else if err != nil {
+				warnings = append(warnings,
+					avscrape.TranslateErrorPrefix+fmt.Sprintf("标签 %q 翻译失败: %v", g, err))
+				break
 			}
 		}
 	}
