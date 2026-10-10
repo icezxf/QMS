@@ -54,7 +54,9 @@ func buildWatermarks(r *ScrapeResult, cfg *Config) []WatermarkItem {
 	return items
 }
 
-func applyWatermark(imgData []byte, items []WatermarkItem) ([]byte, error) {
+// applyWatermark 打水印
+//   widthPercent 水印宽度占图片宽度的百分比，<=0 时用默认 15
+func applyWatermark(imgData []byte, items []WatermarkItem, widthPercent int) ([]byte, error) {
 	if len(items) == 0 {
 		return imgData, nil
 	}
@@ -75,6 +77,19 @@ func applyWatermark(imgData []byte, items []WatermarkItem) ([]byte, error) {
 	curX := padX
 	curY := padY
 
+	// ===== 水印宽度百分比 =====
+	if widthPercent <= 0 {
+		widthPercent = 15 // 默认 15%
+	}
+	if widthPercent > 50 {
+		widthPercent = 50 // 上限 50%
+	}
+	minW := w * 5 / 100 // 最小 5%
+	if minW < 60 {
+		minW = 60
+	}
+	// ==========================
+
 	for _, item := range items {
 		pngData, err := watermarkFS.ReadFile(item.PngName)
 		if err != nil {
@@ -90,12 +105,10 @@ func applyWatermark(imgData []byte, items []WatermarkItem) ([]byte, error) {
 		wmW := wmImg.Bounds().Dx()
 		wmH := wmImg.Bounds().Dy()
 
-		// ===== 水印宽度 = 图片宽度的 15%（原来 8%，太小）=====
-		targetW := w * 15 / 100
-		if targetW < 120 {
-			targetW = 120
+		targetW := w * widthPercent / 100
+		if targetW < minW {
+			targetW = minW
 		}
-		// =====================================================
 
 		scale := float64(targetW) / float64(wmW)
 		targetH := int(float64(wmH) * scale)
@@ -171,6 +184,7 @@ func contains(s, sub string) bool {
 }
 
 // ApplyWatermark 给单张图片打水印，供外部包（如 aven）调用。
-func ApplyWatermark(imgData []byte, items []WatermarkItem) ([]byte, error) {
-	return applyWatermark(imgData, items)
+//   widthPercent 水印宽度占图片宽度的百分比，<=0 时用默认 15
+func ApplyWatermark(imgData []byte, items []WatermarkItem, widthPercent int) ([]byte, error) {
+	return applyWatermark(imgData, items, widthPercent)
 }
