@@ -20,10 +20,13 @@ func NewHandler(repo *Repo) *Handler {
 func (h *Handler) RegisterRoutes(g *gin.RouterGroup) {
 	g.GET("/actor/list", h.listActors)
 	g.GET("/actor/:id", h.getActor)
+	g.GET("/actor/:id/avatar", h.getAvatar) // ← 新增：头像代理
 	g.DELETE("/actor/:id", h.deleteActor)
+
 	g.POST("/actor/aggregate", h.aggregate)
 	g.POST("/actor/sync-stashdb", h.syncStashDB)
 	g.POST("/actor/push-emby", h.pushEmby)
+
 	g.GET("/actor/config", h.getConfig)
 	g.PUT("/actor/config", h.updateConfig)
 }
@@ -47,6 +50,17 @@ func (h *Handler) getActor(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, p)
+}
+
+// getAvatar 头像代理：读取本地头像文件返回给浏览器
+func (h *Handler) getAvatar(c *gin.Context) {
+	id := uint(atoiDefault(c.Param("id"), 0))
+	p, err := h.Repo.GetActorByID(id)
+	if err != nil || p.AvatarURL == "" {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	c.File(p.AvatarURL)
 }
 
 func (h *Handler) deleteActor(c *gin.Context) {
