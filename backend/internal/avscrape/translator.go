@@ -13,12 +13,33 @@ import (
 	"qmediasync/internal/helpers"
 )
 
+// ============================================================
+// 翻译错误标记
+//
+// 扫描器（aven/scanner_en.go、avscrape/scanner.go）靠这个前缀识别
+// 是否需要暂停任务。演员名匹配不到中文名不加这个前缀，不触发暂停。
+// ============================================================
+
+const TranslateErrorPrefix = "[翻译错误] "
+
+// HasTranslateError 检查 warnings 里是否有翻译错误
+func HasTranslateError(warnings []string) bool {
+	for _, w := range warnings {
+		if strings.HasPrefix(w, TranslateErrorPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// ============================================================
+
 type Translator struct {
 	Engine      string
 	Target      string
-	// ===== 改动 1：新增源语言字段，默认 "ja"（日本），欧美用 "en" =====
+	// ===== 源语言：日文默认 "ja"，欧美用 "en" =====
 	SourceLang  string
-	// ===================================================================
+	// ==========================================
 	DeepLKey    string
 	BingKey     string
 	BingRegion  string
@@ -37,7 +58,7 @@ func NewTranslator(engine, target string) *Translator {
 	return &Translator{
 		Engine: engine,
 		Target: target,
-		// ===== 改动 2：默认日语 =====
+		// ===== 默认日语 =====
 		SourceLang: "ja",
 		// ===========================
 		HTTP: &http.Client{Timeout: 90 * time.Second},
@@ -160,7 +181,6 @@ func (t *Translator) geminiCall(prompt string) (string, error) {
 }
 
 func (t *Translator) geminiTranslate(text string) (string, error) {
-	// 根据源语言生成 prompt
 	var langName string
 	switch t.SourceLang {
 	case "en":
@@ -332,19 +352,23 @@ func (t *Translator) TranslateResult(r *ScrapeResult) []string {
 			return warnings
 		} else {
 			helpers.AppLogger.Warnf("[翻译] Gemini 失败，降级到 DeepL: %v", err)
+			// 注意：这里是"降级提示"，不是最终失败，不加 TranslateErrorPrefix
 			warnings = append(warnings, fmt.Sprintf("Gemini 翻译失败: %v，已降级到 DeepL", err))
 			t.Engine = "deepl"
 		}
 	}
 
+	// 标题翻译
 	if s, err := t.Translate(r.Title); err != nil {
-		warnings = append(warnings, fmt.Sprintf("标题翻译失败: %v", err))
+		warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("标题翻译失败: %v", err))
 	} else if s != "" {
 		r.Title = s
 		helpers.AppLogger.Infof("[翻译] 标题 -> %s", s)
 	}
+
+	// 简介翻译
 	if s, err := t.Translate(r.Plot); err != nil {
-		warnings = append(warnings, fmt.Sprintf("简介翻译失败: %v", err))
+		warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("简介翻译失败: %v", err))
 	} else if s != "" {
 		r.Plot = s
 		helpers.AppLogger.Infof("[翻译] 简介 -> %s", truncate(s, 50))
@@ -352,8 +376,7 @@ func (t *Translator) TranslateResult(r *ScrapeResult) []string {
 
 	// ===== 标签翻译 =====
 	for i, g := range r.Genres {
-		// 日文场景下：无日文假名跳过
-		// 英文场景下：不跳过（都是英文标签）
+		// 日文场景下：无日文假名跳过；英文场景下不跳过
 		if t.SourceLang != "en" && !isJapanese(g) {
 			helpers.AppLogger.Infof("[翻译] 标签 %s 无日文假名，跳过翻译", g)
 			continue
@@ -372,8 +395,9 @@ func (t *Translator) TranslateResult(r *ScrapeResult) []string {
 			translated, err = t.Translate(g)
 		}
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("标签 %s 翻译失败: %v", g, err))
-			continue
+			warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("标签 %s 翻译失败: %v", g, err))
+			// 一旦失败就停止，避免刷屏
+			break
 		}
 		if translated != "" && translated != g {
 			r.Genres[i] = translated
@@ -411,12 +435,10 @@ func (t *Translator) googleCloudTranslate(text string) (string, error) {
 		targetLang = "ja"
 	}
 
-	// ===== 改动 3：源语言从 t.SourceLang 取 =====
 	sourceLang := t.SourceLang
 	if sourceLang == "" {
 		sourceLang = "ja"
 	}
-	// ==========================================
 
 	body := map[string]interface{}{
 		"q":      []string{text},
@@ -468,15 +490,16 @@ func (t *Translator) googleCloudTranslate(text string) (string, error) {
 
 func (t *Translator) translateAllWithGoogle(r *ScrapeResult) []string {
 	var warnings []string
+
 	if s, err := t.googleCloudTranslate(r.Title); err != nil {
-		warnings = append(warnings, fmt.Sprintf("Google 标题翻译失败: %v", err))
+		warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("Google 标题翻译失败: %v", err))
 	} else if s != "" {
 		r.Title = s
 		helpers.AppLogger.Infof("[翻译-Google] 标题 -> %s", truncate(s, 40))
 	}
 
 	if s, err := t.googleCloudTranslate(r.Plot); err != nil {
-		warnings = append(warnings, fmt.Sprintf("Google 简介翻译失败: %v", err))
+		warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("Google 简介翻译失败: %v", err))
 	} else if s != "" {
 		r.Plot = s
 		helpers.AppLogger.Infof("[翻译-Google] 简介 -> %s", truncate(s, 40))
@@ -487,7 +510,8 @@ func (t *Translator) translateAllWithGoogle(r *ScrapeResult) []string {
 			continue
 		}
 		if s, err := t.googleCloudTranslate(g); err != nil {
-			warnings = append(warnings, fmt.Sprintf("Google 标签 %s 翻译失败: %v", g, err))
+			warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("Google 标签 %s 翻译失败: %v", g, err))
+			break
 		} else if s != "" && s != g {
 			r.Genres[i] = s
 		}
@@ -520,14 +544,12 @@ func (t *Translator) deepl(text string) (string, error) {
 		targetLang = "JA"
 	}
 
-	// ===== 改动 4：源语言从 t.SourceLang 取 =====
 	sourceLang := t.SourceLang
 	if sourceLang == "" {
 		sourceLang = "JA"
 	} else {
 		sourceLang = strings.ToUpper(sourceLang)
 	}
-	// ==========================================
 
 	form := url.Values{}
 	form.Set("text", text)
@@ -572,13 +594,11 @@ func (t *Translator) bing(text string) (string, error) {
 	q := u.Query()
 	q.Set("api-version", "3.0")
 
-	// ===== 改动 5：源语言从 t.SourceLang 取 =====
 	sourceLang := t.SourceLang
 	if sourceLang == "" {
 		sourceLang = "ja"
 	}
 	q.Set("from", sourceLang)
-	// ==========================================
 
 	q.Set("to", "zh-Hans")
 	u.RawQuery = q.Encode()
@@ -615,7 +635,6 @@ func (t *Translator) bing(text string) (string, error) {
 }
 
 func (t *Translator) googleFree(text string) (string, error) {
-	// googleFree 用 sl=auto 自动检测源语言，不需要 SourceLang
 	u := fmt.Sprintf("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=%s&dt=t&q=%s",
 		t.Target, url.QueryEscape(text))
 	resp, err := t.HTTP.Get(u)
@@ -648,7 +667,6 @@ func (t *Translator) googleFree(text string) (string, error) {
 }
 
 func (t *Translator) myMemory(text string) (string, error) {
-	// MyMemory 也支持 langpair 参数，源语言从 t.SourceLang 取
 	src := t.SourceLang
 	if src == "" {
 		src = "ja"
