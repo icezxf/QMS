@@ -727,10 +727,23 @@ func renderTemplate(tpl string, media *models.AVMedia) string {
 	default:
 		actorDir = "多人作品"
 	}
-	allActors := strings.Join(names, ", ")
-	allActorsPath := sanitizePath(allActors)
-	if len(names) >= 2 {
-		allActorsPath = "多人作品/" + sanitizePath(allActors)
+
+	// {actors} 最多显示前 5 个名字，超出部分用 "等K人" 代替
+	const maxActorsInPath = 5
+	allActorsPath := ""
+	switch {
+	case len(names) == 0:
+		allActorsPath = "未知演员"
+	case len(names) == 1:
+		allActorsPath = sanitizePath(names[0])
+	default:
+		head := names
+		suffix := ""
+		if len(names) > maxActorsInPath {
+			head = names[:maxActorsInPath]
+			suffix = fmt.Sprintf("等%d人", len(names))
+		}
+		allActorsPath = "多人作品/" + sanitizePath(strings.Join(head, ", ")) + suffix
 	}
 
 	replacer := strings.NewReplacer(
