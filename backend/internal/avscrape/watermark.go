@@ -7,7 +7,6 @@ import (
 	_ "image/jpeg"   // 新增：识别 JPEG
 	"image/draw"
 	"image/jpeg"
-	"image/png"
 	_ "image/png"    // 保留：识别 PNG
 
 	"qmediasync/internal/helpers"
