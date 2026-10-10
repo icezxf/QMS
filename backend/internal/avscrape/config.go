@@ -35,10 +35,11 @@ type Config struct {
 	Watermark7K bool `json:"watermark_7k"`
 	Watermark8K bool `json:"watermark_8k"`
 
-	WatermarkSubtitle   bool `json:"watermark_subtitle"`
-	WatermarkCrack      bool `json:"watermark_crack"`
-	WatermarkLeak       bool `json:"watermark_leak"`
-	WatermarkUncensored bool `json:"watermark_uncensored"`
+	WatermarkSubtitle     bool `json:"watermark_subtitle"`
+	WatermarkCrack        bool `json:"watermark_crack"`
+	WatermarkLeak         bool `json:"watermark_leak"`
+	WatermarkUncensored   bool `json:"watermark_uncensored"`
+	WatermarkWidthPercent int  `json:"watermark_width_percent"` // 水印宽度占图片宽度的百分比
 
 	ExtraTagResolution bool `json:"extra_tag_resolution"`
 	ExtraTagUncensored bool `json:"extra_tag_uncensored"`
@@ -63,8 +64,6 @@ var defaultConfig = Config{
 	EnableJavDBRating:    false,
 	PreferChineseSource:  true,
 
-	WatermarkWidthPercent: 15,   // 默认 15%
-
 	EnableOshashMatch: false,
 
 	Watermark4K: true,
@@ -73,12 +72,11 @@ var defaultConfig = Config{
 	Watermark7K: true,
 	Watermark8K: true,
 
-	WatermarkSubtitle:   true,
-	WatermarkCrack:      true,
-	WatermarkLeak:       true,
-	WatermarkUncensored: true,
-	
-	WatermarkWidthPercent int `json:"watermark_width_percent"`   // ← 新增：水印宽度占图片宽度的百分比
+	WatermarkSubtitle:     true,
+	WatermarkCrack:        true,
+	WatermarkLeak:         true,
+	WatermarkUncensored:   true,
+	WatermarkWidthPercent: 15, // 默认 15%
 
 	ExtraTagResolution: true,
 	ExtraTagUncensored: true,
