@@ -94,6 +94,11 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	// ===== 合并多源 =====
 	best := mergeResults(allResults, cfg)
 
+	
+	// ===== 清理重复的带括号演员 =====
+	best.Actors = dedupParenActors(best.Actors)
+	// =================================
+
 	// ===== 收集警告 =====
 	var warnings []string
 
@@ -603,4 +608,54 @@ func (s *Service) BatchDeleteMedia(ids []uint) (int, error) {
 
 	helpers.AppLogger.Infof("[AV批量删除] 已删除 %d 条媒体记录", len(mediaIDs))
 	return len(mediaIDs), nil
+}
+
+// dedupParenActors 去掉"名字带括号但括号里的名字已在列表里"的重复演员
+// 例："めぐり（藤浦めぐ）" 里 "藤浦めぐ" 已存在 → 丢弃 "めぐり（藤浦めぐ）"
+func dedupParenActors(actors []Actor) []Actor {
+	if len(actors) <= 1 {
+		return actors
+	}
+
+	// 收集所有名字（含 aliases）
+	nameSet := make(map[string]bool)
+	for _, a := range actors {
+		if a.Name != "" {
+			nameSet[normalizeName(a.Name)] = true
+		}
+		for _, al := range a.Aliases {
+			if al != "" {
+				nameSet[normalizeName(al)] = true
+			}
+		}
+	}
+
+	out := make([]Actor, 0, len(actors))
+	for _, a := range actors {
+		if inner := extractParenInner(a.Name); inner != "" {
+			if nameSet[normalizeName(inner)] {
+				helpers.AppLogger.Infof("[演员去重] 丢弃重复演员: %s（括号内 %s 已存在）", a.Name, inner)
+				continue
+			}
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// extractParenInner 提取中/英文括号内容
+func extractParenInner(s string) string {
+	// 中文括号
+	if i := strings.Index(s, "（"); i >= 0 {
+		if j := strings.LastIndex(s, "）"); j > i {
+			return strings.TrimSpace(s[i+len("（"):j])
+		}
+	}
+	// 英文括号
+	if i := strings.Index(s, "("); i >= 0 {
+		if j := strings.LastIndex(s, ")"); j > i {
+			return strings.TrimSpace(s[i+1 : j])
+		}
+	}
+	return ""
 }
