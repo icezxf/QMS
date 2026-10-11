@@ -59,6 +59,7 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 		return "", nil
 	}
 
+	// 查缓存
 	w.mu.Lock()
 	if entry, ok := w.cache[japaneseName]; ok {
 		if time.Since(entry.at) < 24*time.Hour {
@@ -66,6 +67,41 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 			return entry.zh, nil
 		}
 	}
+	w.mu.Unlock()
+
+	// 尝试 1：原名
+	zhName, err := w.fetchZh(japaneseName)
+	if err != nil {
+		return "", err
+	}
+
+	// 尝试 2：加 "(AV女優)" 后缀
+	if zhName == "" {
+		alt := japaneseName + " (AV女優)"
+		zh2, err2 := w.fetchZh(alt)
+		if err2 == nil && zh2 != "" {
+			zhName = zh2
+			helpers.AppLogger.Infof("[维基] %s 命中 (AV女優) 变体", japaneseName)
+		}
+	}
+
+	// 写缓存
+	w.mu.Lock()
+	w.cache[japaneseName] = &wikiCache{zh: zhName, at: time.Now()}
+	w.mu.Unlock()
+
+	if zhName != "" {
+		helpers.AppLogger.Infof("[维基] %s → %s", japaneseName, zhName)
+	} else {
+		helpers.AppLogger.Infof("[维基] %s 无中文条目", japaneseName)
+	}
+	return zhName, nil
+}
+
+// fetchZh 单次查询，返回中文名（可能为空），error 表示请求彻底失败
+func (w *WikiClient) fetchZh(japaneseName string) (string, error) {
+	// 限速
+	w.mu.Lock()
 	elapsed := time.Since(w.lastReq)
 	if elapsed < wikiMinInterval {
 		w.mu.Unlock()
@@ -93,8 +129,7 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 		zh, err := w.requestOnce(endpoint, japaneseName)
 		if err != nil {
 			if strings.Contains(err.Error(), "RATE_LIMIT") {
-				lastErr = err
-				break
+				return "", err
 			}
 			lastErr = err
 			continue
@@ -105,26 +140,14 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 	}
 
 	if lastErr != nil {
-		helpers.AppLogger.Warnf("[维基] %s 查询失败: %v", japaneseName, lastErr)
 		return "", lastErr
 	}
 
 	if zhName != "" {
 		zhName = stripDisambiguation(zhName)
 	}
-
-	w.mu.Lock()
-	w.cache[japaneseName] = &wikiCache{zh: zhName, at: time.Now()}
-	w.mu.Unlock()
-
-	if zhName != "" {
-		helpers.AppLogger.Infof("[维基] %s → %s", japaneseName, zhName)
-	} else {
-		helpers.AppLogger.Infof("[维基] %s 无中文条目", japaneseName)
-	}
 	return zhName, nil
 }
-
 func (w *WikiClient) requestOnce(endpoint, japaneseName string) (string, error) {
 	req, err := http.NewRequest("GET", endpoint, nil)
 	if err != nil {
