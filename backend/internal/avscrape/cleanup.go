@@ -15,15 +15,15 @@ const (
 	// cleanupDeleteInterval 每次删除之间的间隔，避免触发网盘风控
 	cleanupDeleteInterval = 500 * time.Millisecond
 
-	// cleanupMaxDeletesPerScan 单次扫描最多删多少个目录（防止极端情况）
+	// cleanupMaxDeletesPerScan 单次扫描最多删多少棵残留子树
 	cleanupMaxDeletesPerScan = 100
 )
 
 // cleanupSourceDir 递归清理源目录下的残留子目录
 // 规则：
 //   - 源目录本身保留
-//   - 源目录下的任意子目录，如果连同所有子目录、所有文件都没有 >1G 的视频，
-//     就整个删除
+//   - 源目录下的任意子目录，如果连同所有子孙都没有 >1G 的视频，
+//     就整棵删除（只调用一次 DeleteDir），不再单独删其子目录
 func (s *Scanner) cleanupSourceDir(fs FileSystem, srcDir string) {
 	entries, err := fs.ListDetailed(srcDir)
 	if err != nil {
@@ -36,7 +36,7 @@ func (s *Scanner) cleanupSourceDir(fs FileSystem, srcDir string) {
 		if !e.IsDir {
 			continue
 		}
-		s.cleanupDirRecursive(fs, e.Path, &deleted)
+		s.cleanupShallowestResidual(fs, e.Path, &deleted)
 	}
 
 	if deleted > 0 {
@@ -44,69 +44,65 @@ func (s *Scanner) cleanupSourceDir(fs FileSystem, srcDir string) {
 	}
 }
 
-// cleanupDirRecursive 后序遍历目录树
-// 返回 true 表示这个目录已经被删掉
-func (s *Scanner) cleanupDirRecursive(fs FileSystem, dir string, deleted *int) bool {
-	entries, err := fs.ListDetailed(dir)
-	if err != nil {
-		// 列不出来就不动它，保守
-		return false
+// cleanupShallowestResidual 前序遍历：
+//   - 如果 dir 整棵树都没有 >1G 的视频，直接删 dir 一次，返回 true
+//   - 否则递归进子目录，继续找"最浅的纯残留目录"
+//
+// 返回值仅表示"dir 这一层是否被删掉"，调用方一般不需要依赖它。
+func (s *Scanner) cleanupShallowestResidual(fs FileSystem, dir string, deleted *int) bool {
+	if s.isPureResidual(fs, dir) {
+		if *deleted >= cleanupMaxDeletesPerScan {
+			helpers.AppLogger.Warnf("[AV清理] 已达到单次删除上限 %d，跳过 %s",
+				cleanupMaxDeletesPerScan, dir)
+			return true
+		}
+
+		if *deleted > 0 && cleanupDeleteInterval > 0 {
+			time.Sleep(cleanupDeleteInterval)
+		}
+
+		if err := fs.DeleteDir(dir); err != nil {
+			helpers.AppLogger.Warnf("[AV清理] 删除目录失败 %s: %v", dir, err)
+			return false
+		}
+		*deleted++
+		helpers.AppLogger.Infof("[AV清理] 已删除残留目录: %s", dir)
+		return true
 	}
 
-	hasBigVideo := false
-
-	// 1. 先递归处理子目录
+	// 不是纯残留，递归子目录找最浅的纯残留目录
+	entries, err := fs.ListDetailed(dir)
+	if err != nil {
+		return false
+	}
 	for _, e := range entries {
 		if !e.IsDir {
 			continue
 		}
-		subRemoved := s.cleanupDirRecursive(fs, e.Path, deleted)
-		if !subRemoved {
-			// 子目录还在，说明里面（含深层）有 >1G 视频
-			hasBigVideo = true
+		s.cleanupShallowestResidual(fs, e.Path, deleted)
+	}
+	return false
+}
+
+// isPureResidual 判断 dir 及其所有子孙是否都没有 >1G 的视频
+// 列目录失败时保守返回 false（不删），避免误删
+func (s *Scanner) isPureResidual(fs FileSystem, dir string) bool {
+	entries, err := fs.ListDetailed(dir)
+	if err != nil {
+		return false
+	}
+
+	for _, e := range entries {
+		if e.IsDir {
+			if !s.isPureResidual(fs, e.Path) {
+				return false
+			}
+			continue
+		}
+		if isVideoName(e.Name) && e.Size > cleanupBigVideoSize {
+			return false
 		}
 	}
-
-	// 2. 再检查当前目录的直接文件
-	if !hasBigVideo {
-		for _, e := range entries {
-			if e.IsDir {
-				continue
-			}
-			if !isVideoName(e.Name) {
-				continue
-			}
-			if e.Size > cleanupBigVideoSize {
-				hasBigVideo = true
-				break
-			}
-		}
-	}
-
-	// 还有大视频，保留
-	if hasBigVideo {
-		return false
-	}
-
-	// 达到单次上限就停
-	if *deleted >= cleanupMaxDeletesPerScan {
-		helpers.AppLogger.Warnf("[AV清理] 已达到单次删除上限 %d，跳过 %s",
-			cleanupMaxDeletesPerScan, dir)
-		return false
-	}
-
-	// 节流：每次删除之前 sleep，避免连续 Del 请求
-	if *deleted > 0 && cleanupDeleteInterval > 0 {
-		time.Sleep(cleanupDeleteInterval)
-	}
-
-	// 删除整个目录
-	if err := fs.DeleteDir(dir); err != nil {
-		helpers.AppLogger.Warnf("[AV清理] 删除目录失败 %s: %v", dir, err)
-		return false
-	}
-	*deleted++
-	helpers.AppLogger.Infof("[AV清理] 已删除残留目录: %s", dir)
 	return true
 }
 
