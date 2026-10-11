@@ -701,3 +701,275 @@ func truncate(s string, n int) string {
 	}
 	return string(runes[:n]) + "..."
 }
+
+// ============================================================
+// 批量翻译（标签等场景，一次请求翻多条）
+// 支持 DeepL / Google Cloud / Bing / Gemini；其他引擎回退逐条
+// ============================================================
+
+func (t *Translator) TranslateBatch(texts []string) ([]string, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	switch t.Engine {
+	case "deepl":
+		return t.deeplBatch(texts)
+	case "google_cloud":
+		return t.googleCloudBatch(texts)
+	case "bing":
+		return t.bingBatch(texts)
+	case "gemini":
+		return t.geminiBatch(texts)
+	default:
+		out := make([]string, len(texts))
+		for i, s := range texts {
+			r, err := t.Translate(s)
+			if err != nil {
+				return out, err
+			}
+			out[i] = r
+		}
+		return out, nil
+	}
+}
+
+func (t *Translator) deeplBatch(texts []string) ([]string, error) {
+	if t.DeepLKey == "" {
+		return nil, fmt.Errorf("DeepL API Key 未配置")
+	}
+	endpoint := "https://api.deepl.com/v2/translate"
+	if strings.HasSuffix(t.DeepLKey, ":fx") {
+		endpoint = "https://api-free.deepl.com/v2/translate"
+	}
+
+	targetLang := "ZH"
+	switch t.Target {
+	case "zh", "zh-Hans", "zh-CN":
+		targetLang = "ZH"
+	case "zh-Hant", "zh-TW":
+		targetLang = "ZH-HANT"
+	case "en":
+		targetLang = "EN-US"
+	case "ja":
+		targetLang = "JA"
+	}
+
+	sourceLang := t.SourceLang
+	if sourceLang == "" {
+		sourceLang = "JA"
+	} else {
+		sourceLang = strings.ToUpper(sourceLang)
+	}
+
+	form := url.Values{}
+	form.Set("source_lang", sourceLang)
+	form.Set("target_lang", targetLang)
+	for _, s := range texts {
+		form.Add("text", s)
+	}
+
+	req, _ := http.NewRequest("POST", endpoint, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "DeepL-Auth-Key "+t.DeepLKey)
+
+	resp, err := t.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("DeepL HTTP %d: %s", resp.StatusCode, truncate(string(body), 200))
+	}
+
+	var out struct {
+		Translations []struct {
+			Text string `json:"text"`
+		} `json:"translations"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	if len(out.Translations) != len(texts) {
+		return nil, fmt.Errorf("DeepL 返回数量不匹配: want %d, got %d", len(texts), len(out.Translations))
+	}
+	result := make([]string, len(texts))
+	for i, tr := range out.Translations {
+		result[i] = tr.Text
+	}
+	return result, nil
+}
+
+func (t *Translator) googleCloudBatch(texts []string) ([]string, error) {
+	if t.GoogleAPIKey == "" {
+		return nil, fmt.Errorf("Google Cloud Translation API Key 未配置")
+	}
+
+	endpoint := "https://translation.googleapis.com/language/translate/v2?key=" + url.QueryEscape(t.GoogleAPIKey)
+
+	targetLang := "zh-CN"
+	switch t.Target {
+	case "zh", "zh-CN", "zh-Hans", "":
+		targetLang = "zh-CN"
+	case "zh-Hant", "zh-TW":
+		targetLang = "zh-TW"
+	case "en":
+		targetLang = "en"
+	case "ja":
+		targetLang = "ja"
+	}
+
+	sourceLang := t.SourceLang
+	if sourceLang == "" {
+		sourceLang = "ja"
+	}
+
+	body := map[string]interface{}{
+		"q":      texts,
+		"source": sourceLang,
+		"target": targetLang,
+		"format": "text",
+	}
+	payload, _ := json.Marshal(body)
+
+	req, err := http.NewRequest("POST", endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := t.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Google Translate HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+	}
+
+	var out struct {
+		Data struct {
+			Translations []struct {
+				TranslatedText string `json:"translatedText"`
+			} `json:"translations"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, err
+	}
+	if len(out.Data.Translations) != len(texts) {
+		return nil, fmt.Errorf("Google 返回数量不匹配: want %d, got %d", len(texts), len(out.Data.Translations))
+	}
+	result := make([]string, len(texts))
+	for i, tr := range out.Data.Translations {
+		s := tr.TranslatedText
+		s = strings.ReplaceAll(s, "&quot;", "\"")
+		s = strings.ReplaceAll(s, "&#39;", "'")
+		s = strings.ReplaceAll(s, "&amp;", "&")
+		s = strings.ReplaceAll(s, "&lt;", "<")
+		s = strings.ReplaceAll(s, "&gt;", ">")
+		result[i] = s
+	}
+	return result, nil
+}
+
+func (t *Translator) bingBatch(texts []string) ([]string, error) {
+	if t.BingKey == "" {
+		return nil, fmt.Errorf("Bing API Key 未配置")
+	}
+	endpoint := "https://api.cognitive.microsofttranslator.com/translate"
+	u, _ := url.Parse(endpoint)
+	q := u.Query()
+	q.Set("api-version", "3.0")
+	sourceLang := t.SourceLang
+	if sourceLang == "" {
+		sourceLang = "ja"
+	}
+	q.Set("from", sourceLang)
+	q.Set("to", "zh-Hans")
+	u.RawQuery = q.Encode()
+
+	items := make([]map[string]string, len(texts))
+	for i, s := range texts {
+		items[i] = map[string]string{"Text": s}
+	}
+	body, _ := json.Marshal(items)
+	req, _ := http.NewRequest("POST", u.String(), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Ocp-Apim-Subscription-Key", t.BingKey)
+	req.Header.Set("Ocp-Apim-Subscription-Region", t.BingRegion)
+
+	resp, err := t.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Bing HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+	}
+
+	var result []struct {
+		Translations []struct {
+			Text string `json:"text"`
+		} `json:"translations"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, err
+	}
+	if len(result) != len(texts) {
+		return nil, fmt.Errorf("Bing 返回数量不匹配: want %d, got %d", len(texts), len(result))
+	}
+	out := make([]string, len(texts))
+	for i, r := range result {
+		if len(r.Translations) > 0 {
+			out[i] = r.Translations[0].Text
+		}
+	}
+	return out, nil
+}
+
+func (t *Translator) geminiBatch(texts []string) ([]string, error) {
+	if t.GeminiKey == "" {
+		return nil, fmt.Errorf("Gemini API Key 未配置")
+	}
+
+	var langName string
+	switch t.SourceLang {
+	case "en":
+		langName = "英文"
+	case "ja", "":
+		langName = "日文"
+	default:
+		langName = "原文"
+	}
+
+	inputJSON, _ := json.Marshal(texts)
+	prompt := fmt.Sprintf(`请把下面 JSON 数组中的每条%s翻译成简体中文。只返回翻译后的 JSON 数组，长度和顺序必须完全一致，不要加任何解释、不要加 markdown 代码块。
+
+输入：
+%s`, langName, string(inputJSON))
+
+	raw, err := t.geminiCall(prompt)
+	if err != nil {
+		return nil, err
+	}
+
+	raw = strings.TrimPrefix(raw, "```json")
+	raw = strings.TrimPrefix(raw, "```")
+	raw = strings.TrimSuffix(raw, "```")
+	raw = strings.TrimSpace(raw)
+
+	var result []string
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return nil, fmt.Errorf("Gemini 批量返回解析失败: %w, 原始: %s", err, truncate(raw, 200))
+	}
+	if len(result) != len(texts) {
+		return nil, fmt.Errorf("Gemini 返回数量不匹配: want %d, got %d", len(texts), len(result))
+	}
+	return result, nil
+}
