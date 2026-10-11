@@ -34,7 +34,6 @@ func SetScanFilterN(oshashes []string) {
 	}
 }
 
-// takeScanFilterN 取出 filter 快照并立即清空
 func takeScanFilterN() map[string]bool {
 	scanFilterNMu.Lock()
 	defer scanFilterNMu.Unlock()
@@ -169,12 +168,10 @@ func (s *ScannerEN) Scan(pathID uint) error {
 		return fmt.Errorf("目录未启用: %d", pathID)
 	}
 
-	// ===== 扫描开始时取出 filter 快照并立即清空 =====
 	filterSnapshot := takeScanFilterN()
 	if len(filterSnapshot) > 0 {
 		helpers.AppLogger.Infof("[欧美扫描] 本次仅处理 %d 个 oshash", len(filterSnapshot))
 	}
-	// =================================================
 
 	tempAVPath := &models.AVPath{
 		ID:           path.ID,
@@ -219,13 +216,11 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 	fileName := filepath.Base(videoPath)
 	helpers.AppLogger.Infof("[欧美扫描] 处理: %s", fileName)
 
-	// 1. 拿直链
 	videoURL, err := fs.GetURL(videoPath)
 	if err != nil {
 		return fmt.Errorf("获取直链失败: %w", err)
 	}
 
-	// 2. 从 avscrape 缓存取 header（含 115 UA）
 	headers := map[string]string{}
 	if h := avscrape.GetURLHeader(videoURL); h != nil {
 		for k, vs := range h {
@@ -235,7 +230,6 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		}
 	}
 
-	// 3. 探测 + 刮削（带 filter 快照，提前过滤）
 	result, oshash, err := s.Svc.ScrapeByURL(videoURL, headers, filterSnapshot)
 
 	if err == ErrFilteredOut {
@@ -255,13 +249,12 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		return fmt.Errorf("刮削结果为空")
 	}
 
-	// 4. 提前算 baseName
 	baseName := sanitizePathN(result.Title)
 	if baseName == "" {
 		baseName = sanitizePathN(strings.TrimSuffix(fileName, filepath.Ext(fileName)))
 	}
 
-	// 4.5 翻译错误 → 暂停
+	// 翻译错误 → 暂停
 	if avscrape.HasTranslateError(result.Warnings) {
 		reason := "翻译错误（详见警告列表）"
 		s.pauseMedia(baseName, videoPath, oshash, reason, result.Warnings)
@@ -269,7 +262,7 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		return fmt.Errorf("%s", reason)
 	}
 
-	// 5. 检查是否已存在
+	// 已存在检查
 	var existing models.AVENMedia
 	if err := s.DB.Where("oshash = ?", oshash).First(&existing).Error; err == nil {
 		if existing.Status == "paused" {
@@ -286,7 +279,7 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		}
 	}
 
-	// 6. 生成元数据
+	// 生成元数据
 	files, prepWarnings, err := PrepareMetaFilesN(baseName, result, s.Svc.GetConfig())
 	allWarnings := append([]string{}, result.Warnings...)
 	allWarnings = append(allWarnings, prepWarnings...)
@@ -295,25 +288,33 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		return err
 	}
 
-	// 7. 检查完整性
+	// 检查完整性
 	if missing := checkMetadataMissingEN(result); missing != "" {
 		reason := fmt.Sprintf("元数据缺失: %s", missing)
 		s.pauseMedia(baseName, videoPath, oshash, reason, allWarnings)
 		return fmt.Errorf("%s", reason)
 	}
 
-	// 8. 整理视频
+	// 整理视频
 	media := MediaFromResultN(result, oshash, result.FileSize)
 	if media == nil {
 		return fmt.Errorf("构造 media 失败")
 	}
-	targetDir, err := OrganizeN(fs, path, media, []string{videoPath}, result)
+	targetDir, anySkipped, err := OrganizeN(fs, path, media, []string{videoPath}, result)
 	if err != nil {
 		s.pauseMedia(baseName, videoPath, oshash, fmt.Sprintf("整理失败: %v", err), allWarnings)
 		return err
 	}
 
-	// 9. 上传
+	// 视频已存在 → 整个跳过（含 NFO/图 上传 + 入库）
+	if anySkipped {
+		reason := fmt.Sprintf("目标视频已存在：%s", targetDir)
+		s.recordTask(0, oshash, videoPath, "duplicate", reason, nil)
+		helpers.AppLogger.Warnf("[欧美扫描] %s 目标视频已存在，整个跳过", oshash)
+		return nil
+	}
+
+	// 上传
 	if len(files) > 0 {
 		if _, err := fs.QueueUploads(files, targetDir, path.AccountID, path.SourceType); err != nil {
 			s.pauseMedia(baseName, videoPath, oshash, fmt.Sprintf("加入上传队列失败: %v", err), allWarnings)
@@ -321,7 +322,7 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		}
 	}
 
-	// 10. 保存到数据库
+	// 保存到数据库
 	s.saveMedia(result, oshash, targetDir, allWarnings)
 
 	helpers.AppLogger.Infof("[欧美扫描] %s 刮削完成", fileName)
