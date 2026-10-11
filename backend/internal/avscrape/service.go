@@ -91,12 +91,14 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		}
 	}
 
+	// ===== 括号清洗（逐个源，提前到合并之前） =====
+	for _, r := range allResults {
+		r.Actors = normalizeParenActorNames(r.Actors)
+	}
+	// ==========================================
+
 	// ===== 合并多源 =====
 	best := mergeResults(allResults, cfg)
-
-	// ===== 清洗带括号的演员名 =====
-	best.Actors = normalizeParenActorNames(best.Actors)
-	// ==============================
 
 	// ===== 收集警告 =====
 	var warnings []string
