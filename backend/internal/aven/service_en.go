@@ -25,7 +25,7 @@ func NewServiceEN(db *gorm.DB) *ServiceEN {
 	return &ServiceEN{DB: db}
 }
 
-// ===== 懒加载：db 为 nil 时返回默认配置，避免测试崩溃 =====
+// ===== 懒加载：db 为 nil 时返回默认配置 =====
 func (s *ServiceEN) GetConfig() *Config {
 	if s.DB == nil {
 		def := defaultConfig
@@ -47,7 +47,7 @@ func (s *ServiceEN) GetStashDB() *StashDBClient {
 	return NewStashDBClient(cfg.StashDBEndpoint, cfg.StashDBAPIKey)
 }
 
-// GetTPDB 获取 TPDB 客户端（未配置或未启用返回 nil）
+// GetTPDB 获取 TPDB 客户端
 func (s *ServiceEN) GetTPDB() *TPDBClient {
 	cfg := s.GetConfig()
 	if !cfg.EnableTPDB || cfg.TPDBAPIKey == "" {
@@ -58,9 +58,6 @@ func (s *ServiceEN) GetTPDB() *TPDBClient {
 // ==========================================================
 
 // ScrapeByURL 通过视频 URL 刮削
-//
-// headers 由调用方（scanner_en.go）从 FS 层缓存里取好传进来，
-// 内含 115 / OpenList 的 UA，不带会导致直链下载 403。
 //
 // filter 非空时：探测出 oshash 后立即检查，不在 filter 里直接返回 ErrFilteredOut，
 // 不查询 StashDB / TPDB，也不调用翻译（避免白跑网络和烧配额）。
@@ -81,7 +78,7 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filt
 		return nil, "", fmt.Errorf("osHash 为空（文件可能太小）")
 	}
 
-	// 1.5 提前检查 filter（避免白跑 StashDB + TPDB + 翻译）
+	// 1.5 提前检查 filter
 	if len(filter) > 0 && !filter[pr.Oshash] {
 		return nil, pr.Oshash, ErrFilteredOut
 	}
@@ -118,7 +115,7 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filt
 
 	var warnings []string
 
-	// 4. 查 TPDB 补充 poster / rating / plot / studio（可选）
+	// 4. 查 TPDB 补充 poster / rating / plot / studio
 	if tpdb := s.GetTPDB(); tpdb != nil {
 		tpdbScene, tpdbErr := tpdb.FindSceneByOshash(pr.Oshash)
 		if tpdbErr != nil {
@@ -156,7 +153,7 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filt
 		helpers.AppLogger.Infof("[TPDB] 未配置或未启用，跳过补充")
 	}
 
-	// 5. 翻译（只译标题/剧情/标签）
+	// 5. 翻译
 	if cfg.EnableTranslate {
 		tr := avscrape.NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.SourceLang = "en"
@@ -177,7 +174,7 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filt
 	return r, pr.Oshash, nil
 }
 
-// translateResultN 欧美翻译
+// translateResultN 欧美翻译（标签走批量）
 func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.ScrapeResult, cfg *Config) []string {
 	var warnings []string
 	if r == nil {
@@ -215,15 +212,32 @@ func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.Scrape
 		}
 	}
 
-	// 标签：一旦失败就停止循环，避免刷屏
-	if cfg.TranslateTags {
+	// 标签：批量翻译，一次请求翻全部，避免 DeepL 429
+	if cfg.TranslateTags && len(r.Genres) > 0 {
+		var tagTexts []string
+		var tagIndices []int
 		for i, g := range r.Genres {
-			if t, err := tr.Translate(g); err == nil && t != "" && t != g {
-				r.Genres[i] = t
-			} else if err != nil {
+			if g == "" {
+				continue
+			}
+			tagTexts = append(tagTexts, g)
+			tagIndices = append(tagIndices, i)
+		}
+
+		if len(tagTexts) > 0 {
+			results, err := tr.TranslateBatch(tagTexts)
+			if err != nil {
 				warnings = append(warnings,
-					avscrape.TranslateErrorPrefix+fmt.Sprintf("标签 %q 翻译失败: %v", g, err))
-				break
+					avscrape.TranslateErrorPrefix+fmt.Sprintf("标签批量翻译失败: %v", err))
+			} else {
+				translated := 0
+				for k, idx := range tagIndices {
+					if k < len(results) && results[k] != "" && results[k] != tagTexts[k] {
+						r.Genres[idx] = results[k]
+						translated++
+					}
+				}
+				helpers.AppLogger.Infof("[欧美翻译] 标签批量翻译完成: %d/%d", translated, len(tagTexts))
 			}
 		}
 	}
