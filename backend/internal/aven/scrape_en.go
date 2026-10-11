@@ -17,8 +17,6 @@ import (
 	"strings"
 	"time"
 
-	_ "golang.org/x/image/webp" // 兜底：CDN 万一忽略 Accept 头仍返回 WebP
-
 	"qmediasync/internal/avscrape"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
@@ -30,10 +28,6 @@ import (
 
 var httpClientForImage = &http.Client{Timeout: 30 * time.Second}
 
-// downloadImage 下载图片
-//
-// 关键：Accept 头明确写 JPEG/PNG/GIF，避免 CDN 返回 WebP/AVIF
-// （Go 标准库 image.Decode 不支持 WebP/AVIF，会报 0x0）
 func downloadImage(url string) ([]byte, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -64,8 +58,6 @@ func redactURL(raw string) string {
 // 图片裁剪：从横版图裁出 2:3 竖版（仅作 poster 兜底）
 // ============================================================
 
-// cropToPoster 从横版图（或任意图）裁出 2:3 竖版
-// 策略：从左侧裁（欧美截图通常是左侧主体）
 func cropToPoster(src []byte) ([]byte, bool) {
 	img, _, err := image.Decode(bytes.NewReader(src))
 	if err != nil {
@@ -78,10 +70,8 @@ func cropToPoster(src []byte) ([]byte, bool) {
 		return nil, false
 	}
 
-	// 目标：2:3 竖版，高不变，宽 = 高 * 2/3
 	targetW := imgH * 2 / 3
 	if targetW > imgW {
-		// 图比 2:3 还窄，反过来用高度裁
 		targetH := imgW * 3 / 2
 		if targetH > imgH {
 			return src, false
@@ -95,7 +85,6 @@ func cropToPoster(src []byte) ([]byte, bool) {
 		return out.Bytes(), true
 	}
 
-	// 从左侧裁 targetW 宽
 	dst := image.NewRGBA(image.Rect(0, 0, targetW, imgH))
 	draw.Draw(dst, dst.Bounds(), img, image.Point{0, 0}, draw.Src)
 	var out bytes.Buffer
@@ -105,7 +94,6 @@ func cropToPoster(src []byte) ([]byte, bool) {
 	return out.Bytes(), true
 }
 
-// resizeToMin 如果小于 minW x minH，等比放大
 func resizeToMin(src []byte, minW, minH int) ([]byte, bool) {
 	img, _, err := image.Decode(bytes.NewReader(src))
 	if err != nil {
@@ -145,17 +133,6 @@ func resizeToMin(src []byte, minW, minH int) ([]byte, bool) {
 // ============================================================
 
 // PrepareMetaFilesN 生成欧美元数据文件（NFO + poster + fanart + 剧照）
-//
-// 图片来源（由 service_en.go 提前填好）：
-//   poster → r.Poster，来自 TPDB posters.large（JPEG）
-//   fanart → r.ImageCandidates（StashDB scene.Images），挑 width > height 的第一张
-//
-// 兜底策略：
-//   poster 为空 → 从候选图里裁 2:3
-//   fanart 为空 → 用第一张候选图（并打 warning）
-//
-// 注意：r.Poster / r.Fanart 保持为远程 URL 不变，前端直接加载；
-//      本地文件只用于上传，不覆盖这两个字段。
 func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) ([]avscrape.LocalFile, []string, error) {
 	var warnings []string
 	if r == nil {
@@ -171,7 +148,7 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 	files := []avscrape.LocalFile{}
 	var posterData, fanartData []byte
 
-	// ===== 1. poster：TPDB posters.large（JPEG）=====
+	// 1. poster：TPDB posters.large（JPEG）
 	if r.Poster != "" {
 		data, err := downloadImage(r.Poster)
 		if err != nil {
@@ -183,7 +160,6 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 				helpers.AppLogger.Warnf("[欧美元数据] poster 解码失败（%d 字节）: %v，跳过",
 					len(data), decErr)
 				warnings = append(warnings, fmt.Sprintf("poster 解码失败: %v", decErr))
-				// 不清空 r.Poster，前端仍能加载远程 URL
 			} else {
 				helpers.AppLogger.Infof("[欧美元数据] poster 来自 TPDB: %dx%d (%s)",
 					imgCfg.Width, imgCfg.Height, redactURL(r.Poster))
@@ -194,7 +170,7 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 		helpers.AppLogger.Infof("[欧美元数据] r.Poster 为空，poster 走兜底")
 	}
 
-	// ===== 2. fanart：从 StashDB scene.Images 里挑横版（width > height）=====
+	// 2. fanart：StashDB scene.Images 里挑横版
 	candidates := r.ImageCandidates
 	helpers.AppLogger.Infof("[欧美元数据] fanart 候选共 %d 张", len(candidates))
 	for i, url := range candidates {
@@ -218,7 +194,7 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 		}
 	}
 
-	// ===== 3. poster 兜底：从第一张候选裁出 2:3 =====
+	// 3. poster 兜底
 	if posterData == nil && len(candidates) > 0 {
 		if data, err := downloadImage(candidates[0]); err == nil {
 			if cropped, ok := cropToPoster(data); ok {
@@ -228,7 +204,7 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 		}
 	}
 
-	// ===== 4. fanart 兜底：用第一张候选 =====
+	// 4. fanart 兜底
 	if fanartData == nil && len(candidates) > 0 {
 		if data, err := downloadImage(candidates[0]); err == nil {
 			fanartData = data
@@ -238,14 +214,13 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 		}
 	}
 
-	// 放大 poster 到 500x750
 	if posterData != nil {
 		if resized, ok := resizeToMin(posterData, 500, 750); ok {
 			posterData = resized
 		}
 	}
 
-	// ===== 打水印 =====
+	// 打水印
 	wmItems := buildWatermarksN(r, cfg)
 	if len(wmItems) > 0 {
 		helpers.AppLogger.Infof("[欧美水印] 需要打水印 %d 个", len(wmItems))
@@ -267,7 +242,7 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 		}
 	}
 
-	// ===== 写 poster（不覆盖 r.Poster，保持远程 URL）=====
+	// 写 poster
 	if posterData != nil {
 		p := filepath.Join(tmpDir, "poster.jpg")
 		if err := os.WriteFile(p, posterData, 0644); err == nil {
@@ -277,7 +252,7 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 		warnings = append(warnings, "poster 未生成")
 	}
 
-	// ===== 写 fanart + thumb（不覆盖 r.Fanart，保持远程 URL）=====
+	// 写 fanart + thumb
 	if fanartData != nil {
 		p := filepath.Join(tmpDir, "fanart.jpg")
 		if err := os.WriteFile(p, fanartData, 0644); err == nil {
@@ -291,7 +266,7 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 		warnings = append(warnings, "fanart 未生成")
 	}
 
-	// ===== 剧照 =====
+	// 剧照
 	successCount := 0
 	failCount := 0
 	for i, url := range r.PreviewImages {
@@ -308,7 +283,7 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 		warnings = append(warnings, fmt.Sprintf("剧照部分下载失败: 成功 %d, 失败 %d", successCount, failCount))
 	}
 
-	// ===== 预告片（如果 urls 里有 mp4 链接）=====
+	// 预告片
 	if r.Trailer != "" {
 		p := filepath.Join(tmpDir, "trailer.strm")
 		if err := os.WriteFile(p, []byte(r.Trailer), 0644); err == nil {
@@ -316,7 +291,7 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 		}
 	}
 
-	// ===== NFO =====
+	// NFO
 	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
 	if err := os.WriteFile(nfoPath, []byte(GenerateNFON(r)), 0644); err != nil {
 		return nil, warnings, fmt.Errorf("写 NFO 失败: %w", err)
@@ -331,14 +306,16 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 // ============================================================
 
 // OrganizeN 移动视频到目标目录
-func OrganizeN(fs avscrape.FileSystem, path *models.AVENPath, media *models.AVENMedia, videoPaths []string, r *avscrape.ScrapeResult) (string, error) {
+// 返回 (targetDir, anySkipped, error)
+//   anySkipped：是否有任何文件因"目标已存在"而被跳过
+func OrganizeN(fs avscrape.FileSystem, path *models.AVENPath, media *models.AVENMedia, videoPaths []string, r *avscrape.ScrapeResult) (string, bool, error) {
 	relDir := renderTemplateN(path.NameTemplate, media)
 	if relDir == "" {
 		relDir = media.Title
 	}
 	targetDir := strings.TrimRight(path.TargetPath, "/") + "/" + relDir
 	if err := fs.MkdirAll(targetDir); err != nil {
-		return "", err
+		return "", false, err
 	}
 	helpers.AppLogger.Infof("[欧美整理] 目标目录: %s", targetDir)
 
@@ -346,6 +323,8 @@ func OrganizeN(fs avscrape.FileSystem, path *models.AVENPath, media *models.AVEN
 	if r != nil {
 		resSuffix = resolutionSuffix(r.Resolution)
 	}
+
+	anySkipped := false
 
 	for _, srcPath := range videoPaths {
 		originalName := filepath.Base(srcPath)
@@ -355,6 +334,7 @@ func OrganizeN(fs avscrape.FileSystem, path *models.AVENPath, media *models.AVEN
 
 		if fs.Exists(newPath) {
 			helpers.AppLogger.Infof("[欧美整理] 目标已存在，跳过: %s", newName)
+			anySkipped = true
 			continue
 		}
 
@@ -379,11 +359,11 @@ func OrganizeN(fs avscrape.FileSystem, path *models.AVENPath, media *models.AVEN
 		helpers.AppLogger.Infof("[欧美整理] %s → %s", originalName, newName)
 	}
 
-	return targetDir, nil
+	return targetDir, anySkipped, nil
 }
 
 // ============================================================
-// 模板渲染（欧美：{actor} / {studio} / {title} / {year} / {code}）
+// 模板渲染
 // ============================================================
 
 func renderTemplateN(tpl string, media *models.AVENMedia) string {
@@ -426,7 +406,7 @@ func renderTemplateN(tpl string, media *models.AVENMedia) string {
 		"{studio}", sanitizePathN(media.Studio),
 		"{series}", sanitizePathN(media.Series),
 		"{code}", sanitizePathN(media.StashID),
-		"{resolution}", sanitizePathN(media.Resolution), // ← 就是加这一行
+		"{resolution}", sanitizePathN(media.Resolution),
 	)
 
 	result := replacer.Replace(tpl)
@@ -502,10 +482,9 @@ func resolutionSuffix(res string) string {
 }
 
 // ============================================================
-// 水印判定（欧美版，复用 avscrape.ApplyWatermark）
+// 水印判定
 // ============================================================
 
-// buildWatermarksN 欧美水印判定（逻辑与日本 AV 一致，但用 aven.Config）
 func buildWatermarksN(r *avscrape.ScrapeResult, cfg *Config) []avscrape.WatermarkItem {
 	var items []avscrape.WatermarkItem
 
