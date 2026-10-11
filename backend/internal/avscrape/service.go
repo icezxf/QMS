@@ -94,10 +94,9 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	// ===== 合并多源 =====
 	best := mergeResults(allResults, cfg)
 
-	
-	// ===== 清理重复的带括号演员 =====
-	best.Actors = dedupParenActors(best.Actors)
-	// =================================
+	// ===== 清洗带括号的演员名 =====
+	best.Actors = normalizeParenActorNames(best.Actors)
+	// ==============================
 
 	// ===== 收集警告 =====
 	var warnings []string
@@ -658,4 +657,61 @@ func extractParenInner(s string) string {
 		}
 	}
 	return ""
+}
+
+// normalizeParenActorNames 把 "主名（别名）" 拆成 name=主名, aliases 追加别名
+func normalizeParenActorNames(actors []Actor) []Actor {
+	for i := range actors {
+		name := actors[i].Name
+		inner := extractParenInner(name)
+		if inner == "" {
+			continue
+		}
+		outer := extractParenOuter(name)
+		if outer == "" || outer == name {
+			continue
+		}
+
+		actors[i].Name = outer
+
+		exists := false
+		for _, al := range actors[i].Aliases {
+			if al == inner {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			actors[i].Aliases = append(actors[i].Aliases, inner)
+		}
+
+		helpers.AppLogger.Infof("[演员名清洗] %s → name=%q, alias+=%q", name, outer, inner)
+	}
+	return actors
+}
+
+// extractParenInner 提取括号内的内容
+func extractParenInner(s string) string {
+	if i := strings.Index(s, "（"); i >= 0 {
+		if j := strings.LastIndex(s, "）"); j > i {
+			return strings.TrimSpace(s[i+len("（"):j])
+		}
+	}
+	if i := strings.Index(s, "("); i >= 0 {
+		if j := strings.LastIndex(s, ")"); j > i {
+			return strings.TrimSpace(s[i+1 : j])
+		}
+	}
+	return ""
+}
+
+// extractParenOuter 提取括号外的内容
+func extractParenOuter(s string) string {
+	if i := strings.Index(s, "（"); i > 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	if i := strings.Index(s, "("); i > 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return s
 }
