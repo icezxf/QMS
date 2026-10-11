@@ -36,7 +36,7 @@ var maleActorBlacklist = map[string]bool{
 	"Shimiken": true, "Ken Shimizu": true, "Daisuke Matsumoto": true, "Taku Yoshimura": true,
 }
 
-// ===== 扫描过滤器：只处理指定番号（用于单个媒体重启/放行）=====
+// ===== 扫描过滤器 =====
 var (
 	scanFilterMu    sync.Mutex
 	scanFilterCodes map[string]bool
@@ -55,8 +55,6 @@ func SetScanFilter(codes []string) {
 	}
 }
 
-// takeScanFilter 取出 filter 快照并立即清空
-// 关键：filter 只在本次扫描生效，不污染其他并发扫描
 func takeScanFilter() map[string]bool {
 	scanFilterMu.Lock()
 	defer scanFilterMu.Unlock()
@@ -143,7 +141,6 @@ func (s *Scanner) Scan(pathID uint) error {
 	}
 
 	// ===== 扫描开始时取出 filter 快照并立即清空 =====
-	// 之后即使 SetScanFilter 被调用（用户点重启/放行），也不影响本次扫描
 	filterSnapshot := takeScanFilter()
 	if len(filterSnapshot) > 0 {
 		helpers.AppLogger.Infof("[AV扫描] 本次仅处理 %d 个番号", len(filterSnapshot))
@@ -165,7 +162,13 @@ func (s *Scanner) Scan(pathID uint) error {
 				continue
 			}
 			if existing.Status == "completed" {
-				helpers.AppLogger.Infof("[AV扫描] 番号 %s 已完成，跳过", code)
+				reason := fmt.Sprintf("重复文件：已存在记录 id=%d，原目标路径=%s",
+					existing.ID, existing.TargetPath)
+				for _, f := range g.Files {
+					s.recordTask(existing.ID, code, f, "duplicate", reason, existing.Source, nil)
+				}
+				helpers.AppLogger.Warnf("[AV扫描] 番号 %s 重复（已存在 id=%d），共 %d 个文件",
+					code, existing.ID, len(g.Files))
 				continue
 			}
 		}
