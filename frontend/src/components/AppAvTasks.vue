@@ -7,6 +7,7 @@
           <el-option label="完成" value="done" />
           <el-option label="失败" value="failed" />
           <el-option label="暂停" value="paused" />
+          <el-option label="重复" value="duplicate" />
           <el-option label="待处理" value="pending" />
           <el-option label="已取消" value="cancelled" />
         </el-select>
@@ -76,7 +77,6 @@
       <el-table-column label="时间" width="170">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
-      <!-- ===== 新增：操作列 ===== -->
       <el-table-column label="操作" width="240" fixed="right">
         <template #default="{ row }">
           <template v-if="row.status === 'paused' && row.media_id">
@@ -87,7 +87,6 @@
           <span v-else>—</span>
         </template>
       </el-table-column>
-      <!-- ==================== -->
     </el-table>
 
     <div class="pagination" v-if="total > pageSize">
@@ -152,6 +151,7 @@ const statusTag = (s: string) => {
     case 'done': return 'success'
     case 'failed': return 'danger'
     case 'paused': return 'warning'
+    case 'duplicate': return 'warning'
     case 'cancelled': return 'info'
     default: return ''
   }
@@ -162,6 +162,7 @@ const statusText = (s: string) => {
     case 'done': return '完成'
     case 'failed': return '失败'
     case 'paused': return '暂停'
+    case 'duplicate': return '重复'
     case 'cancelled': return '取消'
     case 'pending': return '待处理'
     default: return s || '—'
@@ -194,7 +195,6 @@ const clearAll = async () => {
   }
 }
 
-// ===== 新增：操作 =====
 const release = async (row: any) => {
   try {
     await ElMessageBox.confirm(`放行番号 ${row.code}？`, '确认放行', { type: 'warning' })
@@ -227,7 +227,6 @@ const cancel = async (row: any) => {
     if (e !== 'cancel') ElMessage.error('取消失败')
   }
 }
-// ====================
 
 onMounted(load)
 </script>
@@ -284,7 +283,6 @@ onMounted(load)
   border-top: 1px dashed #dcdfe6;
 }
 
-/* ===== 移动端适配 ===== */
 @media (max-width: 768px) {
   .av-tasks {
     padding: 12px;
