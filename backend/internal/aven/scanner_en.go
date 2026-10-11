@@ -35,7 +35,6 @@ func SetScanFilterN(oshashes []string) {
 }
 
 // takeScanFilterN 取出 filter 快照并立即清空
-// 关键：filter 只在本次扫描生效，不污染其他并发扫描
 func takeScanFilterN() map[string]bool {
 	scanFilterNMu.Lock()
 	defer scanFilterNMu.Unlock()
@@ -57,7 +56,7 @@ func clearScanFilterN() {
 }
 // ==========================================
 
-// ===== 源目录清理：没有 >1G 视频的子目录整个删除 =====
+// ===== 源目录清理 =====
 const (
 	cleanupBigVideoSizeEN      = int64(1) << 30
 	cleanupDeleteIntervalEN    = 500 * time.Millisecond
@@ -171,7 +170,6 @@ func (s *ScannerEN) Scan(pathID uint) error {
 	}
 
 	// ===== 扫描开始时取出 filter 快照并立即清空 =====
-	// 之后即使 SetScanFilterN 被调用（用户点重启/放行），也不影响本次扫描
 	filterSnapshot := takeScanFilterN()
 	if len(filterSnapshot) > 0 {
 		helpers.AppLogger.Infof("[欧美扫描] 本次仅处理 %d 个 oshash", len(filterSnapshot))
@@ -240,7 +238,6 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 	// 3. 探测 + 刮削（带 filter 快照，提前过滤）
 	result, oshash, err := s.Svc.ScrapeByURL(videoURL, headers, filterSnapshot)
 
-	// 3.5 filter 命中 → 静默跳过（此时只有探测，没有查 StashDB/TPDB/翻译）
 	if err == ErrFilteredOut {
 		helpers.AppLogger.Infof("[欧美扫描] %s 不在本次过滤范围内，跳过", oshash)
 		return nil
@@ -280,7 +277,11 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 			return nil
 		}
 		if existing.Status == "completed" {
-			helpers.AppLogger.Infof("[欧美扫描] %s 已完成，跳过", oshash)
+			reason := fmt.Sprintf("重复文件：已存在记录 id=%d，原目标路径=%s",
+				existing.ID, existing.TargetPath)
+			s.recordTask(existing.ID, oshash, videoPath, "duplicate", reason, nil)
+			helpers.AppLogger.Warnf("[欧美扫描] %s 重复（已存在 id=%d）: %s",
+				oshash, existing.ID, videoPath)
 			return nil
 		}
 	}
