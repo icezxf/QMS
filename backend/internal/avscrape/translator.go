@@ -35,10 +35,10 @@ func HasTranslateError(warnings []string) bool {
 // ============================================================
 
 type Translator struct {
-	Engine      string
-	Target      string
+	Engine     string
+	Target     string
 	// ===== 源语言：日文默认 "ja"，欧美用 "en" =====
-	SourceLang  string
+	SourceLang string
 	// ==========================================
 	DeepLKey    string
 	BingKey     string
@@ -374,35 +374,47 @@ func (t *Translator) TranslateResult(r *ScrapeResult) []string {
 		helpers.AppLogger.Infof("[翻译] 简介 -> %s", truncate(s, 50))
 	}
 
-	// ===== 标签翻译 =====
+	// ===== 标签翻译（批量，一次请求翻全部）=====
+	var tagTexts []string
+	var tagIndices []int
 	for i, g := range r.Genres {
 		// 日文场景下：无日文假名跳过；英文场景下不跳过
 		if t.SourceLang != "en" && !isJapanese(g) {
 			helpers.AppLogger.Infof("[翻译] 标签 %s 无日文假名，跳过翻译", g)
 			continue
 		}
-		var translated string
+		tagTexts = append(tagTexts, g)
+		tagIndices = append(tagIndices, i)
+	}
+
+	if len(tagTexts) > 0 {
+		useGoogle := t.GoogleTranslateForTags && t.GoogleAPIKey != ""
+		var results []string
 		var err error
-		if t.GoogleTranslateForTags && t.GoogleAPIKey != "" {
-			translated, err = t.googleCloudTranslate(g)
+		if useGoogle {
+			results, err = t.googleCloudBatch(tagTexts)
 			if err != nil {
-				helpers.AppLogger.Warnf("[翻译] Google 翻标签失败，回退原引擎: %s => %v", g, err)
-				translated, err = t.Translate(g)
-			} else if translated != "" {
-				helpers.AppLogger.Infof("[翻译-Google] 标签 %s -> %s", g, translated)
+				helpers.AppLogger.Warnf("[翻译] Google 标签批量失败，回退原引擎: %v", err)
+				results, err = t.TranslateBatch(tagTexts)
 			}
 		} else {
-			translated, err = t.Translate(g)
+			results, err = t.TranslateBatch(tagTexts)
 		}
+
 		if err != nil {
-			warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("标签 %s 翻译失败: %v", g, err))
-			// 一旦失败就停止，避免刷屏
-			break
-		}
-		if translated != "" && translated != g {
-			r.Genres[i] = translated
+			warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("标签批量翻译失败: %v", err))
+		} else {
+			translated := 0
+			for k, idx := range tagIndices {
+				if k < len(results) && results[k] != "" && results[k] != tagTexts[k] {
+					r.Genres[idx] = results[k]
+					translated++
+				}
+			}
+			helpers.AppLogger.Infof("[翻译] 标签批量完成: %d/%d", translated, len(tagTexts))
 		}
 	}
+	// ==========================================
 
 	helpers.AppLogger.Infof("[翻译] 演员名保留原值，跳过机翻")
 	restore()
@@ -505,22 +517,35 @@ func (t *Translator) translateAllWithGoogle(r *ScrapeResult) []string {
 		helpers.AppLogger.Infof("[翻译-Google] 简介 -> %s", truncate(s, 40))
 	}
 
+	// 标签批量走 Google
+	var tagTexts []string
+	var tagIndices []int
 	for i, g := range r.Genres {
 		if t.SourceLang != "en" && !isJapanese(g) {
 			continue
 		}
-		if s, err := t.googleCloudTranslate(g); err != nil {
-			warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("Google 标签 %s 翻译失败: %v", g, err))
-			break
-		} else if s != "" && s != g {
-			r.Genres[i] = s
+		tagTexts = append(tagTexts, g)
+		tagIndices = append(tagIndices, i)
+	}
+	if len(tagTexts) > 0 {
+		if results, err := t.googleCloudBatch(tagTexts); err != nil {
+			warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("Google 标签批量翻译失败: %v", err))
+		} else {
+			translated := 0
+			for k, idx := range tagIndices {
+				if k < len(results) && results[k] != "" && results[k] != tagTexts[k] {
+					r.Genres[idx] = results[k]
+					translated++
+				}
+			}
+			helpers.AppLogger.Infof("[翻译-Google] 标签批量完成: %d/%d", translated, len(tagTexts))
 		}
 	}
 	return warnings
 }
 
 // ============================================================
-// 传统引擎
+// 传统引擎（单条）
 // ============================================================
 
 func (t *Translator) deepl(text string) (string, error) {
