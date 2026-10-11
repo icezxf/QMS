@@ -7,6 +7,7 @@
           <el-option label="完成" value="done" />
           <el-option label="失败" value="failed" />
           <el-option label="暂停" value="paused" />
+          <el-option label="重复" value="duplicate" />
           <el-option label="待处理" value="pending" />
           <el-option label="已取消" value="cancelled" />
         </el-select>
@@ -148,6 +149,7 @@ const statusTag = (s: string) => {
     case 'done': return 'success'
     case 'failed': return 'danger'
     case 'paused': return 'warning'
+    case 'duplicate': return 'warning'
     case 'cancelled': return 'info'
     default: return ''
   }
@@ -158,6 +160,7 @@ const statusText = (s: string) => {
     case 'done': return '完成'
     case 'failed': return '失败'
     case 'paused': return '暂停'
+    case 'duplicate': return '重复'
     case 'cancelled': return '取消'
     case 'pending': return '待处理'
     default: return s || '—'
