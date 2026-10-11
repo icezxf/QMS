@@ -98,6 +98,55 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 	return zhName, nil
 }
 
+// fetchZh 单次查询
+func (w *WikiClient) fetchZh(japaneseName string) (string, error) {
+	w.mu.Lock()
+	elapsed := time.Since(w.lastReq)
+	if elapsed < wikiMinInterval {
+		w.mu.Unlock()
+		time.Sleep(wikiMinInterval - elapsed)
+		w.mu.Lock()
+	}
+	w.lastReq = time.Now()
+	w.mu.Unlock()
+
+	endpoint := fmt.Sprintf(
+		"https://ja.wikipedia.org/w/api.php?action=query&titles=%s&prop=langlinks&lllang=zh&format=json&redirects=1",
+		url.QueryEscape(japaneseName),
+	)
+
+	var lastErr error
+	var zhName string
+
+	for attempt := 1; attempt <= wikiMaxRetries; attempt++ {
+		if attempt > 1 {
+			delay := time.Duration(attempt-1) * wikiRetryDelay
+			helpers.AppLogger.Infof("[维基] %s 第 %d 次重试，等待 %v", japaneseName, attempt, delay)
+			time.Sleep(delay)
+		}
+
+		zh, err := w.requestOnce(endpoint, japaneseName)
+		if err != nil {
+			if strings.Contains(err.Error(), "RATE_LIMIT") {
+				return "", err
+			}
+			lastErr = err
+			continue
+		}
+		zhName = zh
+		lastErr = nil
+		break
+	}
+
+	if lastErr != nil {
+		return "", lastErr
+	}
+
+	if zhName != "" {
+		zhName = stripDisambiguation(zhName)
+	}
+	return zhName, nil
+}
 // fetchZh 单次查询，返回中文名（可能为空），error 表示请求彻底失败
 func (w *WikiClient) fetchZh(japaneseName string) (string, error) {
 	// 限速
