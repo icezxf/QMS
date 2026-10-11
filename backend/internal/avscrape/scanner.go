@@ -81,100 +81,8 @@ func clearScanFilter() {
 	defer scanFilterMu.Unlock()
 	scanFilterCodes = nil
 }
+
 // ==========================================================
-
-// ===== 源目录清理 =====
-const (
-	cleanupBigVideoSize      = int64(1) << 30 // 1G
-	cleanupDeleteInterval    = 500 * time.Millisecond
-	cleanupMaxDeletesPerScan = 100
-)
-
-// cleanupSourceDir 递归清理源目录下的残留子目录
-// 策略：对每个顶层子目录，找到"最浅的纯残留目录"并删它一次
-// 115 删除目录时会递归删除其下所有内容，所以深层目录只需删最浅的那个
-func cleanupSourceDir(fs FileSystem, srcDir string) {
-	entries, err := fs.ListDetailed(srcDir)
-	if err != nil {
-		helpers.AppLogger.Warnf("[AV清理] 列出源目录失败 %s: %v", srcDir, err)
-		return
-	}
-
-	deleted := 0
-	for _, e := range entries {
-		if !e.IsDir {
-			continue
-		}
-		cleanupShallowestResidual(fs, e.Path, &deleted)
-	}
-
-	if deleted > 0 {
-		helpers.AppLogger.Infof("[AV清理] 本次共删除 %d 个残留目录", deleted)
-	}
-}
-
-// cleanupShallowestResidual 从 dir 开始找"最浅的纯残留目录"并删除
-// 返回 true 表示 dir 及其子孙已被删（或达到上限跳过）
-func cleanupShallowestResidual(fs FileSystem, dir string, deleted *int) bool {
-	if isPureResidual(fs, dir) {
-		if *deleted >= cleanupMaxDeletesPerScan {
-			helpers.AppLogger.Warnf("[AV清理] 已达到单次删除上限 %d，跳过 %s",
-				cleanupMaxDeletesPerScan, dir)
-			return true
-		}
-
-		if *deleted > 0 && cleanupDeleteInterval > 0 {
-			time.Sleep(cleanupDeleteInterval)
-		}
-
-		if err := fs.DeleteDir(dir); err != nil {
-			helpers.AppLogger.Warnf("[AV清理] 删除目录失败 %s: %v", dir, err)
-			return false
-		}
-		*deleted++
-		helpers.AppLogger.Infof("[AV清理] 已删除残留目录: %s", dir)
-		return true
-	}
-
-	entries, err := fs.ListDetailed(dir)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		if !e.IsDir {
-			continue
-		}
-		cleanupShallowestResidual(fs, e.Path, deleted)
-	}
-	return false
-}
-
-// isPureResidual 判断 dir 及其所有子孙是否都没有 >1G 视频
-func isPureResidual(fs FileSystem, dir string) bool {
-	entries, err := fs.ListDetailed(dir)
-	if err != nil {
-		return false
-	}
-
-	for _, e := range entries {
-		if e.IsDir {
-			if !isPureResidual(fs, e.Path) {
-				return false
-			}
-			continue
-		}
-		if isVideoName(e.Name) && e.Size > cleanupBigVideoSize {
-			return false
-		}
-	}
-	return true
-}
-
-func isVideoName(name string) bool {
-	ext := strings.ToLower(filepath.Ext(name))
-	return videoExts[ext]
-}
-// ==================================================
 
 type Scanner struct {
 	DB  *gorm.DB
@@ -212,7 +120,7 @@ func (s *Scanner) Scan(pathID uint) error {
 
 	// 扫描前清理
 	helpers.AppLogger.Infof("[AV扫描] 开始清理源目录: %s", path.SourcePath)
-	cleanupSourceDir(fs, path.SourcePath)
+	s.cleanupSourceDir(fs, path.SourcePath)
 
 	videoFiles, err := walkVideos(fs, path.SourcePath, 0)
 	if err != nil {
@@ -276,7 +184,7 @@ func (s *Scanner) Scan(pathID uint) error {
 
 	if path.Mode != "scrape_only" {
 		helpers.AppLogger.Infof("[AV扫描] 扫描结束，二次清理源目录: %s", path.SourcePath)
-		cleanupSourceDir(fs, path.SourcePath)
+		s.cleanupSourceDir(fs, path.SourcePath)
 	}
 
 	s.DB.Model(&path).Update("last_scan_at", time.Now())
