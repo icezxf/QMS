@@ -24,6 +24,12 @@
           <el-tag :type="row.enable ? 'success' : 'info'">{{ row.enable ? '启用' : '禁用' }}</el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="VR" width="70" class-name="hide-mobile">
+        <template #default="{ row }">
+          <el-tag v-if="row.is_vr" type="warning">VR</el-tag>
+          <span v-else style="color: #ccc;">-</span>
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="240" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="primary" @click="scan(row.id)">扫描</el-button>
@@ -106,6 +112,13 @@
           </div>
         </el-form-item>
 
+        <el-form-item label="VR 专用目录">
+          <el-switch v-model="form.is_vr" />
+          <span class="vr-hint">
+            VR 目录使用 JavStash + DMM 高清封面，跳过 MetaTube
+          </span>
+        </el-form-item>
+
         <el-form-item label="启用">
           <el-switch v-model="form.enable" />
         </el-form-item>
@@ -176,6 +189,7 @@ const form = ref({
   move_method: 'move',
   name_template: DEFAULT_NAME_TEMPLATE,
   enable: true,
+  is_vr: false,
 })
 
 // 目录选择器状态
@@ -237,6 +251,7 @@ const openAdd = () => {
     move_method: 'move',
     name_template: DEFAULT_NAME_TEMPLATE,
     enable: true,
+    is_vr: false,
   }
   dialogVisible.value = true
 }
@@ -253,6 +268,7 @@ const openEdit = (row: any) => {
     move_method: row.move_method,
     name_template: row.name_template || DEFAULT_NAME_TEMPLATE,
     enable: row.enable,
+    is_vr: !!row.is_vr,
   }
   dialogVisible.value = true
 }
@@ -382,6 +398,11 @@ onMounted(() => {
   padding: 1px 4px;
   border-radius: 3px;
   color: #e6a23c;
+}
+.vr-hint {
+  margin-left: 8px;
+  color: #999;
+  font-size: 12px;
 }
 
 /* ===== 移动端适配 ===== */
