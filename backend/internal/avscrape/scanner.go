@@ -532,7 +532,7 @@ func downloadDMMImages(contentID string) ([]byte, []string, error) {
 	const maxImages = 30
 
 	for i := 1; i <= maxImages; i++ {
-		url := fmt.Sprintf("%sjp-%d.jpg", base, contentID, i)
+		url := fmt.Sprintf("%s%sjp-%d.jpg", base, contentID, i)
 		data, err := downloadDMMImage(url)
 		if err != nil {
 			break // 404 说明到头了
