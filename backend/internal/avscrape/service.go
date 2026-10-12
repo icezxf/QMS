@@ -116,17 +116,24 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	}
 
 	// JavDB 评分
-	if cfg.EnableJavDBRating {
-		client := NewJavDBClient(cfg.JavDBCookie)
-		if rating, votes, err := client.GetRating(code); err == nil && rating > 0 {
-			best.Rating = rating
-			best.Votes = votes
-			helpers.AppLogger.Infof("[AV刮削] JavDB 评分: %.2f (%d人)", rating, votes)
-		} else if err != nil {
-			helpers.AppLogger.Warnf("[AV刮削] JavDB 评分获取失败: %v", err)
-			warnings = append(warnings, fmt.Sprintf("JavDB 评分获取失败: %v", err))
-		}
+	// JavDB 评分
+if cfg.EnableJavDBRating {
+	client := NewJavDBClient(cfg.JavDBCookie)
+	// JavDB 上的番号格式可能不带前导数字，例如刮削得到的是 3DSVR-1766，
+	// 但 JavDB 收录的是 DSVR-1766，所以去掉开头的数字再查
+	javdbCode := stripLeadingDigits(code)
+	if javdbCode == "" {
+		javdbCode = code
 	}
+	if rating, votes, err := client.GetRating(javdbCode); err == nil && rating > 0 {
+		best.Rating = rating
+		best.Votes = votes
+		helpers.AppLogger.Infof("[AV刮削] JavDB 评分: %.2f (%d人) [查询番号=%s]", rating, votes, javdbCode)
+	} else if err != nil {
+		helpers.AppLogger.Warnf("[AV刮削] JavDB 评分获取失败 [查询番号=%s]: %v", javdbCode, err)
+		warnings = append(warnings, fmt.Sprintf("JavDB 评分获取失败: %v", err))
+	}
+}
 
 	// 翻译
 	if cfg.EnableTranslate {
