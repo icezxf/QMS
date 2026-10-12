@@ -564,27 +564,6 @@ func downloadDMMImages(contentID string) ([]byte, []string, error) {
 	return posterData, previewURLs, nil
 }
 
-// downloadDMMImage 下载单张 DMM 图片，带 UA 和 Referer
-func downloadDMMImage(url string) ([]byte, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	req.Header.Set("Referer", "https://www.dmm.com/")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	return io.ReadAll(resp.Body)
-}
-
 // prepareMetaFilesVR VR 专用的元数据文件生成
 //   - poster：来自 DMM jp-1.jpg 的字节（已确认是竖版）
 //   - fanart：JavStash 给的 URL（走原有下载逻辑）
