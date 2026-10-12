@@ -6,11 +6,10 @@ import (
 )
 
 var codePatterns = []*regexp.Regexp{
-	// 3DSVR-1766 / SSIS-001 / MIDV-192 / DSVR-1766 / 1PONDO-123456 等
-	// 前缀：字母数字混合，至少 2 位、最多 10 位，且必须含字母
-	regexp.MustCompile(`(?i)\b([A-Z][A-Z0-9]{1,9})[-_\s]?(\d{2,6})\b`),
+	// 带分隔符：3DSVR-1766 / SSIS-001 / MIDV-192
+	regexp.MustCompile(`(?i)([A-Z0-9]{2,10})[-_\s](\d{2,6})`),
 	// 无分隔符：SSIS001 / 3DSVR1766
-	regexp.MustCompile(`(?i)\b([A-Z][A-Z0-9]{1,9})(\d{3,6})\b`),
+	regexp.MustCompile(`(?i)([A-Z0-9]{2,10})(\d{3,6})`),
 }
 
 func ExtractCode(filename string) string {
@@ -33,11 +32,15 @@ func ExtractCode(filename string) string {
 		if len(m) >= 3 {
 			prefix := strings.ToUpper(m[1])
 			num := m[2]
-			if prefix == "MP4" || prefix == "AVI" || prefix == "MKV" ||
-				prefix == "FHD" || prefix == "UHD" || prefix == "WEB" {
+
+			// 排除明显不是番号的前缀
+			switch prefix {
+			case "MP4", "AVI", "MKV", "FHD", "UHD", "WEB",
+				"CD", "PART", "DISC", "DISK":
 				continue
 			}
-			// 前缀必须含至少一个字母，避免把纯数字当前缀
+
+			// 前缀必须含至少一个字母，排除纯数字
 			hasLetter := false
 			for _, r := range prefix {
 				if r >= 'A' && r <= 'Z' {
@@ -48,6 +51,7 @@ func ExtractCode(filename string) string {
 			if !hasLetter {
 				continue
 			}
+
 			return prefix + "-" + num
 		}
 	}
