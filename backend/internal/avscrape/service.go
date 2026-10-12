@@ -118,19 +118,26 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	// JavDB 评分
 	if cfg.EnableJavDBRating {
 		client := NewJavDBClient(cfg.JavDBCookie)
-		// JavDB 上的番号格式可能不带前导数字，例如刮削得到的是 3DSVR-1766，
-		// 但 JavDB 收录的是 DSVR-1766，所以去掉开头的数字再查
-		javdbCode := stripLeadingDigits(code)
-		if javdbCode == "" {
-			javdbCode = code
+		candidates := javdbCodeCandidates(code)
+		got := false
+		for _, c := range candidates {
+			rating, votes, err := client.GetRating(c)
+			if err != nil {
+				helpers.AppLogger.Warnf("[AV刮削] JavDB 评分获取失败 [查询番号=%s]: %v", c, err)
+				continue
+			}
+			if rating > 0 {
+				best.Rating = rating
+				best.Votes = votes
+				helpers.AppLogger.Infof("[AV刮削] JavDB 评分: %.2f (%d人) [查询番号=%s]", rating, votes, c)
+				got = true
+				break
+			}
+			helpers.AppLogger.Infof("[AV刮削] JavDB 未找到 [查询番号=%s]，尝试下一个", c)
 		}
-		if rating, votes, err := client.GetRating(javdbCode); err == nil && rating > 0 {
-			best.Rating = rating
-			best.Votes = votes
-			helpers.AppLogger.Infof("[AV刮削] JavDB 评分: %.2f (%d人) [查询番号=%s]", rating, votes, javdbCode)
-		} else if err != nil {
-			helpers.AppLogger.Warnf("[AV刮削] JavDB 评分获取失败 [查询番号=%s]: %v", javdbCode, err)
-			warnings = append(warnings, fmt.Sprintf("JavDB 评分获取失败: %v", err))
+		if !got {
+			warnings = append(warnings, fmt.Sprintf("JavDB 评分获取失败: 所有候选番号均未找到 (%s)",
+				strings.Join(candidates, ", ")))
 		}
 	}
 
@@ -180,6 +187,69 @@ func stripLeadingDigits(s string) string {
 		i++
 	}
 	return s[i:]
+}
+
+// stripNumberLeadingZeros 去掉番号数字部分的前导零
+// 例如 DSVR-0932 → DSVR-932；DSVR-1766 不变；SSIS-001 → SSIS-1
+func stripNumberLeadingZeros(s string) string {
+	// 从右往左找最后一个分隔符
+	sep := -1
+	for i := len(s) - 1; i >= 0; i-- {
+		c := s[i]
+		if c == '-' || c == '_' || c == ' ' {
+			sep = i
+			break
+		}
+	}
+	if sep < 0 || sep == len(s)-1 {
+		return s
+	}
+	prefix := s[:sep+1]
+	numPart := s[sep+1:]
+
+	// 数字部分全是数字才处理
+	for i := 0; i < len(numPart); i++ {
+		if numPart[i] < '0' || numPart[i] > '9' {
+			return s
+		}
+	}
+
+	j := 0
+	for j < len(numPart)-1 && numPart[j] == '0' {
+		j++
+	}
+	if j == 0 {
+		return s
+	}
+	return prefix + numPart[j:]
+}
+
+// javdbCodeCandidates 生成 JavDB 查询候选番号（按优先级排序，已去重）
+// 顺序：
+//  1. 去掉最前面的纯数字前缀（3DSVR-1766 → DSVR-1766）
+//  2. 再去掉数字部分的前导零（DSVR-0932 → DSVR-932）
+//  3. 原始 code 兜底
+func javdbCodeCandidates(code string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+
+	base := stripLeadingDigits(code)
+	if base == "" {
+		base = code
+	}
+	add(base)                              // 1
+	add(stripNumberLeadingZeros(base))     // 2
+	if base != code {
+		add(code)                          // 3
+	}
+	return out
 }
 
 // buildJavStashAliasMap 从 JavStash 的结果里构建"别名 → 主名"映射
