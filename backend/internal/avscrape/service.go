@@ -28,17 +28,20 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	}
 	var allResults []*ScrapeResult
 
+	// ===== oshash 优先匹配，命中就跳过番号搜索 =====
+	oshashHit := false
 	if oshash != "" && cfg.EnableOshashMatch && cfg.EnableJavStash {
 		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
 		if r, err := js.SearchByOshash(oshash); err == nil {
-			helpers.AppLogger.Infof("[AV刮削] oshash 优先命中: %s => %s", oshash, r.Code)
+			helpers.AppLogger.Infof("[AV刮削] oshash 精确命中，跳过番号搜索: %s => %s", oshash, r.Code)
 			allResults = append(allResults, r)
+			oshashHit = true
 		} else {
 			helpers.AppLogger.Infof("[AV刮削] oshash 未命中，回退到番号搜索: %v", err)
 		}
 	}
 
-	if cfg.EnableMetaTube && cfg.MetaTubeServer != "" {
+	if !oshashHit && cfg.EnableMetaTube && cfg.MetaTubeServer != "" {
 		mt := NewMetaTubeClient(cfg.MetaTubeServer)
 		hits, err := mt.Search(code)
 		if err == nil {
@@ -65,13 +68,14 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		}
 	}
 
-	if cfg.EnableJavStash {
+	if !oshashHit && cfg.EnableJavStash {
 		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
 		hits, err := js.Search(code)
 		if err == nil {
 			allResults = append(allResults, hits...)
 		}
 	}
+	// =================================================
 
 	if len(allResults) == 0 {
 		return nil, fmt.Errorf("no result for %s", code)
@@ -110,7 +114,6 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	warnings = append(warnings, actorWarnings...)
 
 	// 片商：不做任何翻译，直接用 mergeResults 的值
-	// （JavStash 优先，MetaTube 兜底；缺失时保留原始值）
 	if best.Studio != "" {
 		helpers.AppLogger.Infof("[片商] 使用数据源原始值: %s", best.Studio)
 	}
@@ -192,7 +195,6 @@ func stripLeadingDigits(s string) string {
 // stripNumberLeadingZeros 去掉番号数字部分的前导零
 // 例如 DSVR-0932 → DSVR-932；DSVR-1766 不变；SSIS-001 → SSIS-1
 func stripNumberLeadingZeros(s string) string {
-	// 从右往左找最后一个分隔符
 	sep := -1
 	for i := len(s) - 1; i >= 0; i-- {
 		c := s[i]
@@ -206,14 +208,11 @@ func stripNumberLeadingZeros(s string) string {
 	}
 	prefix := s[:sep+1]
 	numPart := s[sep+1:]
-
-	// 数字部分全是数字才处理
 	for i := 0; i < len(numPart); i++ {
 		if numPart[i] < '0' || numPart[i] > '9' {
 			return s
 		}
 	}
-
 	j := 0
 	for j < len(numPart)-1 && numPart[j] == '0' {
 		j++
@@ -225,10 +224,6 @@ func stripNumberLeadingZeros(s string) string {
 }
 
 // javdbCodeCandidates 生成 JavDB 查询候选番号（按优先级排序，已去重）
-// 顺序：
-//  1. 去掉最前面的纯数字前缀（3DSVR-1766 → DSVR-1766）
-//  2. 再去掉数字部分的前导零（DSVR-0932 → DSVR-932）
-//  3. 原始 code 兜底
 func javdbCodeCandidates(code string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -244,10 +239,10 @@ func javdbCodeCandidates(code string) []string {
 	if base == "" {
 		base = code
 	}
-	add(base)                              // 1
-	add(stripNumberLeadingZeros(base))     // 2
+	add(base)
+	add(stripNumberLeadingZeros(base))
 	if base != code {
-		add(code)                          // 3
+		add(code)
 	}
 	return out
 }
@@ -320,11 +315,9 @@ func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 		if best.OriginalTitle == "" && r.OriginalTitle != "" {
 			best.OriginalTitle = r.OriginalTitle
 		}
-				// ===== 新增：Fanart 兜底（JavStash 的横版图）=====
 		if best.Fanart == "" && r.Fanart != "" {
 			best.Fanart = r.Fanart
 		}
-		// ================================================
 		if best.Director == "" && r.Director != "" {
 			best.Director = r.Director
 		}
@@ -698,13 +691,10 @@ func (s *Service) BatchDeleteMedia(ids []uint) (int, error) {
 }
 
 // dedupParenActors 去掉"名字带括号但括号里的名字已在列表里"的重复演员
-// 例："めぐり（藤浦めぐ）" 里 "藤浦めぐ" 已存在 → 丢弃 "めぐり（藤浦めぐ）"
 func dedupParenActors(actors []Actor) []Actor {
 	if len(actors) <= 1 {
 		return actors
 	}
-
-	// 收集所有名字（含 aliases）
 	nameSet := make(map[string]bool)
 	for _, a := range actors {
 		if a.Name != "" {
@@ -716,7 +706,6 @@ func dedupParenActors(actors []Actor) []Actor {
 			}
 		}
 	}
-
 	out := make([]Actor, 0, len(actors))
 	for _, a := range actors {
 		if inner := extractParenInner(a.Name); inner != "" {
@@ -732,13 +721,11 @@ func dedupParenActors(actors []Actor) []Actor {
 
 // extractParenInner 提取中/英文括号内容
 func extractParenInner(s string) string {
-	// 中文括号
 	if i := strings.Index(s, "（"); i >= 0 {
 		if j := strings.LastIndex(s, "）"); j > i {
 			return strings.TrimSpace(s[i+len("（"):j])
 		}
 	}
-	// 英文括号
 	if i := strings.Index(s, "("); i >= 0 {
 		if j := strings.LastIndex(s, ")"); j > i {
 			return strings.TrimSpace(s[i+1 : j])
