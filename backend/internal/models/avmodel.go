@@ -76,6 +76,11 @@ type AVPath struct {
 	MoveMethod   string    `gorm:"size:32" json:"move_method"`
 	NameTemplate string    `gorm:"size:255" json:"name_template"`
 	Enable       bool      `json:"enable"`
+	
+		// IsVR 该目录是否为 VR 专用
+	// VR 目录走 JavStash + DMM 高清封面，不使用 MetaTube
+	IsVR bool `json:"is_vr" gorm:"default:false"`
+	
 	LastScanAt   time.Time `json:"last_scan_at"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
