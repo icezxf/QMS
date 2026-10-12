@@ -21,7 +21,7 @@ type Migrator struct {
 }
 
 // ===== 改动 1：MaxVersionCode 从 66 改成 67 =====
-var MaxVersionCode = 67
+var MaxVersionCode = 68
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -708,6 +708,16 @@ func Migrate() {
 		helpers.AppLogger.Info("已添加欧美刮削模块的 aven_settings / aven_tasks / aven_media / aven_paths 表")
 		migrator.UpdateVersionCode(db.Db)
 	}
+		// ===== 新增 version 67：AVPath 加 is_vr 字段 =====
+	if migrator.VersionCode == 67 {
+		if err := db.Db.AutoMigrate(AVPath{}); err != nil {
+			helpers.AppLogger.Errorf("迁移 AV 目录 is_vr 字段失败：%v", err)
+			return
+		}
+		helpers.AppLogger.Info("已添加 AV 目录的 is_vr 字段")
+		migrator.UpdateVersionCode(db.Db)
+	}
+	// ==================================================
 	// ============================================================
 	if migrator.VersionCode == MaxVersionCode {
 		if !accountIdentityIndexesEnsured {
