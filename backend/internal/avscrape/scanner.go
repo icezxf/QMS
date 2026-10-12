@@ -357,13 +357,18 @@ func (s *Scanner) processVR(fs FileSystem, path *models.AVPath, g *groupItem, cf
 		}
 	}
 
-	// ===== 步骤 0：ffprobe 提前，拿 oshash =====
+	// ===== 步骤 0：ffprobe 提前，拿 oshash + 分辨率 + HDR =====
 	helpers.AppLogger.Infof("[AV-VR] %s 步骤 0/6: ffprobe 探测", code)
 	oshash := ""
+	videoResolution := ""
+	videoIsHDR := false
 	if url, err := fs.GetURL(primaryFile); err == nil && url != "" {
 		if pr, err := probeVideo(url); err == nil {
 			oshash = pr.Oshash
-			helpers.AppLogger.Infof("[AV-VR] %s ffprobe 成功: oshash=%s", code, oshash)
+			videoResolution = pr.Resolution
+			videoIsHDR = pr.IsHDR
+			helpers.AppLogger.Infof("[AV-VR] %s ffprobe 成功: oshash=%s 分辨率=%s HDR=%v",
+				code, oshash, videoResolution, videoIsHDR)
 		} else {
 			helpers.AppLogger.Warnf("[AV-VR] %s ffprobe 失败: %v", code, err)
 		}
@@ -400,6 +405,15 @@ func (s *Scanner) processVR(fs FileSystem, path *models.AVPath, g *groupItem, cf
 	}
 	result.Code = code
 
+	// ===== 回填 ffprobe 结果（分辨率/HDR/oshash） =====
+	if videoResolution != "" {
+		result.Resolution = videoResolution
+	}
+	result.IsHDR = videoIsHDR
+	if result.Oshash == "" {
+		result.Oshash = oshash
+	}
+
 	// ===== 步骤 2：提取 r18 content_id =====
 	helpers.AppLogger.Infof("[AV-VR] %s 步骤 2/6: 提取 r18 content_id", code)
 	contentID := extractR18ContentID(result.Urls)
@@ -434,9 +448,7 @@ func (s *Scanner) processVR(fs FileSystem, path *models.AVPath, g *groupItem, cf
 		// ===== 关键：把 DMM URL 写回 result，让数据库和前端能看到 =====
 		if contentID != "" {
 			baseURL := "https://awsimgsrc.dmm.com/dig/digital/video/" + contentID + "/" + contentID
-			// poster URL（jp-1.jpg）
 			result.Poster = baseURL + "jp-1.jpg"
-			// 剧照 URL（jp-2.jpg ~ jp-N.jpg）
 			if len(previewURLs) > 0 {
 				result.PreviewImages = previewURLs
 			}
@@ -517,11 +529,6 @@ func (s *Scanner) processVR(fs FileSystem, path *models.AVPath, g *groupItem, cf
 	result.ExtraTags = buildExtraTags(result, cfg)
 	if len(result.ExtraTags) > 0 {
 		helpers.AppLogger.Infof("[AV-VR] %s 附加标签: %v", result.Code, result.ExtraTags)
-	}
-
-	// 4.8 保留 oshash
-	if result.Oshash == "" {
-		result.Oshash = oshash
 	}
 
 	// 4.9 元数据完整性检查
@@ -693,11 +700,9 @@ func (s *Scanner) prepareMetaFilesVR(baseName string, r *ScrapeResult, posterDat
 
 	// ===== Poster：DMM jp-1.jpg（已是竖版） =====
 	if posterData != nil {
-		// 缩放（与普通流程对齐）
 		if resized, ok := resizePosterToMin(posterData, 500, 750); ok {
 			posterData = resized
 		}
-		// 水印
 		if len(watermarks) > 0 {
 			if wm, err := applyWatermark(posterData, watermarks, cfg.WatermarkWidthPercent); err == nil {
 				posterData = wm
