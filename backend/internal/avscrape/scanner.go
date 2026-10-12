@@ -253,7 +253,10 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 
 	// 步骤 4 元数据文件
 	helpers.AppLogger.Infof("[AV扫描] %s 步骤 3/5: 生成元数据文件", code)
-	files, prepWarnings, err := s.prepareMetaFiles(media.Code, result, cfg)
+	// ===== 改动：NFO 基础名带上分辨率后缀，与视频文件名保持一致 =====
+	nfoBaseName := media.Code + resolutionSuffix(result.Resolution)
+	files, prepWarnings, err := s.prepareMetaFiles(nfoBaseName, result, cfg)
+	// ==============================================================
 	allWarnings := append([]string{}, scrapeWarnings...)
 	allWarnings = append(allWarnings, prepWarnings...)
 	if err != nil {
