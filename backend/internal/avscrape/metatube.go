@@ -23,11 +23,14 @@ func (m *MetaTubeClient) Name() string { return "metatube" }
 
 type metaTubeSearchResp struct {
 	Data []struct {
-		ID          string `json:"id"`       // 用于 Detail 查询，如 midv00192
-		Number      string `json:"number"`   // 展示用，如 MIDV-192
+		ID          string `json:"id"`
+		Number      string `json:"number"`
 		Title       string `json:"title"`
 		Provider    string `json:"provider"`
 		CoverURL    string `json:"cover_url"`
+		ThumbURL    string `json:"thumb_url"`
+		BigCoverURL string `json:"big_cover_url"`
+		BigThumbURL string `json:"big_thumb_url"`
 		ReleaseDate string `json:"release_date"`
 	} `json:"data"`
 }
@@ -42,6 +45,9 @@ type metaTubeDetailResp struct {
 		Director      string   `json:"director"`
 		Actors        []string `json:"actors"`
 		CoverURL      string   `json:"cover_url"`
+		BigCoverURL   string   `json:"big_cover_url"`
+		ThumbURL      string   `json:"thumb_url"`
+		BigThumbURL   string   `json:"big_thumb_url"`
 		BackdropURL   string   `json:"backdrop_url"`
 		PreviewImages []string `json:"preview_images"`
 		PreviewVideo  string   `json:"preview_video_url"`
@@ -57,7 +63,7 @@ type metaTubeDetailResp struct {
 }
 
 func (m *MetaTubeClient) Search(code string) ([]*ScrapeResult, error) {
-	u := fmt.Sprintf("%s/v1/movies/search?q=%s", m.Server, url.QueryEscape(code))
+	u := fmt.Sprintf("%s/v1/movies/search?q=%s&fallback=true", m.Server, url.QueryEscape(code))
 	resp, err := m.HTTP.Get(u)
 	if err != nil {
 		return nil, err
@@ -72,13 +78,17 @@ func (m *MetaTubeClient) Search(code string) ([]*ScrapeResult, error) {
 
 	var out []*ScrapeResult
 	for _, item := range sr.Data {
+		// ps.jpg（thumb）= 竖版海报；pl.jpg（cover）= 横版封面
+		poster := firstNonEmpty(item.BigThumbURL, item.ThumbURL)
+		fanart := firstNonEmpty(item.BigCoverURL, item.CoverURL)
+
 		out = append(out, &ScrapeResult{
 			Code:        item.Number,
 			Title:       item.Title,
-			Poster:      item.CoverURL,
+			Poster:      poster,
+			Fanart:      fanart,
 			ReleaseDate: item.ReleaseDate,
 			Source:      "metatube:" + item.Provider,
-			// ===== 关键：用 Search 返回的 id（midv00192），不是 number（MIDV-192）
 			ProviderID:  item.Provider + "/" + item.ID,
 			HasChinese:  !isJapanese(item.Title) && containsChinese(item.Title),
 		})
@@ -100,6 +110,10 @@ func (m *MetaTubeClient) Detail(code string, providerID string) (*ScrapeResult, 
 		return nil, fmt.Errorf("metatube detail decode: %w", err)
 	}
 
+	// ps.jpg（thumb）= 竖版海报；pl.jpg（cover）= 横版封面
+	poster := firstNonEmpty(dr.Data.BigThumbURL, dr.Data.ThumbURL)
+	fanart := firstNonEmpty(dr.Data.BigCoverURL, dr.Data.CoverURL, dr.Data.BackdropURL)
+
 	r := &ScrapeResult{
 		Code:          dr.Data.Number,
 		Title:         dr.Data.Title,
@@ -112,8 +126,8 @@ func (m *MetaTubeClient) Detail(code string, providerID string) (*ScrapeResult, 
 		Label:         dr.Data.Label,
 		Series:        dr.Data.Series,
 		Genres:        dr.Data.Genres,
-		Poster:        dr.Data.CoverURL,
-		Fanart:        dr.Data.BackdropURL,
+		Poster:        poster,
+		Fanart:        fanart,
 		PreviewImages: dr.Data.PreviewImages,
 		Trailer:       dr.Data.PreviewVideo,
 		Rating:        dr.Data.Score,
@@ -128,4 +142,14 @@ func (m *MetaTubeClient) Detail(code string, providerID string) (*ScrapeResult, 
 	}
 	r.HasChinese = !isJapanese(r.Title) && containsChinese(r.Title)
 	return r, nil
+}
+
+// firstNonEmpty 返回第一个非空字符串
+func firstNonEmpty(ss ...string) string {
+	for _, s := range ss {
+		if strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
 }
