@@ -8,8 +8,6 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
