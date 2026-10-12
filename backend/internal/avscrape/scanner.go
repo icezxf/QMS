@@ -30,7 +30,6 @@ var videoExts = map[string]bool{
 var cdPartRegex = regexp.MustCompile(`(?i)([-_]?(cd|part|disc|disk)\d+)`)
 
 // r18IDRegex 从 r18.dev URL 里提取 content_id
-// 例如 https://r18.dev/videos/vod/movies/detail/-/id=13dsvr01766/ → 13dsvr01766
 var r18IDRegex = regexp.MustCompile(`r18\.dev/videos/vod/movies/detail/-/id=([^/?#]+)`)
 
 var maleActorBlacklist = map[string]bool{
@@ -205,7 +204,7 @@ func (s *Scanner) Scan(pathID uint) error {
 }
 
 // ============================================================
-// 普通日式刮削流程（保持原有逻辑不动）
+// 普通日式刮削流程
 // ============================================================
 
 func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, cfg *Config) error {
@@ -342,11 +341,6 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 
 // ============================================================
 // VR 专用刮削流程
-//   - 只走 JavStash（不用 MetaTube）
-//   - 从 urls 里提取 r18.dev content_id
-//   - poster 用 DMM jp-1.jpg（竖版）
-//   - 剧照用 DMM jp-2.jpg ~ jp-N.jpg
-//   - fanart 仍用 JavStash 给的
 // ============================================================
 
 func (s *Scanner) processVR(fs FileSystem, path *models.AVPath, g *groupItem, cfg *Config) error {
@@ -363,7 +357,7 @@ func (s *Scanner) processVR(fs FileSystem, path *models.AVPath, g *groupItem, cf
 		}
 	}
 
-	// ===== 步骤 0：ffprobe 提前，拿 oshash（用于 oshash 精确匹配） =====
+	// ===== 步骤 0：ffprobe 提前，拿 oshash =====
 	helpers.AppLogger.Infof("[AV-VR] %s 步骤 0/6: ffprobe 探测", code)
 	oshash := ""
 	if url, err := fs.GetURL(primaryFile); err == nil && url != "" {
@@ -404,7 +398,7 @@ func (s *Scanner) processVR(fs FileSystem, path *models.AVPath, g *groupItem, cf
 		}
 		result = hits[0]
 	}
-	result.Code = code // 用文件名识别出的番号覆盖
+	result.Code = code
 
 	// ===== 步骤 2：提取 r18 content_id =====
 	helpers.AppLogger.Infof("[AV-VR] %s 步骤 2/6: 提取 r18 content_id", code)
@@ -421,7 +415,7 @@ func (s *Scanner) processVR(fs FileSystem, path *models.AVPath, g *groupItem, cf
 		helpers.AppLogger.Infof("[AV-VR] %s content_id=%s", code, contentID)
 	}
 
-	// ===== 步骤 3：下载 DMM 图片（poster 用 jp-1，剧照用 jp-2~N） =====
+	// ===== 步骤 3：下载 DMM 图片 =====
 	var posterData []byte
 	var previewURLs []string
 	if contentID != "" {
@@ -437,33 +431,146 @@ func (s *Scanner) processVR(fs FileSystem, path *models.AVPath, g *groupItem, cf
 				return err2
 			}
 		}
+		// ===== 关键：把 DMM URL 写回 result，让数据库和前端能看到 =====
+		if contentID != "" {
+			baseURL := "https://awsimgsrc.dmm.com/dig/digital/video/" + contentID + "/" + contentID
+			// poster URL（jp-1.jpg）
+			result.Poster = baseURL + "jp-1.jpg"
+			// 剧照 URL（jp-2.jpg ~ jp-N.jpg）
+			if len(previewURLs) > 0 {
+				result.PreviewImages = previewURLs
+			}
+		}
 	}
 
-	// ===== 步骤 4：剩余元数据加工 =====
-	helpers.AppLogger.Infof("[AV-VR] %s 步骤 4/6: 演员过滤与标签加工", code)
+	// ===== 步骤 4：元数据加工（与普通流程完全对齐） =====
+	helpers.AppLogger.Infof("[AV-VR] %s 步骤 4/6: 演员过滤、翻译与元数据加工", code)
+
+	// 4.1 演员过滤
 	result.Actors = filterFemaleActors(result.Actors)
 	applyEnsembleTag(result)
+
+	// 4.2 括号清洗
+	result.Actors = normalizeParenActorNames(result.Actors)
+
+	// 4.3 演员名中文化（wiki）
+	wikiClient := NewWikiClient()
+	translatedActors, actorWarnings := wikiClient.TranslateActorNames(result.Actors)
+	result.Actors = translatedActors
+	result.Warnings = append(result.Warnings, actorWarnings...)
+
+	// 4.4 标题/剧情/标签翻译
+	if cfg.EnableTranslate {
+		tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
+		tr.DeepLKey = cfg.TranslateDeepLKey
+		tr.BingKey = cfg.TranslateBingKey
+		tr.BingRegion = cfg.TranslateBingRegion
+		tr.GeminiKey = cfg.TranslateGeminiKey
+		tr.GeminiModel = cfg.TranslateGeminiModel
+		tr.GoogleAPIKey = cfg.GoogleTranslateAPIKey
+		tr.GoogleTranslateForTags = cfg.GoogleTranslateForTags
+		tr.GoogleTranslateForAll = cfg.GoogleTranslateForAll
+		helpers.AppLogger.Infof("[AV-VR] 开始翻译 %s (engine=%s)", code, cfg.TranslateEngine)
+		transWarnings := tr.TranslateResult(result)
+		result.Warnings = append(result.Warnings, transWarnings...)
+	}
+
+	// 4.5 翻译错误检查
+	if HasTranslateError(result.Warnings) {
+		reason := "翻译错误（详见警告列表）"
+		if skipPause {
+			helpers.AppLogger.Warnf("[AV-VR] %s %s（已放行，继续）", code, reason)
+		} else {
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, result.Warnings)
+			return fmt.Errorf("%s", reason)
+		}
+	}
+
+	// 4.6 JavDB 评分
+	if cfg.EnableJavDBRating {
+		client := NewJavDBClient(cfg.JavDBCookie)
+		candidates := javdbCodeCandidates(code)
+		got := false
+		for _, c := range candidates {
+			rating, votes, err := client.GetRating(c)
+			if err != nil {
+				helpers.AppLogger.Warnf("[AV-VR] JavDB 评分获取失败 [查询番号=%s]: %v", c, err)
+				continue
+			}
+			if rating > 0 {
+				result.Rating = rating
+				result.Votes = votes
+				helpers.AppLogger.Infof("[AV-VR] JavDB 评分: %.2f (%d人) [查询番号=%s]", rating, votes, c)
+				got = true
+				break
+			}
+		}
+		if !got {
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("JavDB 评分获取失败: 所有候选番号均未找到 (%s)", strings.Join(candidates, ", ")))
+		}
+	}
+
+	// 4.7 其它标签
 	result.IsUncensored = detectUncensored(result.Code)
 	result.HasChineseSub = detectChineseSub(fs, primaryFile)
 	result.ExtraTags = buildExtraTags(result, cfg)
 	if len(result.ExtraTags) > 0 {
 		helpers.AppLogger.Infof("[AV-VR] %s 附加标签: %v", result.Code, result.ExtraTags)
 	}
-	// 保留 oshash（如果 Scrape 里的为空，用 ffprobe 拿到的）
+
+	// 4.8 保留 oshash
 	if result.Oshash == "" {
 		result.Oshash = oshash
+	}
+
+	// 4.9 元数据完整性检查
+	if missing := checkMetadataMissing(result); missing != "" {
+		reason := fmt.Sprintf("元数据缺失: %s", missing)
+		if skipPause {
+			helpers.AppLogger.Warnf("[AV-VR] %s %s（已放行，继续）", code, reason)
+		} else {
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, result.Warnings)
+			return fmt.Errorf("%s", reason)
+		}
+	}
+
+	// ===== 4.10 保存/更新 AVMedia（媒体库） =====
+	var savedMediaID uint
+	{
+		m := MediaFromResult(result)
+		var existing models.AVMedia
+		if err := s.DB.Where("code = ?", m.Code).First(&existing).Error; err == nil {
+			m.ID = existing.ID
+			m.CreatedAt = existing.CreatedAt
+			if err := s.DB.Save(m).Error; err != nil {
+				helpers.AppLogger.Errorf("[AV-VR] 更新 AVMedia 失败: %v", err)
+			} else {
+				savedMediaID = m.ID
+				helpers.AppLogger.Infof("[AV-VR] 已更新媒体库记录 id=%d code=%s", m.ID, m.Code)
+			}
+		} else {
+			if err := s.DB.Create(m).Error; err != nil {
+				helpers.AppLogger.Errorf("[AV-VR] 创建 AVMedia 失败: %v", err)
+			} else {
+				savedMediaID = m.ID
+				helpers.AppLogger.Infof("[AV-VR] 已创建媒体库记录 id=%d code=%s", m.ID, m.Code)
+			}
+		}
 	}
 
 	// ===== 步骤 5：生成元数据文件 =====
 	helpers.AppLogger.Infof("[AV-VR] %s 步骤 5/6: 生成元数据文件", code)
 	nfoBaseName := result.Code + resolutionSuffix(result.Resolution)
 	files, prepWarnings, err := s.prepareMetaFilesVR(nfoBaseName, result, posterData, previewURLs, cfg)
+	allWarnings := append([]string{}, result.Warnings...)
+	allWarnings = append(allWarnings, prepWarnings...)
 	if err != nil {
 		reason := fmt.Sprintf("生成元数据文件失败: %v", err)
 		if skipPause {
 			helpers.AppLogger.Warnf("[AV-VR] %s %s（已放行，继续）", code, reason)
 		} else {
-			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, prepWarnings)
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
 			return err
 		}
 	}
@@ -477,7 +584,7 @@ func (s *Scanner) processVR(fs FileSystem, path *models.AVPath, g *groupItem, cf
 		if skipPause {
 			helpers.AppLogger.Warnf("[AV-VR] %s %s（已放行，继续）", code, reason)
 		} else {
-			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, prepWarnings)
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
 			return err
 		}
 	}
@@ -498,14 +605,14 @@ func (s *Scanner) processVR(fs FileSystem, path *models.AVPath, g *groupItem, cf
 			if skipPause {
 				helpers.AppLogger.Warnf("[AV-VR] %s %s（已放行，继续）", code, reason)
 			} else {
-				s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, prepWarnings)
+				s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
 				return err
 			}
 		}
 	}
 
 	s.markCompleted(code, targetDir)
-	s.recordTask(existingMedia.ID, code, primaryFile, "done", fmt.Sprintf("共 %d 个文件（VR）", len(g.Files)), result.Source, prepWarnings)
+	s.recordTask(savedMediaID, code, primaryFile, "done", fmt.Sprintf("共 %d 个文件（VR）", len(g.Files)), result.Source, allWarnings)
 	helpers.AppLogger.Infof("[AV-VR] %s 刮削完成", code)
 	return nil
 }
@@ -520,10 +627,7 @@ func extractR18ContentID(urls []string) string {
 	return ""
 }
 
-// downloadDMMImages 下载 DMM 高清图
-//   - jp-1.jpg 必须是竖版，作为 poster 字节返回
-//   - jp-2.jpg ~ jp-N.jpg 作为剧照 URL 列表返回
-//   - 遇到 404 停止
+// downloadDMMImages 下载 DMM 高清图（jp-1 作为 poster，jp-2~N 作为剧照）
 func downloadDMMImages(contentID string) ([]byte, []string, error) {
 	var posterData []byte
 	var previewURLs []string
@@ -535,7 +639,7 @@ func downloadDMMImages(contentID string) ([]byte, []string, error) {
 		url := fmt.Sprintf("%s%sjp-%d.jpg", base, contentID, i)
 		data, err := downloadDMMImage(url)
 		if err != nil {
-			break // 404 说明到头了
+			break
 		}
 
 		if i == 1 {
@@ -563,10 +667,6 @@ func downloadDMMImages(contentID string) ([]byte, []string, error) {
 }
 
 // prepareMetaFilesVR VR 专用的元数据文件生成
-//   - poster：来自 DMM jp-1.jpg 的字节（已确认是竖版）
-//   - fanart：JavStash 给的 URL（走原有下载逻辑）
-//   - 剧照：DMM jp-2.jpg ~ jp-N.jpg（从 previewURLs 逐个下载）
-//   - NFO：baseName.nfo
 func (s *Scanner) prepareMetaFilesVR(baseName string, r *ScrapeResult, posterData []byte, previewURLs []string, cfg *Config) ([]LocalFile, []string, error) {
 	var warnings []string
 	if r == nil {
@@ -581,8 +681,32 @@ func (s *Scanner) prepareMetaFilesVR(baseName string, r *ScrapeResult, posterDat
 
 	files := []LocalFile{}
 
+	// ===== 水印准备 =====
+	watermarks := buildWatermarks(r, cfg)
+	if len(watermarks) > 0 {
+		names := make([]string, 0, len(watermarks))
+		for _, w := range watermarks {
+			names = append(names, w.Label)
+		}
+		helpers.AppLogger.Infof("[AV-VR] 准备打水印: %v", names)
+	}
+
 	// ===== Poster：DMM jp-1.jpg（已是竖版） =====
 	if posterData != nil {
+		// 缩放（与普通流程对齐）
+		if resized, ok := resizePosterToMin(posterData, 500, 750); ok {
+			posterData = resized
+		}
+		// 水印
+		if len(watermarks) > 0 {
+			if wm, err := applyWatermark(posterData, watermarks, cfg.WatermarkWidthPercent); err == nil {
+				posterData = wm
+				helpers.AppLogger.Infof("[AV-VR] poster 已打水印")
+			} else {
+				helpers.AppLogger.Warnf("[AV-VR] poster 水印失败: %v", err)
+				warnings = append(warnings, fmt.Sprintf("poster 水印失败: %v", err))
+			}
+		}
 		p := filepath.Join(tmpDir, "poster.jpg")
 		if err := os.WriteFile(p, posterData, 0644); err == nil {
 			files = append(files, LocalFile{LocalPath: p, RemoteName: "poster.jpg"})
@@ -596,7 +720,7 @@ func (s *Scanner) prepareMetaFilesVR(baseName string, r *ScrapeResult, posterDat
 		warnings = append(warnings, "poster 未生成（DMM jp-1 下载失败）")
 	}
 
-	// ===== Fanart：JavStash 的 URL（沿用原下载逻辑） =====
+	// ===== Fanart：JavStash 的 URL =====
 	var fanartData []byte
 	if r.Fanart != "" {
 		if data, err := downloadImage(r.Fanart); err == nil {
@@ -607,6 +731,12 @@ func (s *Scanner) prepareMetaFilesVR(baseName string, r *ScrapeResult, posterDat
 		}
 	}
 	if fanartData != nil {
+		if len(watermarks) > 0 {
+			if wm, err := applyWatermark(fanartData, watermarks, cfg.WatermarkWidthPercent); err == nil {
+				fanartData = wm
+				helpers.AppLogger.Infof("[AV-VR] fanart 已打水印")
+			}
+		}
 		p := filepath.Join(tmpDir, "fanart.jpg")
 		if err := os.WriteFile(p, fanartData, 0644); err == nil {
 			files = append(files, LocalFile{LocalPath: p, RemoteName: "fanart.jpg"})
@@ -641,6 +771,14 @@ func (s *Scanner) prepareMetaFilesVR(baseName string, r *ScrapeResult, posterDat
 		helpers.AppLogger.Infof("[AV-VR] 剧照下载完成: %d/%d", successCount, len(previewURLs))
 		if failCount > 0 {
 			warnings = append(warnings, fmt.Sprintf("剧照部分下载失败: 成功 %d, 失败 %d", successCount, failCount))
+		}
+	}
+
+	// ===== Trailer =====
+	if r.Trailer != "" {
+		p := filepath.Join(tmpDir, "trailer.strm")
+		if err := os.WriteFile(p, []byte(r.Trailer), 0644); err == nil {
+			files = append(files, LocalFile{LocalPath: p, RemoteName: "trailers/trailer.strm"})
 		}
 	}
 
