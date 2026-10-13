@@ -194,100 +194,8 @@ func (t *Translator) geminiTranslate(text string) (string, error) {
 	return t.geminiCall(prompt)
 }
 
-func (t *Translator) geminiTranslateAll(r *ScrapeResult) error {
-	if t.GeminiKey == "" {
-		return fmt.Errorf("Gemini API Key 未配置")
-	}
-
-	actorNames := make([]string, 0, len(r.Actors))
-	for _, a := range r.Actors {
-		actorNames = append(actorNames, a.Name)
-	}
-
-	input := map[string]interface{}{
-		"title":  r.Title,
-		"plot":   r.Plot,
-		"actors": actorNames,
-		"genres": r.Genres,
-	}
-	inputJSON, _ := json.Marshal(input)
-
-	var langName string
-	switch t.SourceLang {
-	case "en":
-		langName = "英文"
-	case "ja", "":
-		langName = "日文"
-	default:
-		langName = "原文"
-	}
-
-	prompt := fmt.Sprintf(`你是一个%s影视元数据翻译助手。请把下面 JSON 中的所有%s内容翻译成简体中文。
-
-规则：
-1. 如果文本中出现 __ACTOR_数字__ 这样的标记（例如 __ACTOR_0__），必须原样保留，不要翻译、不要修改、不要加空格。
-2. 演员名必须翻译为该演员公认的中文译名。如果不确定，就保留原文，不要音译。
-3. 标题翻译要自然通顺，保留原意，不要机翻腔。
-4. 剧情简介要完整翻译，不要省略、不要概括。
-5. 标签（genres）要翻译成中文习惯用语。
-6. 只返回 JSON，不要加任何解释、不要加 markdown 代码块标记。
-
-输入 JSON：
-%s
-
-请直接返回翻译后的 JSON，结构必须和输入完全一致（title/plot/actors/genres 四个字段）。`, langName, langName, string(inputJSON))
-
-	raw, err := t.geminiCall(prompt)
-	if err != nil {
-		return err
-	}
-
-	raw = strings.TrimPrefix(raw, "```json")
-	raw = strings.TrimPrefix(raw, "```")
-	raw = strings.TrimSuffix(raw, "```")
-	raw = strings.TrimSpace(raw)
-
-	var translated struct {
-		Title  string   `json:"title"`
-		Plot   string   `json:"plot"`
-		Actors []string `json:"actors"`
-		Genres []string `json:"genres"`
-	}
-	if err := json.Unmarshal([]byte(raw), &translated); err != nil {
-		return fmt.Errorf("Gemini 返回 JSON 解析失败: %w, 原始返回: %s", err, truncate(raw, 200))
-	}
-
-	if translated.Title != "" {
-		r.Title = translated.Title
-	}
-	if translated.Plot != "" {
-		r.Plot = translated.Plot
-	}
-	if len(translated.Actors) == len(r.Actors) {
-		for i := range r.Actors {
-			if translated.Actors[i] != "" {
-				r.Actors[i].Name = translated.Actors[i]
-			}
-		}
-	} else if len(translated.Actors) > 0 {
-		helpers.AppLogger.Warnf("[翻译] Gemini 演员数量不匹配: 原 %d, 译 %d", len(r.Actors), len(translated.Actors))
-	}
-	if len(translated.Genres) == len(r.Genres) {
-		for i := range r.Genres {
-			if translated.Genres[i] != "" {
-				r.Genres[i] = translated.Genres[i]
-			}
-		}
-	} else if len(translated.Genres) > 0 {
-		helpers.AppLogger.Warnf("[翻译] Gemini 标签数量不匹配: 原 %d, 译 %d", len(r.Genres), len(translated.Genres))
-	}
-
-	helpers.AppLogger.Infof("[翻译] Gemini 完成: title=%s", truncate(r.Title, 40))
-	return nil
-}
-
 // ============================================================
-// TranslateResult 统一入口
+// TranslateResult 统一入口（旧版，保留以防别处引用）
 // ============================================================
 
 func (t *Translator) TranslateResult(r *ScrapeResult) []string {
@@ -352,7 +260,6 @@ func (t *Translator) TranslateResult(r *ScrapeResult) []string {
 			return warnings
 		} else {
 			helpers.AppLogger.Warnf("[翻译] Gemini 失败，降级到 DeepL: %v", err)
-			// 注意：这里是"降级提示"，不是最终失败，不加 TranslateErrorPrefix
 			warnings = append(warnings, fmt.Sprintf("Gemini 翻译失败: %v，已降级到 DeepL", err))
 			t.Engine = "deepl"
 		}
@@ -374,11 +281,10 @@ func (t *Translator) TranslateResult(r *ScrapeResult) []string {
 		helpers.AppLogger.Infof("[翻译] 简介 -> %s", truncate(s, 50))
 	}
 
-	// ===== 标签翻译（批量，一次请求翻全部）=====
+	// ===== 标签翻译（批量）=====
 	var tagTexts []string
 	var tagIndices []int
 	for i, g := range r.Genres {
-		// 日文场景下：无日文假名跳过；英文场景下不跳过
 		if t.SourceLang != "en" && !isJapanese(g) {
 			helpers.AppLogger.Infof("[翻译] 标签 %s 无日文假名，跳过翻译", g)
 			continue
@@ -414,10 +320,129 @@ func (t *Translator) TranslateResult(r *ScrapeResult) []string {
 			helpers.AppLogger.Infof("[翻译] 标签批量完成: %d/%d", translated, len(tagTexts))
 		}
 	}
-	// ==========================================
 
 	helpers.AppLogger.Infof("[翻译] 演员名保留原值，跳过机翻")
 	restore()
+	return warnings
+}
+
+// ============================================================
+// TranslateResultBatch 批量翻译入口：标题 + 简介 + 标签 一次性翻译
+// 演员名由 Wiki 翻译，不在这里处理
+// 每批 50 条，失败整批记 warning，不重试、不中断
+// ============================================================
+func (t *Translator) TranslateResultBatch(r *ScrapeResult) []string {
+	var warnings []string
+	if r == nil {
+		return warnings
+	}
+
+	// ===== 1. 占位符保护标题/简介中的演员名 =====
+	type actorPh struct {
+		ph          string
+		chineseName string
+	}
+	var phs []actorPh
+	for i, a := range r.Actors {
+		if a.Name == "" {
+			continue
+		}
+		ph := fmt.Sprintf("__ACTOR_%d__", i)
+		phs = append(phs, actorPh{ph: ph, chineseName: a.Name})
+		variants := append([]string{}, a.Aliases...)
+		variants = append(variants, a.Name)
+		for _, v := range variants {
+			if v == "" {
+				continue
+			}
+			if strings.Contains(r.Title, v) {
+				r.Title = strings.ReplaceAll(r.Title, v, ph)
+			}
+			if strings.Contains(r.Plot, v) {
+				r.Plot = strings.ReplaceAll(r.Plot, v, ph)
+			}
+		}
+	}
+	restore := func() {
+		for _, p := range phs {
+			r.Title = strings.ReplaceAll(r.Title, p.ph, p.chineseName)
+			r.Plot = strings.ReplaceAll(r.Plot, p.ph, p.chineseName)
+		}
+	}
+	if len(phs) > 0 {
+		helpers.AppLogger.Infof("[翻译] 已用 %d 个占位符保护演员名", len(phs))
+	}
+
+	// ===== 2. 收集所有待翻译文本（不含演员名）=====
+	type textItem struct {
+		field string // "title" / "plot" / "genre"
+		index int    // 在对应数组中的下标（title/plot 固定为 0）
+		text  string
+	}
+	var items []textItem
+
+	if r.Title != "" {
+		items = append(items, textItem{"title", 0, r.Title})
+	}
+	if r.Plot != "" {
+		items = append(items, textItem{"plot", 0, r.Plot})
+	}
+	for i, g := range r.Genres {
+		// 日文场景下：无日文假名跳过；英文场景不跳过
+		if t.SourceLang != "en" && !isJapanese(g) {
+			continue
+		}
+		items = append(items, textItem{"genre", i, g})
+	}
+
+	if len(items) == 0 {
+		restore()
+		return warnings
+	}
+
+	// ===== 3. 分批翻译（每批 50 条）=====
+	const batchSize = 50
+	translatedCount := 0
+	totalBatches := (len(items) + batchSize - 1) / batchSize
+
+	for b := 0; b < totalBatches; b++ {
+		start := b * batchSize
+		end := start + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		batch := items[start:end]
+
+		texts := make([]string, len(batch))
+		for i, it := range batch {
+			texts[i] = it.text
+		}
+
+		results, err := t.TranslateBatch(texts)
+		if err != nil {
+			helpers.AppLogger.Warnf("[翻译] 第 %d/%d 批失败: %v", b+1, totalBatches, err)
+			warnings = append(warnings, fmt.Sprintf("批量翻译第 %d/%d 批失败: %v", b+1, totalBatches, err))
+			continue
+		}
+
+		for i, it := range batch {
+			if i >= len(results) || results[i] == "" || results[i] == it.text {
+				continue
+			}
+			switch it.field {
+			case "title":
+				r.Title = results[i]
+			case "plot":
+				r.Plot = results[i]
+			case "genre":
+				r.Genres[it.index] = results[i]
+			}
+			translatedCount++
+		}
+	}
+
+	restore()
+	helpers.AppLogger.Infof("[翻译] 批量完成: %d/%d 条（共 %d 批）", translatedCount, len(items), totalBatches)
 	return warnings
 }
 
@@ -517,7 +542,6 @@ func (t *Translator) translateAllWithGoogle(r *ScrapeResult) []string {
 		helpers.AppLogger.Infof("[翻译-Google] 简介 -> %s", truncate(s, 40))
 	}
 
-	// 标签批量走 Google
 	var tagTexts []string
 	var tagIndices []int
 	for i, g := range r.Genres {
@@ -997,130 +1021,4 @@ func (t *Translator) geminiBatch(texts []string) ([]string, error) {
 		return nil, fmt.Errorf("Gemini 返回数量不匹配: want %d, got %d", len(texts), len(result))
 	}
 	return result, nil
-}
-// ============================================================
-// TranslateResultBatch 批量翻译入口：标题+简介+标签+演员名 一次性翻译
-// 每批 50 条，失败记 warning，不重试、不中断
-// ============================================================
-func (t *Translator) TranslateResultBatch(r *ScrapeResult) []string {
-	var warnings []string
-	if r == nil {
-		return warnings
-	}
-
-	// ===== 1. 占位符保护演员名 =====
-	type actorPh struct {
-		ph          string
-		chineseName string
-	}
-	var phs []actorPh
-	for i, a := range r.Actors {
-		if a.Name == "" {
-			continue
-		}
-		ph := fmt.Sprintf("__ACTOR_%d__", i)
-		phs = append(phs, actorPh{ph: ph, chineseName: a.Name})
-		variants := append([]string{}, a.Aliases...)
-		variants = append(variants, a.Name)
-		for _, v := range variants {
-			if v == "" {
-				continue
-			}
-			if strings.Contains(r.Title, v) {
-				r.Title = strings.ReplaceAll(r.Title, v, ph)
-			}
-			if strings.Contains(r.Plot, v) {
-				r.Plot = strings.ReplaceAll(r.Plot, v, ph)
-			}
-		}
-	}
-	restore := func() {
-		for _, p := range phs {
-			r.Title = strings.ReplaceAll(r.Title, p.ph, p.chineseName)
-			r.Plot = strings.ReplaceAll(r.Plot, p.ph, p.chineseName)
-		}
-	}
-	if len(phs) > 0 {
-		helpers.AppLogger.Infof("[翻译] 已用 %d 个占位符保护演员名", len(phs))
-	}
-
-	// ===== 2. 收集所有待翻译文本 =====
-	type textItem struct {
-		field string // "title" / "plot" / "genre" / "actor"
-		index int    // 在对应数组中的下标（title/plot 固定为 0）
-		text  string
-	}
-	var items []textItem
-
-	if r.Title != "" {
-		items = append(items, textItem{"title", 0, r.Title})
-	}
-	if r.Plot != "" {
-		items = append(items, textItem{"plot", 0, r.Plot})
-	}
-	for i, g := range r.Genres {
-		// 日文场景下：无日文假名跳过；英文场景不跳过
-		if t.SourceLang != "en" && !isJapanese(g) {
-			continue
-		}
-		items = append(items, textItem{"genre", i, g})
-	}
-	for i, a := range r.Actors {
-		if a.Name == "" {
-			continue
-		}
-		items = append(items, textItem{"actor", i, a.Name})
-	}
-
-	if len(items) == 0 {
-		restore()
-		return warnings
-	}
-
-	// ===== 3. 分批翻译（每批 50 条）=====
-	const batchSize = 50
-	translatedCount := 0
-	totalBatches := (len(items) + batchSize - 1) / batchSize
-
-	for b := 0; b < totalBatches; b++ {
-		start := b * batchSize
-		end := start + batchSize
-		if end > len(items) {
-			end = len(items)
-		}
-		batch := items[start:end]
-
-		texts := make([]string, len(batch))
-		for i, it := range batch {
-			texts[i] = it.text
-		}
-
-		results, err := t.TranslateBatch(texts)
-		if err != nil {
-			helpers.AppLogger.Warnf("[翻译] 第 %d/%d 批失败: %v", b+1, totalBatches, err)
-			warnings = append(warnings, fmt.Sprintf("批量翻译第 %d/%d 批失败: %v", b+1, totalBatches, err))
-			continue
-		}
-
-		for i, it := range batch {
-			if i >= len(results) || results[i] == "" || results[i] == it.text {
-				continue
-			}
-			switch it.field {
-			case "title":
-				r.Title = results[i]
-			case "plot":
-				r.Plot = results[i]
-			case "genre":
-				r.Genres[it.index] = results[i]
-			case "actor":
-				r.Actors[it.index].Name = results[i]
-			}
-			translatedCount++
-		}
-	}
-
-	restore()
-	helpers.AppLogger.Infof("[翻译] 批量完成: %d/%d 条（共 %d 批）", translatedCount, len(items), totalBatches)
-	return warnings
 }
