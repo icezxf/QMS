@@ -1022,3 +1022,94 @@ func (t *Translator) geminiBatch(texts []string) ([]string, error) {
 	}
 	return result, nil
 }
+func (t *Translator) geminiTranslateAll(r *ScrapeResult) error {
+	if t.GeminiKey == "" {
+		return fmt.Errorf("Gemini API Key 未配置")
+	}
+
+	actorNames := make([]string, 0, len(r.Actors))
+	for _, a := range r.Actors {
+		actorNames = append(actorNames, a.Name)
+	}
+
+	input := map[string]interface{}{
+		"title":  r.Title,
+		"plot":   r.Plot,
+		"actors": actorNames,
+		"genres": r.Genres,
+	}
+	inputJSON, _ := json.Marshal(input)
+
+	var langName string
+	switch t.SourceLang {
+	case "en":
+		langName = "英文"
+	case "ja", "":
+		langName = "日文"
+	default:
+		langName = "原文"
+	}
+
+	prompt := fmt.Sprintf(`你是一个%s影视元数据翻译助手。请把下面 JSON 中的所有%s内容翻译成简体中文。
+
+规则：
+1. 如果文本中出现 __ACTOR_数字__ 这样的标记（例如 __ACTOR_0__），必须原样保留，不要翻译、不要修改、不要加空格。
+2. 演员名必须翻译为该演员公认的中文译名。如果不确定，就保留原文，不要音译。
+3. 标题翻译要自然通顺，保留原意，不要机翻腔。
+4. 剧情简介要完整翻译，不要省略、不要概括。
+5. 标签（genres）要翻译成中文习惯用语。
+6. 只返回 JSON，不要加任何解释、不要加 markdown 代码块标记。
+
+输入 JSON：
+%s
+
+请直接返回翻译后的 JSON，结构必须和输入完全一致（title/plot/actors/genres 四个字段）。`, langName, langName, string(inputJSON))
+
+	raw, err := t.geminiCall(prompt)
+	if err != nil {
+		return err
+	}
+
+	raw = strings.TrimPrefix(raw, "```json")
+	raw = strings.TrimPrefix(raw, "```")
+	raw = strings.TrimSuffix(raw, "```")
+	raw = strings.TrimSpace(raw)
+
+	var translated struct {
+		Title  string   `json:"title"`
+		Plot   string   `json:"plot"`
+		Actors []string `json:"actors"`
+		Genres []string `json:"genres"`
+	}
+	if err := json.Unmarshal([]byte(raw), &translated); err != nil {
+		return fmt.Errorf("Gemini 返回 JSON 解析失败: %w, 原始返回: %s", err, truncate(raw, 200))
+	}
+
+	if translated.Title != "" {
+		r.Title = translated.Title
+	}
+	if translated.Plot != "" {
+		r.Plot = translated.Plot
+	}
+	if len(translated.Actors) == len(r.Actors) {
+		for i := range r.Actors {
+			if translated.Actors[i] != "" {
+				r.Actors[i].Name = translated.Actors[i]
+			}
+		}
+	} else if len(translated.Actors) > 0 {
+		helpers.AppLogger.Warnf("[翻译] Gemini 演员数量不匹配: 原 %d, 译 %d", len(r.Actors), len(translated.Actors))
+	}
+	if len(translated.Genres) == len(r.Genres) {
+		for i := range r.Genres {
+			if translated.Genres[i] != "" {
+				r.Genres[i] = translated.Genres[i]
+			}
+		}
+	} else if len(translated.Genres) > 0 {
+		helpers.AppLogger.Warnf("[翻译] Gemini 标签数量不匹配: 原 %d, 译 %d", len(r.Genres), len(translated.Genres))
+	}
+
+	helpers.AppLogger.Infof("[翻译] Gemini 完成: title=%s", truncate(r.Title, 40))
+	return nil
+}
