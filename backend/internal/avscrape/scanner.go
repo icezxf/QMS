@@ -207,7 +207,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 
 	// ===== 步骤0：获取 oshash（优先读源目录 oshash-*.txt，没有则 ffprobe）=====
 	oshash := ""
-	var probeResult *ProbeResult
+	var probeResult *probeResult
 
 	// ① 优先读源目录 oshash-*.txt（从文件名提取 oshash 值）
 	srcDir := filepath.Dir(primaryFile)
