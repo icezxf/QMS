@@ -6,10 +6,23 @@ import (
 )
 
 var codePatterns = []*regexp.Regexp{
-	// 带分隔符：3DSVR-1766 / SSIS-001 / MIDV-192
-	regexp.MustCompile(`(?i)([A-Z0-9]{2,10})[-_\s](\d{2,6})`),
-	// 无分隔符：SSIS001 / 3DSVR1766
-	regexp.MustCompile(`(?i)([A-Z0-9]{2,10})(\d{3,6})`),
+	// 带分隔符：3DSVR-1766 / SSIS-001 / PRVR-078
+	regexp.MustCompile(`(?i)(\d?[A-Z]+)[-_\s](\d+)`),
+	// 无分隔符：KIWVR00877 / SSIS001 / 3DSVR1766
+	regexp.MustCompile(`(?i)(\d?[A-Z]+)(\d+)`),
+}
+
+// normalizeNumPart 番号数字部分标准化：去掉前导零，保留至少 3 位
+// 00877 → 877；00001 → 001；01766 → 1766；078 → 078
+func normalizeNumPart(num string) string {
+	trimmed := strings.TrimLeft(num, "0")
+	if trimmed == "" {
+		trimmed = "0"
+	}
+	for len(trimmed) < 3 {
+		trimmed = "0" + trimmed
+	}
+	return trimmed
 }
 
 func ExtractCode(filename string) string {
@@ -29,31 +42,33 @@ func ExtractCode(filename string) string {
 
 	for _, re := range codePatterns {
 		m := re.FindStringSubmatch(name)
-		if len(m) >= 3 {
-			prefix := strings.ToUpper(m[1])
-			num := m[2]
-
-			// 排除明显不是番号的前缀
-			switch prefix {
-			case "MP4", "AVI", "MKV", "FHD", "UHD", "WEB",
-				"CD", "PART", "DISC", "DISK":
-				continue
-			}
-
-			// 前缀必须含至少一个字母，排除纯数字
-			hasLetter := false
-			for _, r := range prefix {
-				if r >= 'A' && r <= 'Z' {
-					hasLetter = true
-					break
-				}
-			}
-			if !hasLetter {
-				continue
-			}
-
-			return prefix + "-" + num
+		if len(m) < 3 {
+			continue
 		}
+		prefix := strings.ToUpper(m[1])
+		num := m[2]
+
+		// 排除明显不是番号的前缀
+		switch prefix {
+		case "MP4", "AVI", "MKV", "FHD", "UHD", "WEB",
+			"CD", "PART", "DISC", "DISK",
+			"4K", "8K", "2K", "HD", "SD":
+			continue
+		}
+
+		// 前缀必须含至少一个字母，排除纯数字
+		hasLetter := false
+		for _, r := range prefix {
+			if r >= 'A' && r <= 'Z' {
+				hasLetter = true
+				break
+			}
+		}
+		if !hasLetter {
+			continue
+		}
+
+		return prefix + "-" + normalizeNumPart(num)
 	}
 	return ""
 }
