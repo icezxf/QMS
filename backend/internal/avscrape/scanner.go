@@ -1087,7 +1087,11 @@ func walkVideos(fs FileSystem, root string, depth int) ([]string, error) {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(e.Name))
-		if videoExts[ext] {
+		if !videoExts[ext] {
+			continue
+		}
+		// Size 为 0 说明信息不全，先收进来（让后续流程处理）
+		if e.Size == 0 || e.Size >= cleanupBigVideoSize {
 			videos = append(videos, e.Path)
 		}
 	}
