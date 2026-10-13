@@ -33,7 +33,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	// ===== oshash 优先匹配 JavStash =====
 	oshashHit := false
 	if oshash != "" && cfg.EnableOshashMatch && cfg.EnableJavStash {
-		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashApiKey)
+		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
 		if r, err := js.SearchByOshash(oshash); err == nil && r != nil {
 			helpers.AppLogger.Infof("[AV刮削] oshash 优先命中: %s => %s", oshash, r.Code)
 			allResults = append(allResults, r)
@@ -81,7 +81,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 
 	// ===== JavStash 番号搜索（oshash 命中时跳过） =====
 	if cfg.EnableJavStash && !oshashHit {
-		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashApiKey)
+		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
 
 		// 第一次用原番号
 		hits, err := js.Search(effectiveCode)
