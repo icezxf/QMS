@@ -33,7 +33,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	// ===== oshash 优先匹配 JavStash =====
 	oshashHit := false
 	if oshash != "" && cfg.EnableOshashMatch && cfg.EnableJavStash {
-		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
+		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashApiKey)
 		if r, err := js.SearchByOshash(oshash); err == nil && r != nil {
 			helpers.AppLogger.Infof("[AV刮削] oshash 优先命中: %s => %s", oshash, r.Code)
 			allResults = append(allResults, r)
@@ -41,8 +41,13 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 			if r.Code != "" {
 				effectiveCode = r.Code
 			}
-		} else {
-			helpers.AppLogger.Infof("[AV刮削] oshash 未命中，回退到番号搜索: %v", err)
+		} else if err != nil {
+			if strings.Contains(err.Error(), "Cannot query field") ||
+				strings.Contains(err.Error(), "Unknown argument") {
+				helpers.AppLogger.Infof("[AV刮削] JavStash schema 不支持 oshash 查询，跳过")
+			} else {
+				helpers.AppLogger.Infof("[AV刮削] oshash 未命中，回退到番号搜索: %v", err)
+			}
 		}
 	}
 
@@ -76,10 +81,29 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 
 	// ===== JavStash 番号搜索（oshash 命中时跳过） =====
 	if cfg.EnableJavStash && !oshashHit {
-		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
+		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashApiKey)
+
+		// 第一次用原番号
 		hits, err := js.Search(effectiveCode)
-		if err == nil {
+		if err != nil {
+			helpers.AppLogger.Warnf("[JavStash] 搜索失败 %s: %v", effectiveCode, err)
+		} else {
+			helpers.AppLogger.Infof("[JavStash] 搜索 %s 返回 %d 条", effectiveCode, len(hits))
 			allResults = append(allResults, hits...)
+		}
+
+		// 没结果，去前导零再试一次
+		if len(hits) == 0 {
+			altCode := stripNumberLeadingZeros(effectiveCode)
+			if altCode != "" && altCode != effectiveCode {
+				helpers.AppLogger.Infof("[JavStash] 备用番号 %s", altCode)
+				if altHits, err2 := js.Search(altCode); err2 == nil {
+					helpers.AppLogger.Infof("[JavStash] 备用 %s 返回 %d 条", altCode, len(altHits))
+					allResults = append(allResults, altHits...)
+				} else {
+					helpers.AppLogger.Warnf("[JavStash] 备用 %s 搜索失败: %v", altCode, err2)
+				}
+			}
 		}
 	}
 
