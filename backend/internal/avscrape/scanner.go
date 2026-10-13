@@ -8,6 +8,9 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,6 +31,10 @@ var videoExts = map[string]bool{
 }
 
 var cdPartRegex = regexp.MustCompile(`(?i)([-_]?(cd|part|disc|disk)\d+)`)
+
+// swiperLazyRegex 提取厂商官网 HTML 里 swiper-lazy 类的图（按页面顺序）
+var swiperLazyRegex = regexp.MustCompile(
+	`(?i)<img[^>]+class=["'][^"']*\bswiper-lazy\b[^"']*["'][^>]+data-src=["']([^"']+\.(?:jpg|jpeg|png|webp))["']`)
 
 var maleActorBlacklist = map[string]bool{
 	"清水健": true, "森林原人": true, "しみけん": true, "貞松大輔": true,
@@ -209,7 +216,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 	oshash := ""
 	var probeResult *probeResult
 
-	// ① 优先读源目录 oshash-*.txt（从文件名提取 oshash 值）
+	// ① 优先读源目录 oshash-*.txt
 	srcDir := filepath.Dir(primaryFile)
 	if entries, err := fs.ListDetailed(srcDir); err == nil {
 		for _, e := range entries {
@@ -678,6 +685,20 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		}
 	}
 
+	// ===== ②.5 厂商官网封面兜底（仅 VR，JavStash 第一个 url） =====
+	if posterData == nil && isVR && len(r.Urls) > 0 {
+		officialURL := r.Urls[0]
+		helpers.AppLogger.Infof("[AV元数据] VR 兜底：尝试从厂商官网抓封面: %s", redactURL(officialURL))
+		if data, w, h, src := fetchOfficialCoverData(officialURL); data != nil {
+			posterData = data
+			helpers.AppLogger.Infof("[AV元数据] poster 来自厂商官网 (%dx%d)", w, h)
+			warnings = append(warnings,
+				fmt.Sprintf("⚠️ poster 使用厂商官网兜底 (%dx%d): %s", w, h, redactURL(src)))
+		} else {
+			helpers.AppLogger.Infof("[AV元数据] 厂商官网未找到合适封面")
+		}
+	}
+
 	// ===== ③ VR 分流：VR 不走 fanart 裁剪 =====
 	if posterData == nil && !isVR && fanartData != nil {
 		if cropped, ok := cropPosterFromFanart(fanartData); ok {
@@ -877,6 +898,156 @@ func downloadDMMPreviews(cid, variant string, max int, startIdx int, tmpDir stri
 		count++
 	}
 	return count
+}
+
+// ============================================================
+// 厂商官网封面兜底（仅 VR）
+// ============================================================
+
+// normalizeURL 把相对/协议相对 URL 补成绝对 URL
+func normalizeURL(base, u string) string {
+	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+		return u
+	}
+	if strings.HasPrefix(u, "//") {
+		return "https:" + u
+	}
+	if strings.HasPrefix(u, "/") {
+		if b, err := url.Parse(base); err == nil {
+			return b.Scheme + "://" + b.Host + u
+		}
+	}
+	return ""
+}
+
+// tryDownloadCover 下载图片，检查是否为竖版且宽高比 ≥ 0.70
+// 封面比例约 0.735（3:4），剧照约 0.667（2:3）
+func tryDownloadCover(imgURL, referer string) ([]byte, int, int, bool) {
+	req, err := http.NewRequest("GET", imgURL, nil)
+	if err != nil {
+		return nil, 0, 0, false
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+	if referer != "" {
+		req.Header.Set("Referer", referer)
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, 0, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, 0, 0, false
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if err != nil || len(data) < 1000 {
+		return nil, 0, 0, false
+	}
+	imgCfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, 0, 0, false
+	}
+
+	// 1. 必须竖版
+	if imgCfg.Height <= imgCfg.Width {
+		return nil, imgCfg.Width, imgCfg.Height, false
+	}
+	// 2. 宽度下限
+	if imgCfg.Width < 500 {
+		return nil, imgCfg.Width, imgCfg.Height, false
+	}
+	// 3. 宽高比 ≥ 0.70
+	ratio := float64(imgCfg.Width) / float64(imgCfg.Height)
+	if ratio < 0.70 {
+		return nil, imgCfg.Width, imgCfg.Height, false
+	}
+	return data, imgCfg.Width, imgCfg.Height, true
+}
+
+// fetchOfficialCoverData 从厂商官网抓取高清竖版封面
+// 策略：抓 HTML → 提取所有 swiper-lazy 图 → 下载所有候选 → 选宽高比最大的竖版图
+//   - 封面：比例 ≈ 0.735（3:4）
+//   - 剧照：比例 ≈ 0.667（2:3）
+//   - 选比例最大 = 选封面
+// 命中返回 (data, w, h, srcURL)；失败返回 (nil, 0, 0, "")
+func fetchOfficialCoverData(pageURL string) ([]byte, int, int, string) {
+	if pageURL == "" {
+		return nil, 0, 0, ""
+	}
+	req, err := http.NewRequest("GET", pageURL, nil)
+	if err != nil {
+		return nil, 0, 0, ""
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "ja,en;q=0.9,zh;q=0.8")
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		helpers.AppLogger.Warnf("[AV元数据] 厂商官网请求失败 %s: %v", redactURL(pageURL), err)
+		return nil, 0, 0, ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		helpers.AppLogger.Warnf("[AV元数据] 厂商官网 HTTP %d: %s", resp.StatusCode, redactURL(pageURL))
+		return nil, 0, 0, ""
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	if err != nil {
+		return nil, 0, 0, ""
+	}
+	html := string(body)
+
+	// 提取所有 swiper-lazy 图（去重）
+	var candidates []string
+	seen := map[string]bool{}
+	for _, m := range swiperLazyRegex.FindAllStringSubmatch(html, -1) {
+		if u := normalizeURL(pageURL, m[1]); u != "" && !seen[u] {
+			candidates = append(candidates, u)
+			seen[u] = true
+		}
+	}
+	helpers.AppLogger.Infof("[AV元数据] 厂商官网提取到 %d 张 swiper-lazy 图", len(candidates))
+	if len(candidates) == 0 {
+		return nil, 0, 0, ""
+	}
+
+	// 下载所有候选，选宽高比最大的竖版图
+	type result struct {
+		data  []byte
+		w, h  int
+		src   string
+		ratio float64
+	}
+	var best *result
+
+	for i, u := range candidates {
+		data, w, h, ok := tryDownloadCover(u, pageURL)
+		if !ok {
+			if w > 0 {
+				helpers.AppLogger.Infof("[AV元数据]   跳过第 %d 张 (%dx%d, 比例 %.3f): %s",
+					i+1, w, h, float64(w)/float64(h), redactURL(u))
+			}
+			continue
+		}
+		ratio := float64(w) / float64(h)
+		helpers.AppLogger.Infof("[AV元数据]   候选第 %d 张 (%dx%d, 比例 %.3f): %s",
+			i+1, w, h, ratio, redactURL(u))
+		if best == nil || ratio > best.ratio {
+			best = &result{data: data, w: w, h: h, src: u, ratio: ratio}
+		}
+	}
+
+	if best == nil {
+		helpers.AppLogger.Infof("[AV元数据] 厂商官网没有合适的竖版封面")
+		return nil, 0, 0, ""
+	}
+	helpers.AppLogger.Infof("[AV元数据] 厂商封面命中 (比例最大 %dx%d, %.3f): %s",
+		best.w, best.h, best.ratio, redactURL(best.src))
+	return best.data, best.w, best.h, best.src
 }
 
 func (s *Scanner) recordTask(mediaId uint, code, filePath, status, msg, provider string, warnings []string) {
