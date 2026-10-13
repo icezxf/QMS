@@ -166,11 +166,16 @@ func (j *JavStashClient) Detail(code string, providerID string) (*ScrapeResult, 
 }
 
 // SearchByOshash 用 oshash 精确查找场景
+// SearchByOshash 用 oshash 精确查找场景
+// JavStash/StashDB schema：findScenesBySceneFingerprints(fingerprints: [[{hash, algorithm}]])
+// 变量类型是 FingerprintHash（自定义 scalar），不是 String
 func (j *JavStashClient) SearchByOshash(oshash string) (*ScrapeResult, error) {
 	if oshash == "" {
 		return nil, fmt.Errorf("空 oshash")
 	}
-	query := `query($hash:String!){findSceneByHash(input:{oshash:$hash}){id title code details date duration studio{name} performers{performer{name aliases birthdate{date} country height images{url}}} tags{name} images{url} urls{url}}}`
+
+	query := `query($hash:FingerprintHash!){findScenesBySceneFingerprints(fingerprints:[[{hash:$hash,algorithm:OSHASH}]]){id title code details date duration studio{name} performers{performer{name aliases birthdate{date} country height images{url}}} tags{name} images{url} urls{url}}}`
+
 	payload, _ := json.Marshal(gqlRequest{
 		Query:     query,
 		Variables: map[string]interface{}{"hash": oshash},
@@ -187,58 +192,69 @@ func (j *JavStashClient) SearchByOshash(oshash string) (*ScrapeResult, error) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 
-	var result struct {
-		Data struct {
-			FindSceneByHash *struct {
-				ID       string `json:"id"`
-				Title    string `json:"title"`
-				Code     string `json:"code"`
-				Details  string `json:"details"`
-				Date     string `json:"date"`
-				Duration int    `json:"duration"`
-				Studio   *struct {
-					Name string `json:"name"`
-				} `json:"studio"`
-				Performers []struct {
-					Performer struct {
-						Name    string   `json:"name"`
-						Aliases []string `json:"aliases"`
-						Birthdate *struct {
-							Date string `json:"date"`
-						} `json:"birthdate"`
-						Country string `json:"country"`
-						Height  int    `json:"height"`
-						Images  []struct {
-							URL string `json:"url"`
-						} `json:"images"`
-					} `json:"performer"`
-				} `json:"performers"`
-				Tags []struct {
-					Name string `json:"name"`
-				} `json:"tags"`
-				Images []struct {
+	type sceneStruct struct {
+		ID       string `json:"id"`
+		Title    string `json:"title"`
+		Code     string `json:"code"`
+		Details  string `json:"details"`
+		Date     string `json:"date"`
+		Duration int    `json:"duration"`
+		Studio   *struct {
+			Name string `json:"name"`
+		} `json:"studio"`
+		Performers []struct {
+			Performer struct {
+				Name    string   `json:"name"`
+				Aliases []string `json:"aliases"`
+				Birthdate *struct {
+					Date string `json:"date"`
+				} `json:"birthdate"`
+				Country string `json:"country"`
+				Height  int    `json:"height"`
+				Images  []struct {
 					URL string `json:"url"`
 				} `json:"images"`
-				Urls []struct {
-					URL string `json:"url"`
-				} `json:"urls"`
-			} `json:"findSceneByHash"`
+			} `json:"performer"`
+		} `json:"performers"`
+		Tags []struct {
+			Name string `json:"name"`
+		} `json:"tags"`
+		Images []struct {
+			URL string `json:"url"`
+		} `json:"images"`
+		Urls []struct {
+			URL string `json:"url"`
+		} `json:"urls"`
+	}
+
+	var result struct {
+		Data struct {
+			FindScenesBySceneFingerprints [][]sceneStruct `json:"findScenesBySceneFingerprints"`
 		} `json:"data"`
 		Errors []struct {
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
+
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("javstash decode: %w", err)
 	}
 	if len(result.Errors) > 0 {
-		return nil, fmt.Errorf("javstash: %s", result.Errors[0].Message)
+		return nil, fmt.Errorf("javstash graphql: %s", result.Errors[0].Message)
 	}
-	if result.Data.FindSceneByHash == nil {
+
+	// 嵌套数组，取第一个指纹的第一个场景
+	var item *sceneStruct
+	for _, group := range result.Data.FindScenesBySceneFingerprints {
+		if len(group) > 0 {
+			item = &group[0]
+			break
+		}
+	}
+	if item == nil {
 		return nil, fmt.Errorf("oshash 未命中")
 	}
 
-	item := result.Data.FindSceneByHash
 	r := &ScrapeResult{
 		Code:          item.Code,
 		Title:         item.Title,
