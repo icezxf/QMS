@@ -756,9 +756,9 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		}
 	}
 
-	// ===== DMM 剧照兜底（VR 总是走；非 VR 剧照 < 8 张时走）=====
+	// ===== DMM 剧照兜底（仅当数据源一张剧照都没给时）=====
 	const dmmPreviewMax = 15
-	needDMM := isVR || successCount < 8
+	needDMM := len(r.PreviewImages) == 0
 	if needDMM && len(r.DMMContentIDs) > 0 {
 		remaining := dmmPreviewMax - successCount
 		if remaining > 0 {
