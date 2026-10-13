@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -94,6 +95,9 @@ func clearScanFilter() {
 type Scanner struct {
 	DB  *gorm.DB
 	Svc *Service
+
+	// probeCache 本次扫描的 ffprobe 结果缓存（key=文件路径）
+	probeCache map[string]*probeResult
 }
 
 func NewScanner(db *gorm.DB) *Scanner {
@@ -125,6 +129,9 @@ func (s *Scanner) Scan(pathID uint) error {
 		return fmt.Errorf("创建文件系统失败: %w", err)
 	}
 
+	// 初始化缓存
+	s.probeCache = make(map[string]*probeResult)
+
 	// 扫描前清理
 	helpers.AppLogger.Infof("[AV扫描] 开始清理源目录: %s", path.SourcePath)
 	s.cleanupSourceDir(fs, path.SourcePath)
@@ -135,23 +142,78 @@ func (s *Scanner) Scan(pathID uint) error {
 	}
 	helpers.AppLogger.Infof("[AV扫描] 目录 %s 共找到 %d 个视频文件", path.SourcePath, len(videoFiles))
 
-	groups := make(map[string]*groupItem)
-	var order []string
+	// ============================================================
+	// 阶段 1：按父目录粗分组
+	// ============================================================
+	dirGroups := make(map[string][]string)
+	var dirOrder []string
 	for _, fullPath := range videoFiles {
-		name := filepath.Base(fullPath)
-		code := ExtractCode(name)
-		if code == "" {
-			helpers.AppLogger.Warnf("[AV扫描] 无法识别番号: %s", fullPath)
-			s.recordTask(0, "", fullPath, "failed", "无法识别番号", "", nil)
-			continue
+		dir := filepath.Dir(fullPath)
+		if _, ok := dirGroups[dir]; !ok {
+			dirOrder = append(dirOrder, dir)
 		}
-		if _, ok := groups[code]; !ok {
-			groups[code] = &groupItem{Code: code}
-			order = append(order, code)
-		}
-		groups[code].Files = append(groups[code].Files, fullPath)
+		dirGroups[dir] = append(dirGroups[dir], fullPath)
 	}
 
+	// ============================================================
+	// 阶段 2：每组按文件名字典序试 oshash，命中即停
+	// ============================================================
+	groups := make(map[string]*groupItem)
+	var order []string
+
+	for _, dir := range dirOrder {
+		files := dirGroups[dir]
+		sort.Strings(files)
+
+		matchedCode := ""
+		if cfg.EnableOshashMatch && cfg.EnableJavStash {
+			for _, f := range files {
+				pr := s.getOrProbe(fs, f)
+				if pr == nil || pr.Oshash == "" {
+					continue
+				}
+				js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
+				r, err := js.SearchByOshash(pr.Oshash)
+				if err == nil && r != nil && r.Code != "" {
+					helpers.AppLogger.Infof("[AV扫描] oshash 命中: %s (%s) => %s",
+						pr.Oshash, filepath.Base(f), r.Code)
+					matchedCode = r.Code
+					break
+				}
+				helpers.AppLogger.Infof("[AV扫描] oshash 未命中: %s (%s)",
+					pr.Oshash, filepath.Base(f))
+			}
+		}
+
+		if matchedCode == "" {
+			for _, f := range files {
+				code := ExtractCode(filepath.Base(f))
+				if code == "" {
+					helpers.AppLogger.Warnf("[AV扫描] 无法识别番号: %s", f)
+					s.recordTask(0, "", f, "failed", "无法识别番号（oshash 与文件名均失败）", "", nil)
+					continue
+				}
+				if _, ok := groups[code]; !ok {
+					groups[code] = &groupItem{Code: code}
+					order = append(order, code)
+				}
+				groups[code].Files = append(groups[code].Files, f)
+			}
+			continue
+		}
+
+		if _, ok := groups[matchedCode]; !ok {
+			groups[matchedCode] = &groupItem{Code: matchedCode}
+			order = append(order, matchedCode)
+		}
+		groups[matchedCode].Files = append(groups[matchedCode].Files, files...)
+		helpers.AppLogger.Infof("[AV扫描] 目录 %s 整组归入 %s（共 %d 个文件）",
+			filepath.Base(dir), matchedCode, len(files))
+	}
+
+	// ============================================================
+	// 阶段 3：过滤 + 处理
+	// ============================================================
 	filterSnapshot := takeScanFilter()
 	if len(filterSnapshot) > 0 {
 		helpers.AppLogger.Infof("[AV扫描] 本次仅处理 %d 个番号", len(filterSnapshot))
@@ -198,6 +260,32 @@ func (s *Scanner) Scan(pathID uint) error {
 	return nil
 }
 
+// getOrProbe 查缓存，没有则 ffprobe 并写入缓存
+func (s *Scanner) getOrProbe(fs FileSystem, fullPath string) *probeResult {
+	if s.probeCache == nil {
+		s.probeCache = make(map[string]*probeResult)
+	}
+	if pr, ok := s.probeCache[fullPath]; ok {
+		return pr
+	}
+	url, err := fs.GetURL(fullPath)
+	if err != nil || url == "" {
+		helpers.AppLogger.Warnf("[AV扫描] 获取直链失败 %s: %v", filepath.Base(fullPath), err)
+		return nil
+	}
+	pr, err := probeVideo(url)
+	if err != nil || pr == nil {
+		helpers.AppLogger.Warnf("[AV扫描] ffprobe 失败 %s: %v", filepath.Base(fullPath), err)
+		return nil
+	}
+	s.probeCache[fullPath] = pr
+	return pr
+}
+
+// ============================================================
+// 处理单个番号
+// ============================================================
+
 func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, cfg *Config) error {
 	code := g.Code
 	primaryFile := g.Files[0]
@@ -212,7 +300,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		}
 	}
 
-	// ===== 步骤0：获取 oshash（优先读源目录 oshash-*.txt，没有则 ffprobe）=====
+	// ===== 步骤0：优先用缓存，没有则 ffprobe =====
 	oshash := ""
 	var probeResult *probeResult
 
@@ -234,7 +322,16 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		}
 	}
 
-	// ② 没有则 ffprobe
+	// ② 查本次扫描缓存
+	if oshash == "" && s.probeCache != nil {
+		if pr, ok := s.probeCache[primaryFile]; ok && pr != nil {
+			probeResult = pr
+			oshash = pr.Oshash
+			helpers.AppLogger.Infof("[AV扫描] 复用 ffprobe 缓存: oshash=%s", oshash)
+		}
+	}
+
+	// ③ 缓存没有才 ffprobe
 	if oshash == "" {
 		if url, err := fs.GetURL(primaryFile); err == nil && url != "" {
 			if pr, err := probeVideo(url); err == nil {
@@ -265,7 +362,6 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 	result := r
 	scrapeWarnings := result.Warnings
 
-	// 步骤 1.5 翻译错误
 	if HasTranslateError(scrapeWarnings) {
 		reason := "翻译错误（详见警告列表）"
 		if skipPause {
@@ -347,7 +443,6 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		}
 	}
 
-	// 视频已存在 → 整个跳过
 	if anySkipped {
 		reason := fmt.Sprintf("目标视频已存在：%s", targetDir)
 		for _, f := range g.Files {
@@ -482,7 +577,6 @@ func applyEnsembleTag(r *ScrapeResult) {
 	}
 }
 
-// detectVideoMetaOnly 只做非 ffprobe 部分（ffprobe 已在步骤0 提前完成）
 func (s *Scanner) detectVideoMetaOnly(fs FileSystem, fullPath string, r *ScrapeResult, cfg *Config) {
 	r.IsUncensored = detectUncensored(r.Code)
 	r.HasChineseSub = detectChineseSub(fs, fullPath)
@@ -508,7 +602,6 @@ func resolutionSuffix(res string) string {
 	return ""
 }
 
-// organize 移动视频
 func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVMedia, videoPaths []string, r *ScrapeResult, cfg *Config) (string, bool, error) {
 	relDir := renderTemplate(path.NameTemplate, media)
 	if relDir == "" {
@@ -593,7 +686,7 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		helpers.AppLogger.Infof("[AV水印] %s 准备打水印: %v", r.Code, names)
 	}
 
-	var posterData, fanartData []byte
+	var posterData, fanartData, thumbData []byte
 	const minPosterWidth = 500
 
 	// ===== ① ImageCandidates 筛选（H>W 且 W>=500 → poster；H<W → fanart）=====
@@ -647,6 +740,9 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		helpers.AppLogger.Warnf("[AV元数据] ImageCandidates 里没有高清竖版图，将走兜底")
 	}
 
+	// 暂存原始 fanart 给 thumb 用（DMM 替换时不跟着变）
+	thumbData = fanartData
+
 	// ===== ② DMM 封面兜底（用 r18 给的 content_id 原样拼 mono + digital）=====
 	const dmmMinWidth = 500
 	if posterData == nil && len(r.DMMContentIDs) > 0 {
@@ -682,6 +778,28 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 			posterData = bestData
 			helpers.AppLogger.Infof("[AV元数据] poster 来自 DMM: %dx%d (%s)", bestW, bestH, redactURL(bestURL))
 			warnings = append(warnings, fmt.Sprintf("poster 来自 DMM (%dx%d)", bestW, bestH))
+
+			// ===== 用 DMM 的 pl.jpg 替换 fanart（thumb 不变） =====
+			plURL := strings.Replace(bestURL, "ps.jpg", "pl.jpg", 1)
+			if plURL != bestURL {
+				if plData, err := downloadImage(plURL); err == nil {
+					if plCfg, _, err := image.DecodeConfig(bytes.NewReader(plData)); err == nil {
+						if plCfg.Height < plCfg.Width {
+							fanartData = plData
+							r.Fanart = plURL
+							helpers.AppLogger.Infof("[AV元数据] fanart 替换为 DMM: %dx%d (%s)",
+								plCfg.Width, plCfg.Height, redactURL(plURL))
+							warnings = append(warnings,
+								fmt.Sprintf("fanart 来自 DMM (%dx%d)", plCfg.Width, plCfg.Height))
+						} else {
+							helpers.AppLogger.Infof("[AV元数据] DMM pl.jpg 不是横版 (%dx%d)，保留原 fanart",
+								plCfg.Width, plCfg.Height)
+						}
+					}
+				} else {
+					helpers.AppLogger.Infof("[AV元数据] DMM pl.jpg 下载失败: %v", err)
+				}
+			}
 		}
 	}
 
@@ -731,6 +849,12 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 			helpers.AppLogger.Infof("[AV水印] fanart 已打水印")
 		}
 	}
+	if thumbData != nil && len(watermarks) > 0 {
+		if wm, err := applyWatermark(thumbData, watermarks, cfg.WatermarkWidthPercent); err == nil {
+			thumbData = wm
+			helpers.AppLogger.Infof("[AV水印] thumb 已打水印")
+		}
+	}
 
 	// ===== ⑥ 写文件 =====
 	if posterData != nil {
@@ -751,14 +875,23 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 			files = append(files, LocalFile{LocalPath: p, RemoteName: "fanart.jpg"})
 			r.Fanart = "fanart.jpg"
 		}
-		p2 := filepath.Join(tmpDir, "thumb.jpg")
-		if err := os.WriteFile(p2, fanartData, 0644); err == nil {
-			files = append(files, LocalFile{LocalPath: p2, RemoteName: "thumb.jpg"})
-		}
 	} else {
 		r.Fanart = ""
 		helpers.AppLogger.Warnf("[AV元数据] fanart 最终为 nil，未生成")
 		warnings = append(warnings, "fanart 最终未生成")
+	}
+
+	// thumb 独立于 fanart（DMM 替换 fanart 时 thumb 保留 javstash 原图）
+	if thumbData != nil {
+		p2 := filepath.Join(tmpDir, "thumb.jpg")
+		if err := os.WriteFile(p2, thumbData, 0644); err == nil {
+			files = append(files, LocalFile{LocalPath: p2, RemoteName: "thumb.jpg"})
+		}
+	} else if fanartData != nil {
+		p2 := filepath.Join(tmpDir, "thumb.jpg")
+		if err := os.WriteFile(p2, fanartData, 0644); err == nil {
+			files = append(files, LocalFile{LocalPath: p2, RemoteName: "thumb.jpg"})
+		}
 	}
 
 	// ===== 剧照下载 =====
@@ -838,8 +971,6 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 // DMM 封面 / 剧照辅助函数
 // ============================================================
 
-// dmmCoverCandidates 生成 DMM 封面候选 URL
-// r18 给的 content_id 原样使用，每个 id 生成 mono + digital 两个 URL
 func dmmCoverCandidates(code string, contentIDs []string) []string {
 	seen := map[string]bool{}
 	var urls []string
@@ -853,9 +984,7 @@ func dmmCoverCandidates(code string, contentIDs []string) []string {
 
 	addOneCID := func(cid string) {
 		raw := strings.ToLower(cid)
-		// mono 实体版
 		add(fmt.Sprintf("https://awsimgsrc.dmm.com/dig/mono/movie/%s/%sps.jpg", raw, raw))
-		// digital 数字版
 		add(fmt.Sprintf("https://awsimgsrc.dmm.com/dig/digital/video/%s/%sps.jpg", raw, raw))
 	}
 
@@ -864,7 +993,6 @@ func dmmCoverCandidates(code string, contentIDs []string) []string {
 			addOneCID(cid)
 		}
 	} else {
-		// 没有 r18 id，从番号原样猜（去掉连字符转小写）
 		raw := strings.ToLower(strings.ReplaceAll(code, "-", ""))
 		if raw != "" {
 			addOneCID(raw)
@@ -873,8 +1001,6 @@ func dmmCoverCandidates(code string, contentIDs []string) []string {
 	return urls
 }
 
-// downloadDMMPreviews 下载 DMM 剧照
-// 遇到第一个失败就停
 func downloadDMMPreviews(cid, variant string, max int, startIdx int, tmpDir string, files *[]LocalFile) int {
 	count := 0
 	for i := 1; i <= max; i++ {
@@ -904,7 +1030,6 @@ func downloadDMMPreviews(cid, variant string, max int, startIdx int, tmpDir stri
 // 厂商官网封面兜底（仅 VR）
 // ============================================================
 
-// normalizeURL 把相对/协议相对 URL 补成绝对 URL
 func normalizeURL(base, u string) string {
 	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
 		return u
@@ -920,8 +1045,6 @@ func normalizeURL(base, u string) string {
 	return ""
 }
 
-// tryDownloadCover 下载图片，检查是否为竖版且宽高比 ≥ 0.70
-// 封面比例约 0.735（3:4），剧照约 0.667（2:3）
 func tryDownloadCover(imgURL, referer string) ([]byte, int, int, bool) {
 	req, err := http.NewRequest("GET", imgURL, nil)
 	if err != nil {
@@ -948,16 +1071,12 @@ func tryDownloadCover(imgURL, referer string) ([]byte, int, int, bool) {
 	if err != nil {
 		return nil, 0, 0, false
 	}
-
-	// 1. 必须竖版
 	if imgCfg.Height <= imgCfg.Width {
 		return nil, imgCfg.Width, imgCfg.Height, false
 	}
-	// 2. 宽度下限
 	if imgCfg.Width < 500 {
 		return nil, imgCfg.Width, imgCfg.Height, false
 	}
-	// 3. 宽高比 ≥ 0.70
 	ratio := float64(imgCfg.Width) / float64(imgCfg.Height)
 	if ratio < 0.70 {
 		return nil, imgCfg.Width, imgCfg.Height, false
@@ -965,12 +1084,6 @@ func tryDownloadCover(imgURL, referer string) ([]byte, int, int, bool) {
 	return data, imgCfg.Width, imgCfg.Height, true
 }
 
-// fetchOfficialCoverData 从厂商官网抓取高清竖版封面
-// 策略：抓 HTML → 提取所有 swiper-lazy 图 → 下载所有候选 → 选宽高比最大的竖版图
-//   - 封面：比例 ≈ 0.735（3:4）
-//   - 剧照：比例 ≈ 0.667（2:3）
-//   - 选比例最大 = 选封面
-// 命中返回 (data, w, h, srcURL)；失败返回 (nil, 0, 0, "")
 func fetchOfficialCoverData(pageURL string) ([]byte, int, int, string) {
 	if pageURL == "" {
 		return nil, 0, 0, ""
@@ -1001,7 +1114,6 @@ func fetchOfficialCoverData(pageURL string) ([]byte, int, int, string) {
 	}
 	html := string(body)
 
-	// 提取所有 swiper-lazy 图（去重）
 	var candidates []string
 	seen := map[string]bool{}
 	for _, m := range swiperLazyRegex.FindAllStringSubmatch(html, -1) {
@@ -1015,7 +1127,6 @@ func fetchOfficialCoverData(pageURL string) ([]byte, int, int, string) {
 		return nil, 0, 0, ""
 	}
 
-	// 下载所有候选，选宽高比最大的竖版图
 	type result struct {
 		data  []byte
 		w, h  int
@@ -1090,7 +1201,6 @@ func walkVideos(fs FileSystem, root string, depth int) ([]string, error) {
 		if !videoExts[ext] {
 			continue
 		}
-		// Size 为 0 说明信息不全，先收进来（让后续流程处理）
 		if e.Size == 0 || e.Size >= cleanupBigVideoSize {
 			videos = append(videos, e.Path)
 		}
