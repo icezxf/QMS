@@ -74,107 +74,11 @@ type probeResult struct {
 }
 
 // ============================================================
-// 方案 1：ffprobe 直接读 URL（用 -headers 传 OpenList 的 header）
+// 下载头尾工具函数
 // ============================================================
 
-// probeVideoByURL 让 ffprobe 直接请求 URL
-// 把 OpenList 缓存的 header 通过 -headers 参数传给 ffprobe
-func probeVideoByURL(videoURL string) (*probeResult, error) {
-	if videoURL == "" {
-		return nil, fmt.Errorf("空 URL")
-	}
-
-	// 拼 -headers 参数：格式是 "Key: value\r\n" 每行一条
-	var headersStr string
-	if h := getURLHeader(videoURL); h != nil {
-		var sb strings.Builder
-		for k, vs := range h {
-			for _, v := range vs {
-				sb.WriteString(k)
-				sb.WriteString(": ")
-				sb.WriteString(v)
-				sb.WriteString("\r\n")
-			}
-		}
-		headersStr = sb.String()
-		helpers.AppLogger.Infof("[AV探测] ffprobe 使用 header: %s", headersStr)
-	} else {
-		helpers.AppLogger.Infof("[AV探测] 未找到 header 缓存，ffprobe 无自定义 header")
-	}
-
-	args := []string{
-		"-v", "error",
-		"-print_format", "json",
-		"-show_format",
-		"-show_streams",
-		"-analyzeduration", "5000000",
-		"-probesize", "2000000",
-	}
-	if headersStr != "" {
-		args = append(args, "-headers", headersStr)
-	}
-	args = append(args, videoURL)
-
-	cmd := exec.Command("ffprobe", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Run()
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			return nil, fmt.Errorf("ffprobe 失败: %v, stderr=%s", err, stderr.String())
-		}
-	case <-time.After(60 * time.Second):
-		_ = cmd.Process.Kill()
-		return nil, fmt.Errorf("ffprobe 超时")
-	}
-
-	var result struct {
-		Streams []struct {
-			Width     int    `json:"width"`
-			Height    int    `json:"height"`
-			PixFmt    string `json:"pix_fmt"`
-			ColorTrc  string `json:"color_transfer"`
-			CodecName string `json:"codec_name"`
-		} `json:"streams"`
-		Format struct {
-			Size     string `json:"size"`
-			Duration string `json:"duration"`
-		} `json:"format"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		return nil, fmt.Errorf("解析 ffprobe 输出失败: %w", err)
-	}
-	if len(result.Streams) == 0 {
-		return nil, fmt.Errorf("ffprobe 无视频流")
-	}
-
-	s := result.Streams[0]
-	pr := &probeResult{
-		Resolution: classifyResolution(s.Width, s.Height),
-		IsHDR:      isHDRPixelFormat(s.PixFmt, s.ColorTrc),
-	}
-
-	// 从 format 里拿文件大小
-	if result.Format.Size != "" {
-		fmt.Sscanf(result.Format.Size, "%d", &pr.FileSize)
-	}
-
-	helpers.AppLogger.Infof("[AV探测] %dx%d → %s, HDR=%v, size=%d",
-		s.Width, s.Height, pr.Resolution, pr.IsHDR, pr.FileSize)
-	return pr, nil
-}
-
-// ============================================================
-// 方案 2：下载 2MB 到本地再 ffprobe（作为回退）
-// ============================================================
-
+// downloadHead 下载文件头 nBytes 字节到临时文件
+// 返回 (临时文件路径, 文件总大小, error)
 func downloadHead(url string, nBytes int64) (string, int64, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -237,6 +141,7 @@ func downloadHead(url string, nBytes int64) (string, int64, error) {
 	return tmpPath, fileSize, nil
 }
 
+// downloadTail 下载文件尾部 64KB
 func downloadTail(url string, fileSize int64) ([]byte, error) {
 	if fileSize < 128*1024 {
 		return nil, fmt.Errorf("文件太小")
@@ -272,6 +177,7 @@ func downloadTail(url string, fileSize int64) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
+// computeOshash OpenSubtitles Hash 算法
 func computeOshash(head, tail []byte, fileSize int64) string {
 	const chunkSize = 64 * 1024
 	if fileSize < 2*chunkSize {
@@ -287,12 +193,10 @@ func computeOshash(head, tail []byte, fileSize int64) string {
 	return fmt.Sprintf("%016x", hash)
 }
 
-// ===== 新增：导出给 aven 包用 =====
-// ComputeOshash 计算 osHash（头尾各 64KB，起始值 = fileSize）
+// ComputeOshash 导出给 aven 包用
 func ComputeOshash(head, tail []byte, fileSize int64) string {
 	return computeOshash(head, tail, fileSize)
 }
-// =================================
 
 func redactURL(raw string) string {
 	if len(raw) > 200 {
@@ -301,31 +205,51 @@ func redactURL(raw string) string {
 	return raw
 }
 
-// probeVideoLocal 下载头尾 → ffprobe 读本地 → 算 oshash
+// ============================================================
+// 本地探测：下载头 2MB + 尾 64KB → ffprobe 本地文件 + 算 oshash
+// 网络请求固定 2 次（头 + 尾），一次拿全分辨率/HDR/大小/oshash
+// ============================================================
+
 func probeVideoLocal(videoURL string) (*probeResult, error) {
 	if videoURL == "" {
 		return nil, fmt.Errorf("空 URL")
 	}
 
 	const headSize = 2 * 1024 * 1024
-	tmpPath, fileSize, err := downloadHead(videoURL, headSize)
+	headPath, fileSize, err := downloadHead(videoURL, headSize)
 	if err != nil {
 		return nil, fmt.Errorf("下载文件头失败: %w", err)
 	}
-	defer os.Remove(tmpPath)
+	defer os.Remove(headPath)
 
-	headData, err := os.ReadFile(tmpPath)
+	headData, err := os.ReadFile(headPath)
 	if err != nil {
 		return nil, err
 	}
 
+	// ===== 并发：本地 ffprobe + 下载尾部 64KB =====
+	type tailResult struct {
+		data []byte
+		err  error
+	}
+	tailCh := make(chan tailResult, 1)
+	go func() {
+		if fileSize > 128*1024 {
+			d, e := downloadTail(videoURL, fileSize)
+			tailCh <- tailResult{d, e}
+		} else {
+			tailCh <- tailResult{nil, fmt.Errorf("文件太小")}
+		}
+	}()
+
+	// 本地 ffprobe
 	args := []string{
 		"-v", "error",
 		"-print_format", "json",
 		"-show_streams",
 		"-analyzeduration", "5000000",
 		"-probesize", "2000000",
-		tmpPath,
+		headPath,
 	}
 	cmd := exec.Command("ffprobe", args...)
 	var stdout, stderr bytes.Buffer
@@ -370,41 +294,31 @@ func probeVideoLocal(videoURL string) (*probeResult, error) {
 		FileSize:   fileSize,
 	}
 
-	if fileSize > 128*1024 {
-		tailData, err := downloadTail(videoURL, fileSize)
-		if err == nil {
-			pr.Oshash = computeOshash(headData, tailData, fileSize)
-			if pr.Oshash != "" {
-				helpers.AppLogger.Infof("[AV探测] oshash=%s", pr.Oshash)
-			}
-		} else {
-			helpers.AppLogger.Warnf("[AV探测] 下载尾部失败，跳过 oshash: %v", err)
+	// 等尾部下载完成，算 oshash
+	tail := <-tailCh
+	if tail.err == nil {
+		pr.Oshash = computeOshash(headData, tail.data, fileSize)
+		if pr.Oshash != "" {
+			helpers.AppLogger.Infof("[AV探测] oshash=%s", pr.Oshash)
 		}
+	} else {
+		helpers.AppLogger.Warnf("[AV探测] 下载尾部失败，跳过 oshash: %v", tail.err)
 	}
 
-	helpers.AppLogger.Infof("[AV探测] %dx%d → %s, HDR=%v", s.Width, s.Height, pr.Resolution, pr.IsHDR)
+	helpers.AppLogger.Infof("[AV探测] %dx%d → %s, HDR=%v, size=%d",
+		s.Width, s.Height, pr.Resolution, pr.IsHDR, pr.FileSize)
 	return pr, nil
 }
 
 // ============================================================
 // probeVideo 统一入口
-// 优先走方案 1（ffprobe 直读 URL），失败回退到方案 2（下载 2MB 本地读）
+// 走方案 2：下载头 2MB + 尾 64KB → ffprobe 本地 + 算 oshash
 // ============================================================
 func probeVideo(videoURL string) (*probeResult, error) {
 	if videoURL == "" {
 		return nil, fmt.Errorf("空 URL")
 	}
-
-	// 方案 1：ffprobe 直接读 URL
-	helpers.AppLogger.Infof("[AV探测] 尝试 ffprobe 直读 URL")
-	pr, err := probeVideoByURL(videoURL)
-	if err == nil && pr.Resolution != "" {
-		return pr, nil
-	}
-	helpers.AppLogger.Warnf("[AV探测] ffprobe 直读失败，回退下载头部方案: %v", err)
-
-	// 方案 2：下载头部到本地再 ffprobe
-	helpers.AppLogger.Infof("[AV探测] 回退：下载头部到本地")
+	helpers.AppLogger.Infof("[AV探测] 下载头尾本地探测（一次拿分辨率+oshash）")
 	return probeVideoLocal(videoURL)
 }
 
