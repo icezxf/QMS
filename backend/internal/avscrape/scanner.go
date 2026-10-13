@@ -207,7 +207,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 
 	// ===== 步骤0：获取 oshash（优先读源目录 oshash-*.txt，没有则 ffprobe）=====
 	oshash := ""
-	var probeResult *probeResult
+	var probeResult *ProbeResult
 
 	// ① 优先读源目录 oshash-*.txt（从文件名提取 oshash 值）
 	srcDir := filepath.Dir(primaryFile)
@@ -587,8 +587,9 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 	}
 
 	var posterData, fanartData []byte
+	const minPosterWidth = 500
 
-	// ===== ① ImageCandidates 筛选（H>W → poster，H<W → fanart）=====
+	// ===== ① ImageCandidates 筛选（H>W 且 W>=500 → poster；H<W → fanart）=====
 	candidates := r.ImageCandidates
 	if len(candidates) == 0 {
 		if r.Poster != "" {
@@ -614,9 +615,15 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 			continue
 		}
 		helpers.AppLogger.Infof("[AV元数据]   [%d] %dx%d (%s)", i, imgCfg.Width, imgCfg.Height, redactURL(url))
-		if posterData == nil && imgCfg.Height > imgCfg.Width {
-			posterData = data
-			helpers.AppLogger.Infof("[AV元数据]   → 作为 poster")
+		if imgCfg.Height > imgCfg.Width {
+			if imgCfg.Width >= minPosterWidth {
+				if posterData == nil {
+					posterData = data
+					helpers.AppLogger.Infof("[AV元数据]   → 作为 poster (%dx%d)", imgCfg.Width, imgCfg.Height)
+				}
+			} else {
+				helpers.AppLogger.Infof("[AV元数据]   → 竖版但低清 (%dx%d < %d)，丢弃", imgCfg.Width, imgCfg.Height, minPosterWidth)
+			}
 		}
 		if fanartData == nil && imgCfg.Height < imgCfg.Width {
 			fanartData = data
@@ -630,10 +637,10 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 	}
 
 	if posterData == nil {
-		helpers.AppLogger.Warnf("[AV元数据] ImageCandidates 里没有竖版图，将走兜底")
+		helpers.AppLogger.Warnf("[AV元数据] ImageCandidates 里没有高清竖版图，将走兜底")
 	}
 
-	// ===== ② DMM 封面兜底（r18 给的 content_id 原样拼 mono + digital）=====
+	// ===== ② DMM 封面兜底（用 r18 给的 content_id 原样拼 mono + digital）=====
 	const dmmMinWidth = 500
 	if posterData == nil && len(r.DMMContentIDs) > 0 {
 		var bestData []byte
@@ -759,10 +766,8 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 				if remaining <= 0 {
 					break
 				}
-				// 先试 digital
 				count := downloadDMMPreviews(cid, "digital", remaining, successCount, tmpDir, &files)
 				if count == 0 {
-					// digital 全失败，试 mono
 					count = downloadDMMPreviews(cid, "mono", remaining, successCount, tmpDir, &files)
 				}
 				if count > 0 {
@@ -814,7 +819,6 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 
 // dmmCoverCandidates 生成 DMM 封面候选 URL
 // r18 给的 content_id 原样使用，每个 id 生成 mono + digital 两个 URL
-// 全部下载，调用方比分辨率选最高清
 func dmmCoverCandidates(code string, contentIDs []string) []string {
 	seen := map[string]bool{}
 	var urls []string
@@ -849,8 +853,6 @@ func dmmCoverCandidates(code string, contentIDs []string) []string {
 }
 
 // downloadDMMPreviews 下载 DMM 剧照
-// cid: content_id；variant: "digital" 或 "mono"
-// max: 最多下载多少张；startIdx: 已成功数量（用于命名避免冲突）
 // 遇到第一个失败就停
 func downloadDMMPreviews(cid, variant string, max int, startIdx int, tmpDir string, files *[]LocalFile) int {
 	count := 0
@@ -863,7 +865,7 @@ func downloadDMMPreviews(cid, variant string, max int, startIdx int, tmpDir stri
 		}
 		data, err := downloadImage(url)
 		if err != nil {
-			break // 连续失败，停止
+			break
 		}
 		idx := startIdx + count + 1
 		localPath := filepath.Join(tmpDir, fmt.Sprintf("fanart%d.jpg", idx))
