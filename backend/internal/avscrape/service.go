@@ -109,13 +109,14 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	// ===== 合并多源 =====
 	best := mergeResults(allResults, cfg)
 
-	// ===== 从 r18.dev 链接提取 content_id =====
+	// ===== 从 r18.dev 链接提取 content_id（可能多个） =====
+	seenCID := map[string]bool{}
 	for _, u := range best.Urls {
-		if strings.Contains(u, "r18.dev/videos/vod/movies/detail") {
-			if cid := extractR18ContentID(u); cid != "" {
-				best.DMMContentID = cid
+		if strings.Contains(u, "r18.dev") {
+			if cid := extractR18ContentID(u); cid != "" && !seenCID[cid] {
+				best.DMMContentIDs = append(best.DMMContentIDs, cid)
+				seenCID[cid] = true
 				helpers.AppLogger.Infof("[AV刮削] 从 r18.dev 提取到 content_id: %s", cid)
-				break
 			}
 		}
 	}
@@ -123,7 +124,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	// ===== 收集警告 =====
 	var warnings []string
 
-	// 演员维基翻译
+	// 演员维基翻译（不进批量翻译）
 	wikiClient := NewWikiClient()
 	translatedActors, actorWarnings := wikiClient.TranslateActorNames(best.Actors)
 	best.Actors = translatedActors
@@ -133,7 +134,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		helpers.AppLogger.Infof("[片商] 使用数据源原始值: %s", best.Studio)
 	}
 
-	// ===== JavDB 评分（候选番号依次尝试） =====
+	// ===== JavDB 评分 =====
 	if cfg.EnableJavDBRating {
 		client := NewJavDBClient(cfg.JavDBCookie)
 		candidates := javdbCodeCandidates(code)
@@ -159,7 +160,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		}
 	}
 
-	// ===== 批量翻译 =====
+	// ===== 批量翻译（标题 + 简介 + 标签，演员走 Wiki） =====
 	if cfg.EnableTranslate {
 		tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.DeepLKey = cfg.TranslateDeepLKey
@@ -197,7 +198,6 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 }
 
 // extractR18ContentID 从 r18.dev 链接提取 content_id
-// 例：https://r18.dev/videos/vod/movies/detail/-/id=13dsvr01766/ → 13dsvr01766
 func extractR18ContentID(url string) string {
 	re := regexp.MustCompile(`(?:id|combined)=([^/?]+)`)
 	m := re.FindStringSubmatch(url)
@@ -216,8 +216,7 @@ func stripLeadingDigits(s string) string {
 	return s[i:]
 }
 
-// stripNumberLeadingZeros 去掉番号数字部分的前导零
-// DSVR-0932 → DSVR-932
+// stripNumberLeadingZeros 去掉番号数字部分的前导零，DSVR-0932 → DSVR-932
 func stripNumberLeadingZeros(s string) string {
 	sep := -1
 	for i := len(s) - 1; i >= 0; i-- {
