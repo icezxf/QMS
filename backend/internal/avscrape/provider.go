@@ -53,6 +53,8 @@ type ScrapeResult struct {
 	ProviderID string `json:"-"`
 
 	ImageCandidates []string `json:"-"`
+		// ===== 新增：DMM content_id（从 r18.dev 链接提取）=====
+	DMMContentID string `json:"dmm_content_id,omitempty"`
 
 	// ===== 新增：刮削过程中的警告 =====
 	Warnings []string `json:"-"`
