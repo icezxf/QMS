@@ -33,6 +33,7 @@ func Register(r *gin.Engine, db *gorm.DB) error {
 
 		g.GET("/tasks", ctrl.ListTasks)
 		g.DELETE("/tasks", ctrl.ClearTasks)
+		g.POST("/tasks/clear-and-reset", ctrl.ClearTasksAndResetID)  // ← 新增
 	}
 	return nil
 }
