@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"qmediasync/internal/avscrape"
 	"qmediasync/internal/helpers"
