@@ -9,6 +9,16 @@ import (
 	"qmediasync/internal/models"
 )
 
+// xmlEscape XML 特殊字符转义（用于不能用 CDATA 的字段）
+func xmlEscape(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, "\"", "&quot;")
+	s = strings.ReplaceAll(s, "'", "&apos;")
+	return s
+}
+
 // GenerateNFON 生成欧美 NFO（和日本 AV 格式一致，但内容全是英文/翻译后的中文）
 func GenerateNFON(r *avscrape.ScrapeResult) string {
 	if r == nil {
@@ -53,15 +63,14 @@ func GenerateNFON(r *avscrape.ScrapeResult) string {
 		sb.WriteString(fmt.Sprintf("  <series><![CDATA[%s]]></series>\n", r.Series))
 	}
 
-	// ===== 多演员（>=2）→ 加 <set> 合集 "共演"（和日本 AV 一致）=====
+	// ===== 多演员（>=2）→ 加 <set> 合集 "共演" =====
 	if len(r.Actors) >= 2 {
 		sb.WriteString("  <set>\n")
 		sb.WriteString("    <name>共演</name>\n")
 		sb.WriteString("  </set>\n")
 	}
-	// =================================================================
+	// ==============================================
 
-	// 评分：StashDB 没有，留空
 	if r.Rating > 0 {
 		sb.WriteString(fmt.Sprintf("  <rating>%.2f</rating>\n", r.Rating))
 	}
@@ -94,18 +103,19 @@ func GenerateNFON(r *avscrape.ScrapeResult) string {
 	}
 	// =====================================
 
-	for _, a := range r.Actors {
+	// ===== 演员：name 用 XML 转义，不用 CDATA =====
+	for idx, a := range r.Actors {
 		sb.WriteString("  <actor>\n")
-		sb.WriteString(fmt.Sprintf("    <name><![CDATA[%s]]></name>\n", a.Name))
+		sb.WriteString(fmt.Sprintf("    <name>%s</name>\n", xmlEscape(a.Name)))
+		sb.WriteString("    <role></role>\n")
+		sb.WriteString(fmt.Sprintf("    <order>%d</order>\n", idx))
 		sb.WriteString("    <type>Actor</type>\n")
-		if a.Role != "" {
-			sb.WriteString(fmt.Sprintf("    <role><![CDATA[%s]]></role>\n", a.Role))
-		}
 		if a.Image != "" {
-			sb.WriteString(fmt.Sprintf("    <thumb>%s</thumb>\n", a.Image))
+			sb.WriteString(fmt.Sprintf("    <thumb>%s</thumb>\n", xmlEscape(a.Image)))
 		}
 		sb.WriteString("  </actor>\n")
 	}
+	// ================================================
 
 	for _, u := range r.Urls {
 		sb.WriteString(fmt.Sprintf("  <website>%s</website>\n", u))
