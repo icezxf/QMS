@@ -249,7 +249,10 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		return fmt.Errorf("刮削结果为空")
 	}
 
-	baseName := sanitizePathN(result.Title)
+	baseName := sanitizePathN(result.Code)
+	if baseName == "" {
+		baseName = sanitizePathN(result.Title)
+	}
 	if baseName == "" {
 		baseName = sanitizePathN(strings.TrimSuffix(fileName, filepath.Ext(fileName)))
 	}
