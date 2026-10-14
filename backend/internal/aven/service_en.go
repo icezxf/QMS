@@ -167,7 +167,7 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filt
 		tr.GoogleTranslateForAll = cfg.GoogleTranslateForAll
 
 		helpers.AppLogger.Infof("[欧美翻译] 开始翻译 (engine=%s)", cfg.TranslateEngine)
-		warnings = append(warnings, s.(tr, r, cfg)...)
+		warnings = append(warnings, s.translateResultN(tr, r, cfg)...)
 	}
 
 	r.Warnings = warnings
