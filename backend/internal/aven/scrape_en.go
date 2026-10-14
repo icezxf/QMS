@@ -290,7 +290,15 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 			files = append(files, avscrape.LocalFile{LocalPath: p, RemoteName: "trailers/trailer.strm"})
 		}
 	}
-
+	// ===== oshash 文件：随元数据一起上传到目标目录 =====
+	if r.Oshash != "" {
+		oshashName := fmt.Sprintf("oshash-%s.txt", r.Oshash)
+		oshashPath := filepath.Join(tmpDir, oshashName)
+		if err := os.WriteFile(oshashPath, []byte(r.Oshash+"\n"), 0644); err == nil {
+			files = append(files, avscrape.LocalFile{LocalPath: oshashPath, RemoteName: oshashName})
+			helpers.AppLogger.Infof("[欧美元数据] 生成 oshash 文件: %s", oshashName)
+		}
+	}
 	// NFO
 	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
 	if err := os.WriteFile(nfoPath, []byte(GenerateNFON(r)), 0644); err != nil {
