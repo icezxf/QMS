@@ -90,7 +90,7 @@
         </el-form-item>
 
         <el-form-item label="命名模板">
-          <el-input v-model="form.name_template" placeholder="{resolution}/{actors}/{title}" />
+          <el-input v-model="form.name_template" placeholder="{resolution}/{actors}/{code}" />
           <div class="template-hint">
             可用变量：<code>{resolution}</code> 分辨率、
             <code>{actor}</code> 首个演员、
