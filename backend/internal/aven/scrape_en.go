@@ -438,9 +438,10 @@ func sanitizePathN(s string) string {
 		return ""
 	}
 	replacer := strings.NewReplacer(
-		"/", "_", "\\", "_", ":", "：", "*", "_",
-		"?", "？", "\"", "'", "<", "《", ">", "》", "|", "_",
-	)
+    "/", "_", "\\", "_", ":", "：", "*", "_",
+    "?", "？", "\"", "'", "<", "《", ">", "》", "|", "_",
+    "：", "_",
+)
 	return strings.TrimSpace(replacer.Replace(s))
 }
 
