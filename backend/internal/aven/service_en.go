@@ -167,82 +167,23 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filt
 		tr.GoogleTranslateForAll = cfg.GoogleTranslateForAll
 
 		helpers.AppLogger.Infof("[欧美翻译] 开始翻译 (engine=%s)", cfg.TranslateEngine)
-		warnings = append(warnings, s.translateResultN(tr, r, cfg)...)
+		warnings = append(warnings, s.(tr, r, cfg)...)
 	}
 
 	r.Warnings = warnings
 	return r, pr.Oshash, nil
 }
 
-// translateResultN 欧美翻译（标签走批量）
+//  欧美翻译（标签走批量）
 func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.ScrapeResult, cfg *Config) []string {
-	var warnings []string
 	if r == nil {
-		return warnings
+		return nil
 	}
-
-	// ===== Google 全量优先：直接切引擎 =====
 	if cfg.GoogleTranslateForAll && cfg.GoogleTranslateAPIKey != "" {
-		helpers.AppLogger.Infof("[欧美翻译] 切换到 Google Cloud 引擎（全量）")
 		tr.Engine = "google_cloud"
 	}
-
 	r.PlotOriginal = r.Plot
-
-	// 标题
-	if cfg.TranslateTitle && r.Title != "" {
-		if t, err := tr.Translate(r.Title); err == nil && t != "" && t != r.Title {
-			old := r.Title
-			r.Title = t
-			helpers.AppLogger.Infof("[欧美翻译] 标题: %s -> %s", truncate(old, 30), truncate(t, 30))
-		} else if err != nil {
-			warnings = append(warnings,
-				avscrape.TranslateErrorPrefix+fmt.Sprintf("标题翻译失败: %v", err))
-		}
-	}
-
-	// 简介
-	if cfg.TranslatePlot && r.Plot != "" {
-		if t, err := tr.Translate(r.Plot); err == nil && t != "" {
-			r.Plot = t
-			helpers.AppLogger.Infof("[欧美翻译] 简介: %s", truncate(t, 50))
-		} else if err != nil {
-			warnings = append(warnings,
-				avscrape.TranslateErrorPrefix+fmt.Sprintf("简介翻译失败: %v", err))
-		}
-	}
-
-	// 标签：批量翻译，一次请求翻全部，避免 DeepL 429
-	if cfg.TranslateTags && len(r.Genres) > 0 {
-		var tagTexts []string
-		var tagIndices []int
-		for i, g := range r.Genres {
-			if g == "" {
-				continue
-			}
-			tagTexts = append(tagTexts, g)
-			tagIndices = append(tagIndices, i)
-		}
-
-		if len(tagTexts) > 0 {
-			results, err := tr.TranslateBatch(tagTexts)
-			if err != nil {
-				warnings = append(warnings,
-					avscrape.TranslateErrorPrefix+fmt.Sprintf("标签批量翻译失败: %v", err))
-			} else {
-				translated := 0
-				for k, idx := range tagIndices {
-					if k < len(results) && results[k] != "" && results[k] != tagTexts[k] {
-						r.Genres[idx] = results[k]
-						translated++
-					}
-				}
-				helpers.AppLogger.Infof("[欧美翻译] 标签批量翻译完成: %d/%d", translated, len(tagTexts))
-			}
-		}
-	}
-
-	return warnings
+	return tr.TranslateResultBatch(r)
 }
 
 // buildExtraTagsN 欧美附加标签
