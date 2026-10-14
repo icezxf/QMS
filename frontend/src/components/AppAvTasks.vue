@@ -24,6 +24,7 @@
         </el-input>
       </div>
       <div class="toolbar-right">
+        <el-button type="warning" size="small" @click="clearAndResetId">清空并重置 ID</el-button>
         <el-button type="danger" size="small" @click="clearAll">清空记录</el-button>
       </div>
     </div>
@@ -192,6 +193,22 @@ const clearAll = async () => {
     load()
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error('清空失败')
+  }
+}
+
+// 新增：清空并重置 ID
+const clearAndResetId = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '将清空所有任务记录，并把任务 ID 从 1 开始。确定？',
+      '警告',
+      { type: 'warning' }
+    )
+    const res = await axios.post('/api/avscrape/tasks/clear-and-reset')
+    ElMessage.success(res.data?.msg || '已清空并重置 ID')
+    load()
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error('操作失败')
   }
 }
 
