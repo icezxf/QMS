@@ -311,7 +311,7 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 func OrganizeN(fs avscrape.FileSystem, path *models.AVENPath, media *models.AVENMedia, videoPaths []string, r *avscrape.ScrapeResult) (string, bool, error) {
 	relDir := renderTemplateN(path.NameTemplate, media)
 	if relDir == "" {
-		relDir = media.Title
+		relDir = sanitizePathN(media.Code)
 	}
 	targetDir := strings.TrimRight(path.TargetPath, "/") + "/" + relDir
 	if err := fs.MkdirAll(targetDir); err != nil {
@@ -329,7 +329,7 @@ func OrganizeN(fs avscrape.FileSystem, path *models.AVENPath, media *models.AVEN
 	for _, srcPath := range videoPaths {
 		originalName := filepath.Base(srcPath)
 		ext := filepath.Ext(originalName)
-		newName := media.Title + resSuffix + ext
+		newName := sanitizePathN(media.Code) + resSuffix + ext
 		newPath := targetDir + "/" + newName
 
 		if fs.Exists(newPath) {
@@ -405,7 +405,7 @@ func renderTemplateN(tpl string, media *models.AVENMedia) string {
 		"{year}", extractYearN(media.ReleaseDate),
 		"{studio}", sanitizePathN(media.Studio),
 		"{series}", sanitizePathN(media.Series),
-		"{code}", sanitizePathN(media.StashID),
+		"{code}", sanitizePathN(media.Code),
 		"{resolution}", sanitizePathN(media.Resolution),
 	)
 
@@ -426,25 +426,7 @@ func renderTemplateN(tpl string, media *models.AVENMedia) string {
 }
 
 func defaultNameTemplateN(media *models.AVENMedia) string {
-	var actors []avscrape.Actor
-	if media.Actors != "" {
-		_ = json.Unmarshal([]byte(media.Actors), &actors)
-	}
-	names := make([]string, 0, len(actors))
-	for _, a := range actors {
-		if a.Name != "" {
-			names = append(names, a.Name)
-		}
-	}
-	actorDir := "Unknown"
-	if len(names) == 1 {
-		actorDir = names[0]
-	} else if len(names) >= 2 && len(names) <= 3 {
-		actorDir = strings.Join(names, ",")
-	} else if len(names) > 3 {
-		actorDir = "多人作品"
-	}
-	return sanitizePathN(actorDir) + "/" + sanitizePathN(media.Title)
+	return sanitizePathN(media.Code)
 }
 
 func sanitizePathN(s string) string {
