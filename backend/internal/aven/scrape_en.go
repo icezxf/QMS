@@ -329,7 +329,11 @@ func OrganizeN(fs avscrape.FileSystem, path *models.AVENPath, media *models.AVEN
 	for _, srcPath := range videoPaths {
 		originalName := filepath.Base(srcPath)
 		ext := filepath.Ext(originalName)
-		newName := sanitizePathN(media.Code) + resSuffix + ext
+		fileNameBase := sanitizePathN(media.Code)
+		if fileNameBase == "" {
+		    fileNameBase = sanitizePathN(media.Title)
+		}
+		newName := fileNameBase + resSuffix + ext
 		newPath := targetDir + "/" + newName
 
 		if fs.Exists(newPath) {
