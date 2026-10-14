@@ -21,7 +21,7 @@ type Migrator struct {
 }
 
 // ===== 改动 1：MaxVersionCode 从 66 改成 67 =====
-var MaxVersionCode = 68
+var MaxVersionCode = 69
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
