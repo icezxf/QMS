@@ -717,6 +717,14 @@ func Migrate() {
 		helpers.AppLogger.Info("已添加 AV 目录的 is_vr 字段")
 		migrator.UpdateVersionCode(db.Db)
 	}
+	if migrator.VersionCode == 68 {
+    if err := db.Db.AutoMigrate(AVENMedia{}); err != nil {
+        helpers.AppLogger.Errorf("迁移 AVENMedia.Code 字段失败：%v", err)
+        return
+    }
+    helpers.AppLogger.Info("已添加 AVENMedia.Code 字段")
+    migrator.UpdateVersionCode(db.Db)
+}
 	// ==================================================
 	// ============================================================
 	if migrator.VersionCode == MaxVersionCode {
