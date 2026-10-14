@@ -32,6 +32,7 @@ require (
 	gorm.io/driver/postgres v1.6.3
 	gorm.io/gorm v1.31.2
 	resty.dev/v3 v3.0.0-rc.4
+    golang.org/x/image
 )
 
 require (
