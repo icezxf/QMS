@@ -55,6 +55,7 @@ func (s *ServiceEN) GetTPDB() *TPDBClient {
 	}
 	return NewTPDBClient(cfg.TPDBEndpoint, cfg.TPDBAPIKey)
 }
+
 // ==========================================================
 
 // ScrapeByURL 通过视频 URL 刮削
@@ -76,6 +77,11 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filt
 	}
 	if pr.Oshash == "" {
 		return nil, "", fmt.Errorf("osHash 为空（文件可能太小）")
+	}
+
+	// 1.1 分辨率必须由 ffprobe 探测到，否则失败（不猜文件名）
+	if pr.Resolution == "" {
+		return nil, pr.Oshash, fmt.Errorf("ffprobe 未探测到分辨率")
 	}
 
 	// 1.5 提前检查 filter
@@ -174,7 +180,7 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filt
 	return r, pr.Oshash, nil
 }
 
-//  欧美翻译（标签走批量）
+// translateResultN 欧美翻译（批量）
 func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.ScrapeResult, cfg *Config) []string {
 	if r == nil {
 		return nil
@@ -293,5 +299,3 @@ func (s *ServiceEN) GetMedia(id uint) (*models.AVENMedia, error) {
 	err := s.DB.First(&m, id).Error
 	return &m, err
 }
-
-var _ = strings.TrimSpace
