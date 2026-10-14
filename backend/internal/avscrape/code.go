@@ -25,21 +25,8 @@ func normalizeNumPart(num string) string {
 	return trimmed
 }
 
-func ExtractCode(filename string) string {
-	name := filename
-	if idx := strings.LastIndex(name, "."); idx > 0 {
-		name = name[:idx]
-	}
-	name = strings.ToUpper(name)
-
-	// FC2 特殊处理
-	if strings.Contains(name, "FC2") {
-		re := regexp.MustCompile(`FC2[-_]?PPV[-_]?(\d{5,7})`)
-		if m := re.FindStringSubmatch(name); len(m) > 1 {
-			return "FC2-PPV-" + m[1]
-		}
-	}
-
+// matchCodePart 对一段字符串跑番号正则
+func matchCodePart(name string) string {
 	for _, re := range codePatterns {
 		m := re.FindStringSubmatch(name)
 		if len(m) < 3 {
@@ -71,6 +58,32 @@ func ExtractCode(filename string) string {
 		return prefix + "-" + normalizeNumPart(num)
 	}
 	return ""
+}
+
+func ExtractCode(filename string) string {
+	name := filename
+	if idx := strings.LastIndex(name, "."); idx > 0 {
+		name = name[:idx]
+	}
+	name = strings.ToUpper(name)
+
+	// FC2 特殊处理
+	if strings.Contains(name, "FC2") {
+		re := regexp.MustCompile(`FC2[-_]?PPV[-_]?(\d{5,7})`)
+		if m := re.FindStringSubmatch(name); len(m) > 1 {
+			return "FC2-PPV-" + m[1]
+		}
+	}
+
+	// 优先从 @ 后面开始（跳过 4k2.me@ / hkbisi.com@ / 489155.com@ 这类域名前缀）
+	if at := strings.LastIndex(name, "@"); at >= 0 && at < len(name)-1 {
+		if code := matchCodePart(name[at+1:]); code != "" {
+			return code
+		}
+	}
+
+	// 整体匹配（没有 @ 或 @ 后面没匹配到）
+	return matchCodePart(name)
 }
 
 func ExtractCodeFromPath(path string) string {
