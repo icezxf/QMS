@@ -1798,3 +1798,19 @@ func ResetSequence(tableName string, columnName string) error {
 	sequenceName := fmt.Sprintf("%s_%s_seq", tableName, columnName)
 	return db.Db.Exec(fmt.Sprintf("SELECT setval('%s', ?)", sequenceName), maxId).Error
 }
+
+// ResetTableAutoIncrement 重置表的自增 ID
+func ResetTableAutoIncrement(dbConn *gorm.DB, tableName string) error {
+	engine := helpers.GlobalConfig.Db.Engine
+	switch engine {
+	case "sqlite", "sqlite3":
+		return dbConn.Exec("DELETE FROM sqlite_sequence WHERE name = ?", tableName).Error
+	case "mysql":
+		return dbConn.Exec(fmt.Sprintf("ALTER TABLE %s AUTO_INCREMENT = 1", tableName)).Error
+	case "postgres", "postgresql":
+		seqName := fmt.Sprintf("%s_id_seq", tableName)
+		return dbConn.Exec(fmt.Sprintf("ALTER SEQUENCE %s RESTART WITH 1", seqName)).Error
+	default:
+		return fmt.Errorf("不支持的数据库引擎: %s", engine)
+	}
+}
