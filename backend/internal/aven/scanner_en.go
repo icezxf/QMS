@@ -250,14 +250,14 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 	}
 
 	baseName := sanitizePathN(result.Code)
-if baseName == "" {
-    baseName = sanitizePathN(result.Title)
-}
-if baseName == "" {
-    baseName = sanitizePathN(strings.TrimSuffix(fileName, filepath.Ext(fileName)))
-}
+	if baseName == "" {
+		baseName = sanitizePathN(result.Title)
+	}
+	if baseName == "" {
+		baseName = sanitizePathN(strings.TrimSuffix(fileName, filepath.Ext(fileName)))
+	}
 // NFO 名字跟媒体文件统一，加上分辨率后缀（-4K/-8K 等）
-baseName = baseName + resolutionSuffix(result.Resolution)
+	baseName = baseName + resolutionSuffix(result.Resolution)
 
 	// 翻译错误 → 暂停
 	if avscrape.HasTranslateError(result.Warnings) {
