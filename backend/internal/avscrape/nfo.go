@@ -8,9 +8,20 @@ import (
 	"qmediasync/internal/models"
 )
 
+// xmlEscape XML 特殊字符转义（用于不能用 CDATA 的字段）
+func xmlEscape(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, "\"", "&quot;")
+	s = strings.ReplaceAll(s, "'", "&apos;")
+	return s
+}
+
 // GenerateNFO 根据 ScrapeResult 生成 NFO 文本
 // - Genres + ExtraTags 合并去重后一起输出到 <genre> / <tag>
 // - 多演员（>=2）自动加 <set><name>共演</name></set> 合集
+// - 演员 <name> 必须用 XML 转义（不能用 CDATA，Emby 读不到）
 func GenerateNFO(r *ScrapeResult) string {
 	if r == nil {
 		return ""
@@ -98,18 +109,19 @@ func GenerateNFO(r *ScrapeResult) string {
 	}
 	// =====================================
 
-	for _, a := range r.Actors {
+	// ===== 演员：name 用 XML 转义，不用 CDATA =====
+	for idx, a := range r.Actors {
 		sb.WriteString("  <actor>\n")
-		sb.WriteString(fmt.Sprintf("    <name><![CDATA[%s]]></name>\n", a.Name))
+		sb.WriteString(fmt.Sprintf("    <name>%s</name>\n", xmlEscape(a.Name)))
+		sb.WriteString("    <role></role>\n")
+		sb.WriteString(fmt.Sprintf("    <order>%d</order>\n", idx))
 		sb.WriteString("    <type>Actor</type>\n")
-		if a.Role != "" {
-			sb.WriteString(fmt.Sprintf("    <role><![CDATA[%s]]></role>\n", a.Role))
-		}
 		if a.Image != "" {
-			sb.WriteString(fmt.Sprintf("    <thumb>%s</thumb>\n", a.Image))
+			sb.WriteString(fmt.Sprintf("    <thumb>%s</thumb>\n", xmlEscape(a.Image)))
 		}
 		sb.WriteString("  </actor>\n")
 	}
+	// ============================================
 
 	for _, u := range r.Urls {
 		sb.WriteString(fmt.Sprintf("  <website>%s</website>\n", u))
@@ -151,6 +163,6 @@ func MediaFromResult(r *ScrapeResult) *models.AVMedia {
 		NFOContent:    GenerateNFO(r),
 		Source:        r.Source,
 		Oshash:        r.Oshash,
-		Resolution:    r.Resolution,   // ← 加这一行
+		Resolution:    r.Resolution,
 	}
 }
