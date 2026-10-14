@@ -13,12 +13,33 @@ func SceneToResult(scene *StashScene) *avscrape.ScrapeResult {
 		return nil
 	}
 
+	// ===== 生成欧美"番号" =====
+	// 优先级：
+	//  1. scene.Code（StashDB 的 code 字段，有值就用）
+	//  2. Studio + Date 组合（如 Blacked-20240115）
+	//  3. scene.ID（UUID 兜底）
+	code := strings.TrimSpace(scene.Code)
+	if code == "" {
+		var parts []string
+		if scene.Studio != nil && scene.Studio.Name != "" {
+			parts = append(parts, scene.Studio.Name)
+		}
+		if scene.Date != "" {
+			parts = append(parts, strings.ReplaceAll(scene.Date, "-", ""))
+		}
+		if len(parts) > 0 {
+			code = strings.Join(parts, "-")
+		} else {
+			code = scene.ID
+		}
+	}
+
 	r := &avscrape.ScrapeResult{
-		Code:          scene.ID, // StashDB scene UUID 作为 code
+		Code:          code,
 		Title:         scene.Title,
 		OriginalTitle: scene.Title,
 		Plot:          scene.Details,
-		PlotOriginal:  scene.Details, // 保存原文
+		PlotOriginal:  scene.Details,
 		ReleaseDate:   scene.Date,
 		Runtime:       scene.Duration / 60,
 		Source:        "stashdb",
@@ -26,13 +47,11 @@ func SceneToResult(scene *StashScene) *avscrape.ScrapeResult {
 
 	if scene.Studio != nil {
 		r.Studio = scene.Studio.Name
-		// 不加 studio logo 到 ImageCandidates（会污染 fanart 候选）
 	}
 
 	// ===== 演员：过滤男优 =====
 	for _, p := range scene.Performers {
 		performer := p.Performer
-		// 跳过男优
 		if strings.ToUpper(performer.Gender) == "MALE" {
 			continue
 		}
@@ -43,7 +62,6 @@ func SceneToResult(scene *StashScene) *avscrape.ScrapeResult {
 			Gender:  performer.Gender,
 		}
 
-		// 演员头像：取第一张图
 		if len(performer.Images) > 0 {
 			actor.Image = performer.Images[0].URL
 		}
@@ -58,13 +76,11 @@ func SceneToResult(scene *StashScene) *avscrape.ScrapeResult {
 		}
 	}
 
-	// ===== 图片：Scene.images 作为 ImageCandidates =====
-	// StashDB 的 scene.images 通常是横版截图（剧照/封面）
+	// ===== 图片 =====
 	for _, img := range scene.Images {
 		r.ImageCandidates = append(r.ImageCandidates, img.URL)
 	}
 
-	// PreviewImages（剧照）：从 images[1:] 取
 	if len(scene.Images) > 1 {
 		for _, img := range scene.Images[1:] {
 			r.PreviewImages = append(r.PreviewImages, img.URL)
@@ -76,10 +92,7 @@ func SceneToResult(scene *StashScene) *avscrape.ScrapeResult {
 		r.Urls = append(r.Urls, u.URL)
 	}
 
-	// ===== 评分：StashDB Scene 层没有 rating，留空 =====
 	r.Rating = 0
-
-	// ===== 预告片：StashDB 没有独立字段，留空 =====
 	r.Trailer = ""
 
 	return r
