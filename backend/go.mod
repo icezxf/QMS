@@ -1,10 +1,10 @@
 module qmediasync
 
-go 1.27.1
+go 1.27
 
 require (
+	github.com/PuerkitoBio/goquery v1.10.3
 	github.com/aliyun/alibabacloud-oss-go-sdk-v2 v1.6.0
-    github.com/PuerkitoBio/goquery v1.10.3
 	github.com/coocood/freecache v1.2.7
 	github.com/flosch/pongo2/v6 v6.1.0
 	github.com/fsnotify/fsnotify v1.10.1
@@ -24,6 +24,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.8
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.57.0
+	golang.org/x/image v0.18.0
 	golang.org/x/net v0.59.0
 	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.48.0
@@ -32,7 +33,6 @@ require (
 	gorm.io/driver/postgres v1.6.3
 	gorm.io/gorm v1.31.2
 	resty.dev/v3 v3.0.0-rc.4
-    golang.org/x/image
 )
 
 require (
