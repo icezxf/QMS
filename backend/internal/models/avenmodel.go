@@ -34,7 +34,8 @@ func (AVENTask) TableName() string { return "aven_tasks" }
 type AVENMedia struct {
 	ID            uint   `gorm:"primaryKey" json:"id"`
 	StashID       string `gorm:"index;size:64" json:"stash_id"` // StashDB scene id
-	Oshash        string `gorm:"index;size:64" json:"oshash"`   // osHash（索引）
+	Code          string `gorm:"size:128;index" json:"code"`    // 欧美"番号"（StashDB code 或 Studio-Date）
+Oshash        string `gorm:"index;size:64" json:"oshash"`   // osHash（索引）
 
 	Title         string `gorm:"type:text" json:"title"`
 	OriginalTitle string `gorm:"type:text" json:"original_title"`
