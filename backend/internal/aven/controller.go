@@ -338,3 +338,17 @@ func (c *Controller) triggerAllAVENScans() {
 		}
 	}
 }
+
+// ClearTasksAndResetID 清空任务并重置自增 ID
+func (c *Controller) ClearTasksAndResetID(ctx *gin.Context) {
+    if err := c.DB.Where("1 = 1").Delete(&models.AVENTask{}).Error; err != nil {
+        ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+    if err := models.ResetTableAutoIncrement(c.DB, "aven_tasks"); err != nil {
+        ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+    helpers.AppLogger.Infof("[欧美任务] 已清空并重置任务 ID")
+    ctx.JSON(http.StatusOK, gin.H{"ok": true, "msg": "已清空任务并重置 ID"})
+}
