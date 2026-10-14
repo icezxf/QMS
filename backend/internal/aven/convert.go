@@ -18,7 +18,10 @@ func SceneToResult(scene *StashScene) *avscrape.ScrapeResult {
 	//  1. scene.Code（StashDB 的 code 字段，有值就用）
 	//  2. Studio + Date 组合（如 Blacked-20240115）
 	//  3. scene.ID（UUID 兜底）
-	code := strings.TrimSpace(scene.Code)
+	code := ""
+if scene.Code != nil {
+    code = strings.TrimSpace(*scene.Code)
+}
 	if code == "" {
 		var parts []string
 		if scene.Studio != nil && scene.Studio.Name != "" {
