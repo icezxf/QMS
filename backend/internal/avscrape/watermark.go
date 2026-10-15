@@ -23,20 +23,21 @@ type WatermarkItem struct {
 func buildWatermarks(r *ScrapeResult, cfg *Config) []WatermarkItem {
 	var items []WatermarkItem
 
+	// 合并标签，供字幕/破解/流出/无码使用
 	allTags := append([]string{}, r.Genres...)
 	allTags = append(allTags, r.ExtraTags...)
 	joined := toLower(strings_Join(allTags, ","))
 
-	// 分辨率水印：从高到低，只打一个
-	if cfg.Watermark8K && (contains(joined, "8k") || r.Resolution == "8K") {
+	// 分辨率水印：从高到低，只打一个；只看 r.Resolution，不再看标签
+	if cfg.Watermark8K && r.Resolution == "8K" {
 		items = append(items, WatermarkItem{PngName: "8k.png", Label: "8K"})
-	} else if cfg.Watermark7K && (contains(joined, "7k") || r.Resolution == "7K") {
+	} else if cfg.Watermark7K && r.Resolution == "7K" {
 		items = append(items, WatermarkItem{PngName: "7k.png", Label: "7K"})
-	} else if cfg.Watermark6K && (contains(joined, "6k") || r.Resolution == "6K") {
+	} else if cfg.Watermark6K && r.Resolution == "6K" {
 		items = append(items, WatermarkItem{PngName: "6k.png", Label: "6K"})
-	} else if cfg.Watermark5K && (contains(joined, "5k") || r.Resolution == "5K") {
+	} else if cfg.Watermark5K && r.Resolution == "5K" {
 		items = append(items, WatermarkItem{PngName: "5k.png", Label: "5K"})
-	} else if cfg.Watermark4K && (contains(joined, "4k") || r.Resolution == "4K") {
+	} else if cfg.Watermark4K && r.Resolution == "4K" {
 		items = append(items, WatermarkItem{PngName: "4k.png", Label: "4K"})
 	}
 
