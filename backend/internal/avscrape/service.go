@@ -56,6 +56,10 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		mt := NewMetaTubeClient(cfg.MetaTubeServer)
 		hits, err := mt.Search(effectiveCode)
 		if err == nil {
+			// 剧照只保留第一个有内容的源
+			var previewChosen bool
+			var previewSource string
+
 			for _, h := range hits {
 				providerID := h.ProviderID
 				if providerID == "" {
@@ -68,6 +72,21 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 				if err == nil {
 					helpers.AppLogger.Infof("[MetaTube] 详情成功: %s => %d 张剧照",
 						providerID, len(detail.PreviewImages))
+
+					// ===== 剧照：只保留第一个有内容的源 =====
+					if previewChosen {
+						if len(detail.PreviewImages) > 0 {
+							helpers.AppLogger.Infof("[MetaTube] 源 %s 也提供 %d 张剧照，已忽略（已选 %s）",
+								providerID, len(detail.PreviewImages), previewSource)
+						}
+						detail.PreviewImages = nil
+					} else if len(detail.PreviewImages) > 0 {
+						previewChosen = true
+						previewSource = providerID
+						helpers.AppLogger.Infof("[MetaTube] 剧照采用源 %s（%d 张），后续源忽略",
+							providerID, len(detail.PreviewImages))
+					}
+
 					allResults = append(allResults, detail)
 				} else {
 					helpers.AppLogger.Warnf("[MetaTube] 详情失败: %s => %v", providerID, err)
