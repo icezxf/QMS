@@ -806,19 +806,42 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		}
 	}
 
-	// ===== ②.5 厂商官网封面兜底（仅 VR，JavStash 第一个 url） =====
-	if posterData == nil && isVR && len(r.Urls) > 0 {
-		officialURL := r.Urls[0]
-		helpers.AppLogger.Infof("[AV元数据] VR 兜底：尝试从厂商官网抓封面: %s", redactURL(officialURL))
-		if data, w, h, src := fetchOfficialCoverData(officialURL); data != nil {
-			posterData = data
-			helpers.AppLogger.Infof("[AV元数据] poster 来自厂商官网 (%dx%d)", w, h)
-			warnings = append(warnings,
-				fmt.Sprintf("⚠️ poster 使用厂商官网兜底 (%dx%d): %s", w, h, redactURL(src)))
+	// =	// ===== ②.5 厂商官网封面兜底（仅 VR，强制获取 JavStash 的第一个 url） =====
+	if posterData == nil && isVR {
+		var officialURL string
+
+		// 1. 如果当前本身就是 JavStash 来源且有 Urls，直接取第一个
+		if strings.HasPrefix(r.Source, "javstash") && len(r.Urls) > 0 {
+			officialURL = r.Urls[0]
+		} else if cfg != nil && cfg.JavStashEndpoint != "" {
+			// 2. 如果当前不是 JavStash（比如是 Metatube），主动去请求一次 JavStash 获取其第一个 URL
+			js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
+			if jsResults, err := js.Search(r.Code); err == nil && len(jsResults) > 0 {
+				for _, jr := range jsResults {
+					if len(jr.Urls) > 0 {
+						officialURL = jr.Urls[0] // 拿 JavStash 返回的第一个 URL
+						helpers.AppLogger.Infof("[AV元数据] VR 兜底：从 JavStash 补充获取到厂商官网 URL: %s", redactURL(officialURL))
+						break
+					}
+				}
+			}
+		}
+
+		if officialURL != "" {
+			helpers.AppLogger.Infof("[AV元数据] VR 兜底：尝试从厂商官网抓封面: %s", redactURL(officialURL))
+			if data, w, h, src := fetchOfficialCoverData(officialURL); data != nil {
+				posterData = data
+				helpers.AppLogger.Infof("[AV元数据] poster 来自厂商官网 (%dx%d)", w, h)
+				warnings = append(warnings,
+					fmt.Sprintf("⚠️ poster 使用厂商官网兜底 (%dx%d): %s", w, h, redactURL(src)))
+			} else {
+				helpers.AppLogger.Infof("[AV元数据] 厂商官网未找到合适封面")
+			}
 		} else {
-			helpers.AppLogger.Infof("[AV元数据] 厂商官网未找到合适封面")
+			helpers.AppLogger.Infof("[AV元数据] 未能获取到可用的 JavStash 厂商官网链接")
 		}
 	}
+
 
 	// ===== ③ VR 分流：VR 不走 fanart 裁剪 =====
 	if posterData == nil && !isVR && fanartData != nil {
