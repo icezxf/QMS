@@ -623,9 +623,9 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 		ext := filepath.Ext(originalName)
 		baseName := strings.TrimSuffix(originalName, ext)
 
+		// 从原文件名提取碟号，统一生成 -cdN 格式
 		cdSuffix := ""
 		if m := cdPartRegex.FindString(baseName); m != "" {
-			// 从匹配结果末尾抠出数字，统一生成 -cdN 格式
 			num := ""
 			for i := len(m) - 1; i >= 0; i-- {
 				c := m[i]
@@ -831,6 +831,36 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		} else {
 			helpers.AppLogger.Infof("[AV元数据] VR 兜底：r.Urls 全是聚合站（无厂商官网），跳过")
 			warnings = append(warnings, "VR poster 兜底失败：JavStash 未提供厂商官网 URL")
+		}
+	}
+
+	// ===== ②.7 DMM jp-1 兜底（仅 VR；ps.jpg 和厂商官网都失败后）=====
+	if posterData == nil && isVR && len(r.DMMContentIDs) > 0 {
+		for _, u := range dmmCoverCandidates(r.Code, r.DMMContentIDs) {
+			if !strings.HasSuffix(u, "ps.jpg") {
+				continue
+			}
+			jpURL := strings.Replace(u, "ps.jpg", "jp-1.jpg", 1)
+			data, err := downloadImage(jpURL)
+			if err != nil {
+				helpers.AppLogger.Infof("[AV元数据] DMM jp-1 失败: %s => %v", redactURL(jpURL), err)
+				continue
+			}
+			imgCfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+			if err != nil {
+				helpers.AppLogger.Infof("[AV元数据] DMM jp-1 解码失败: %s", redactURL(jpURL))
+				continue
+			}
+			helpers.AppLogger.Infof("[AV元数据] DMM jp-1 候选: %dx%d (%s)",
+				imgCfg.Width, imgCfg.Height, redactURL(jpURL))
+			if imgCfg.Width >= 500 && imgCfg.Height > imgCfg.Width {
+				posterData = data
+				helpers.AppLogger.Infof("[AV元数据] poster 来自 DMM jp-1: %dx%d (%s)",
+					imgCfg.Width, imgCfg.Height, redactURL(jpURL))
+				warnings = append(warnings,
+					fmt.Sprintf("poster 来自 DMM jp-1 (%dx%d)", imgCfg.Width, imgCfg.Height))
+				break
+			}
 		}
 	}
 
