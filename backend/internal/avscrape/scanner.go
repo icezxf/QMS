@@ -286,6 +286,10 @@ func (s *Scanner) getOrProbe(fs FileSystem, fullPath string) *probeResult {
 // 处理单个番号
 // ============================================================
 
+// ============================================================
+// 处理单个番号
+// ============================================================
+
 func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, cfg *Config) error {
 	code := g.Code
 	primaryFile := g.Files[0]
@@ -322,22 +326,26 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		}
 	}
 
-	// ② 查本次扫描缓存
-	if oshash == "" && s.probeCache != nil {
+	// ② 无论 oshash 有没有，只要缓存里有该文件的探测结果，优先复用以拿到分辨率
+	if s.probeCache != nil {
 		if pr, ok := s.probeCache[primaryFile]; ok && pr != nil {
 			probeResult = pr
-			oshash = pr.Oshash
-			helpers.AppLogger.Infof("[AV扫描] 复用 ffprobe 缓存: oshash=%s", oshash)
+			if oshash == "" {
+				oshash = pr.Oshash
+			}
+			helpers.AppLogger.Infof("[AV扫描] 复用 ffprobe 缓存: oshash=%s, 分辨率=%s", oshash, pr.Resolution)
 		}
 	}
 
-	// ③ 缓存没有才 ffprobe
-	if oshash == "" {
+	// ③ 如果缓存中也没有，且直链可用，再走 ffprobe
+	if probeResult == nil {
 		if url, err := fs.GetURL(primaryFile); err == nil && url != "" {
 			if pr, err := probeVideo(url); err == nil {
 				probeResult = pr
-				oshash = pr.Oshash
-				helpers.AppLogger.Infof("[AV扫描] ffprobe 获取 oshash: %s", oshash)
+				if oshash == "" {
+					oshash = pr.Oshash
+				}
+				helpers.AppLogger.Infof("[AV扫描] ffprobe 获取成功: 分辨率=%s", pr.Resolution)
 			} else {
 				helpers.AppLogger.Warnf("[AV扫描] ffprobe 失败: %v", err)
 			}
@@ -454,23 +462,18 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 
 	// 步骤 7 上传
 	if len(files) > 0 {
-		if _, err := fs.QueueUploads(files, targetDir, path.AccountID, path.SourceType); err != nil {
-			reason := fmt.Sprintf("加入上传队列失败: %v", err)
-			if skipPause {
-				helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
-			} else {
-				s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
-				return err
-			}
+		if _, err := fs.QueueUploads(files, targetDir, path.AccountID, path.NodeID); err != nil {
+			reason := fmt.Sprintf("排队上传元数据失败: %v", err)
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
+			return err
 		}
 	}
 
-	// 成功
-	s.markCompleted(code, targetDir)
-	s.recordTask(existingMedia.ID, code, primaryFile, "done", fmt.Sprintf("共 %d 个文件", len(g.Files)), result.Source, allWarnings)
-	helpers.AppLogger.Infof("[AV扫描] %s 刮削完成", code)
+	s.recordTask(0, code, primaryFile, "done", "", result.Source, allWarnings)
+	helpers.AppLogger.Infof("[AV扫描] 番号 %s 处理完成", code)
 	return nil
 }
+
 
 func checkMetadataMissing(r *ScrapeResult) string {
 	if r == nil {
