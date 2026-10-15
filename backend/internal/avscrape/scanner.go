@@ -1344,3 +1344,48 @@ func extractYear(date string) string {
 	}
 	return ""
 }
+// aggregatorHosts 聚合站/数据库站黑名单，这些不是厂商官网
+var aggregatorHosts = []string{
+	"r18.dev",
+	"dmm.co.jp",
+	"dmm.com",
+	"fanza.com",
+	"fanza.co.jp",
+	"javdb.com",
+	"javbus.com",
+	"javstash.org",
+	"stashdb.org",
+	"jav321.com",
+	"avmoo",
+	"seesaawiki",
+	"wikipedia.org",
+}
+
+// isAggregatorHost 判断 URL 是否属于聚合站
+func isAggregatorHost(rawURL string) bool {
+	if rawURL == "" {
+		return true
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return true
+	}
+	host := strings.ToLower(u.Host)
+	for _, a := range aggregatorHosts {
+		if strings.Contains(host, a) {
+			return true
+		}
+	}
+	return false
+}
+
+// pickOfficialURL 从 urls 列表里挑出第一个真正的厂商官网
+// 顺序不可靠，所以全部遍历，跳过黑名单
+func pickOfficialURL(urls []string) string {
+	for _, u := range urls {
+		if !isAggregatorHost(u) {
+			return u
+		}
+	}
+	return ""
+}
