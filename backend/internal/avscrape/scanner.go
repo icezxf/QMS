@@ -625,7 +625,19 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 
 		cdSuffix := ""
 		if m := cdPartRegex.FindString(baseName); m != "" {
-			cdSuffix = strings.ToLower(m)
+			// 从匹配结果末尾抠出数字，统一生成 -cdN 格式
+			num := ""
+			for i := len(m) - 1; i >= 0; i-- {
+				c := m[i]
+				if c >= '0' && c <= '9' {
+					num = string(c) + num
+				} else {
+					break
+				}
+			}
+			if num != "" {
+				cdSuffix = "-cd" + num
+			}
 		}
 
 		newName := media.Code + resSuffix + cdSuffix + ext
