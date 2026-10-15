@@ -286,10 +286,6 @@ func (s *Scanner) getOrProbe(fs FileSystem, fullPath string) *probeResult {
 // 处理单个番号
 // ============================================================
 
-// ============================================================
-// 处理单个番号
-// ============================================================
-
 func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, cfg *Config) error {
 	code := g.Code
 	primaryFile := g.Files[0]
@@ -473,7 +469,6 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 	helpers.AppLogger.Infof("[AV扫描] 番号 %s 处理完成", code)
 	return nil
 }
-
 
 func checkMetadataMissing(r *ScrapeResult) string {
 	if r == nil {
@@ -806,28 +801,11 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 		}
 	}
 
-	// =	// ===== ②.5 厂商官网封面兜底（仅 VR，强制获取 JavStash 的第一个 url） =====
 	// ===== ②.5 厂商官网封面兜底（仅 VR） =====
-	// ===== ②.5 厂商官网封面兜底（仅 VR） =====
-	// ===== ②.5 厂商官网封面兜底（仅 VR） =====
+	// JavStash 返回的 urls 顺序随机，r18.dev / dmm 等聚合站可能排第一，
+	// 必须过滤掉聚合站，只取真正的厂商官网
 	if posterData == nil && isVR && len(r.Urls) > 0 {
 		officialURL := pickOfficialURL(r.Urls)
-		if officialURL != "" {
-			helpers.AppLogger.Infof("[AV元数据] VR 兜底：尝试从厂商官网抓封面: %s", redactURL(officialURL))
-			if data, w, h, src := fetchOfficialCoverData(officialURL); data != nil {
-				posterData = data
-				helpers.AppLogger.Infof("[AV元数据] poster 来自厂商官网 (%dx%d)", w, h)
-				warnings = append(warnings,
-								  fmt.Sprintf("⚠️ poster 使用厂商官网兜底 (%dx%d): %s", w, h, redactURL(src)))
-			} else {
-				helpers.AppLogger.Infof("[AV元数据] 厂商官网未找到合适封面")
-			}
-		} else {
-			helpers.AppLogger.Infof("[AV元数据] VR 兜底：r.Urls 全是聚合站（无厂商官网），跳过")
-			warnings = append(warnings, "VR poster 兜底失败：JavStash 未提供厂商官网 URL")
-		}
-	}
-
 		if officialURL != "" {
 			helpers.AppLogger.Infof("[AV元数据] VR 兜底：尝试从厂商官网抓封面: %s", redactURL(officialURL))
 			if data, w, h, src := fetchOfficialCoverData(officialURL); data != nil {
@@ -839,10 +817,10 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 				helpers.AppLogger.Infof("[AV元数据] 厂商官网未找到合适封面")
 			}
 		} else {
-			helpers.AppLogger.Infof("[AV元数据] 未能获取到可用的 JavStash 厂商官网链接")
+			helpers.AppLogger.Infof("[AV元数据] VR 兜底：r.Urls 全是聚合站（无厂商官网），跳过")
+			warnings = append(warnings, "VR poster 兜底失败：JavStash 未提供厂商官网 URL")
 		}
 	}
-
 
 	// ===== ③ VR 分流：VR 不走 fanart 裁剪 =====
 	if posterData == nil && !isVR && fanartData != nil {
@@ -1345,6 +1323,11 @@ func extractYear(date string) string {
 	}
 	return ""
 }
+
+// ============================================================
+// 厂商官网 URL 过滤（聚合站黑名单）
+// ============================================================
+
 // aggregatorHosts 聚合站/数据库站黑名单，这些不是厂商官网
 var aggregatorHosts = []string{
 	"r18.dev",
@@ -1381,7 +1364,7 @@ func isAggregatorHost(rawURL string) bool {
 }
 
 // pickOfficialURL 从 urls 列表里挑出第一个真正的厂商官网
-// 顺序不可靠，所以全部遍历，跳过黑名单
+// JavStash 返回的 urls 顺序随机，所以需要全部遍历，跳过黑名单
 func pickOfficialURL(urls []string) string {
 	for _, u := range urls {
 		if !isAggregatorHost(u) {
