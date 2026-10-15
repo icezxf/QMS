@@ -462,7 +462,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 
 	// 步骤 7 上传
 	if len(files) > 0 {
-		if _, err := fs.QueueUploads(files, targetDir, path.AccountID, path.NodeID); err != nil {
+		if _, err := fs.QueueUploads(files, targetDir, path.AccountID, path.SourceType); err != nil {
 			reason := fmt.Sprintf("排队上传元数据失败: %v", err)
 			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
 			return err
