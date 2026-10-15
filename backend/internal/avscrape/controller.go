@@ -348,7 +348,7 @@ func (c *Controller) ClearTasksAndResetID(ctx *gin.Context) {
         return
     }
     // 2. 重置自增
-    if err := models.ResetTableAutoIncrement(c.DB, "a_v_tasks"); err != nil {
+    if err := models.ResetTableAutoIncrement(c.DB, "av_tasks"); err != nil {
         ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
