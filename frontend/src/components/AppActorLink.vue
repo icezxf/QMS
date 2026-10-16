@@ -3,99 +3,111 @@
     <el-card shadow="never">
       <template #header>
         <div class="card-header">
-          <span>演员库</span>
+          <span>Emby 演员库</span>
           <div class="toolbar">
+            <el-select
+              v-model="selectedLibrary"
+              placeholder="选择媒体库"
+              style="width: 220px"
+              :loading="loadingLibraries"
+              @change="loadPersons"
+            >
+              <el-option
+                v-for="lib in libraries"
+                :key="lib.Id"
+                :label="lib.Name"
+                :value="lib.Id"
+              />
+            </el-select>
             <el-input
               v-model="search"
-              placeholder="搜索演员名字/别名"
+              placeholder="搜索演员名字"
               clearable
-              class="search-input"
-              @keyup.enter="loadList"
-              @clear="loadList"
+              style="width: 200px"
             />
-            <el-button type="primary" @click="loadList">搜索</el-button>
             <el-button @click="showConfig = true">设置</el-button>
-            <el-button
-              type="info"
-              :loading="aggregating"
-              @click="doAggregate"
-            >
-              聚合演员
-            </el-button>
-            <el-button
-              type="warning"
-              :loading="syncing"
-              @click="doSyncStashDB"
-            >
-              从 StashDB 拉元数据
-            </el-button>
-            <el-button
-              type="success"
-              :loading="pushing"
-              @click="doPushEmby"
-            >
-              推送到 Emby
-            </el-button>
+            <el-button :loading="loading" @click="loadAll">刷新</el-button>
           </div>
         </div>
       </template>
 
-      <el-table :data="list" v-loading="loading" stripe style="width: 100%">
+      <el-table
+        :data="filteredPersons"
+        v-loading="loading"
+        stripe
+        style="width: 100%"
+        :default-sort="{ prop: 'Name', order: 'ascending' }"
+      >
         <el-table-column label="头像" width="80">
           <template #default="{ row }">
-            <el-avatar :size="48" :src="avatarSrc(row)" />
+            <el-avatar :size="48" :src="embyPersonImageUrl(row.Id)">
+              {{ row.Name?.charAt(0) || '?' }}
+            </el-avatar>
           </template>
         </el-table-column>
-        <el-table-column prop="name" label="姓名" min-width="140" />
-        <el-table-column label="别名" min-width="180">
-          <template #default="{ row }">
-            {{ formatAliases(row.aliases) }}
-          </template>
-        </el-table-column>
+        <el-table-column prop="Name" label="姓名" min-width="160" sortable />
         <el-table-column
-          prop="bio"
-          label="简介"
+          prop="Id"
+          label="Emby ID"
           min-width="240"
           show-overflow-tooltip
         />
-        <el-table-column label="StashDB" width="120">
+        <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
-            <el-tag v-if="row.stashdb_id" type="success" size="small">
-              已关联
-            </el-tag>
-            <el-tag v-else type="info" size="small">未关联</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="Emby" width="120">
-          <template #default="{ row }">
-            <el-tag v-if="row.emby_person_id" type="success" size="small">
-              已推送
-            </el-tag>
-            <el-tag v-else type="info" size="small">未推送</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
-          <template #default="{ row }">
-            <el-button link type="danger" @click="removeActor(row)">
-              删除
+            <el-button link type="primary" @click="openDetail(row)">
+              详情
             </el-button>
           </template>
         </el-table-column>
       </el-table>
 
-      <el-pagination
-        v-model:current-page="page"
-        v-model:page-size="size"
-        :total="total"
-        :page-sizes="[20, 50, 100]"
-        layout="total, sizes, prev, pager, next"
-        class="pagination"
-        @current-change="loadList"
-        @size-change="loadList"
-      />
+      <div class="footer-note">共 {{ filteredPersons.length }} 位演员</div>
     </el-card>
 
-    <el-dialog v-model="showConfig" title="Emby / StashDB 设置" width="480px">
+    <!-- 演员详情抽屉 -->
+    <el-drawer
+      v-model="showDetail"
+      size="520px"
+      :title="detail?.Name || '演员详情'"
+    >
+      <div v-if="detail" class="detail" v-loading="loadingDetail">
+        <div class="avatar-wrap">
+          <el-avatar :size="120" :src="embyPersonImageUrl(detail.Id)">
+            {{ detail.Name?.charAt(0) || '?' }}
+          </el-avatar>
+        </div>
+        <div class="meta">
+          <div class="row">
+            <span class="label">姓名</span>
+            <span>{{ detail.Name || '—' }}</span>
+          </div>
+          <div class="row">
+            <span class="label">生日</span>
+            <span>{{ detail.Birthday || '—' }}</span>
+          </div>
+          <div class="row">
+            <span class="label">出生地</span>
+            <span>{{ detail.PlaceOfBirth || '—' }}</span>
+          </div>
+          <div class="row">
+            <span class="label">职业</span>
+            <span>{{ detail.KnownForDepartment || '—' }}</span>
+          </div>
+          <div class="row">
+            <span class="label">标签</span>
+            <span>{{ (detail.Tags || []).join(', ') || '—' }}</span>
+          </div>
+        </div>
+        <div class="bio">
+          <div class="label">简介</div>
+          <p>{{ detail.Biography || '暂无简介' }}</p>
+        </div>
+      </div>
+      <el-empty v-else description="暂无详情" />
+    </el-drawer>
+
+    <!-- 设置弹窗 -->
+    <el-dialog v-model="showConfig" title="Emby 设置" width="520px">
       <el-form :model="config" label-width="120px">
         <el-form-item label="Emby 地址">
           <el-input
@@ -104,124 +116,74 @@
           />
         </el-form-item>
         <el-form-item label="Emby API Key">
-          <el-input v-model="config.emby_api_key" placeholder="Emby API Key" />
+          <el-input
+            v-model="config.emby_api_key"
+            placeholder="Emby API Key"
+          />
         </el-form-item>
-        <el-form-item label="StashDB API Key">
-          <el-input v-model="config.stashdb_key" placeholder="StashDB API Key" />
+        <el-form-item label="Emby 用户名">
+          <el-input
+            v-model="config.emby_user"
+            placeholder="例如 admin（或直接填 UUID）"
+          />
         </el-form-item>
-        <el-form-item label="定时同步 Cron">
-          <el-input v-model="config.sync_cron" placeholder="0 3 * * *" />
+        <el-form-item>
+          <el-button :loading="testing" @click="doTest">测试连接</el-button>
+          <el-button type="primary" @click="saveConfig">保存</el-button>
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="showConfig = false">取消</el-button>
-        <el-button type="primary" @click="saveConfig">保存</el-button>
-      </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { computed, onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import { useHttpClient } from '@/http/client'
 import {
-  aggregateActors,
-  deleteActor,
+  embyPersonImageUrl,
   fetchActorEmbyConfig,
-  fetchActorList,
-  pushEmby,
+  fetchEmbyLibraries,
+  fetchEmbyPersonDetail,
+  fetchEmbyPersons,
   saveActorEmbyConfig,
-  syncStashDB,
+  testEmbyConnection,
   type ActorEmbyConfig,
-  type ActorProfile,
+  type EmbyLibrary,
+  type EmbyPerson,
+  type EmbyPersonDetail,
 } from '@/api/actor'
 
 const http = useHttpClient()
 
-const list = ref<ActorProfile[]>([])
-const total = ref(0)
-const page = ref(1)
-const size = ref(20)
+const libraries = ref<EmbyLibrary[]>([])
+const selectedLibrary = ref('')
+const persons = ref<EmbyPerson[]>([])
 const search = ref('')
 const loading = ref(false)
+const loadingLibraries = ref(false)
 
-const aggregating = ref(false)
-const syncing = ref(false)
-const pushing = ref(false)
+const showDetail = ref(false)
+const loadingDetail = ref(false)
+const detail = ref<EmbyPersonDetail | null>(null)
 
 const showConfig = ref(false)
+const testing = ref(false)
 const config = ref<ActorEmbyConfig>({
   emby_url: '',
   emby_api_key: '',
+  emby_user: '',
   stashdb_key: '',
   sync_cron: '0 3 * * *',
 })
 
-async function loadList() {
-  loading.value = true
-  try {
-    const data = await fetchActorList(http, {
-      page: page.value,
-      size: size.value,
-      search: search.value,
-    })
-    list.value = data.list
-    total.value = data.total
-  } catch {
-    ElMessage.error('加载演员列表失败')
-  } finally {
-    loading.value = false
-  }
-}
-
-async function doAggregate() {
-  aggregating.value = true
-  try {
-    await aggregateActors(http)
-    ElMessage.success('聚合任务已提交，请稍后刷新')
-    setTimeout(loadList, 1500)
-  } catch {
-    ElMessage.error('聚合失败')
-  } finally {
-    aggregating.value = false
-  }
-}
-
-async function doSyncStashDB() {
-  syncing.value = true
-  try {
-    const data = await syncStashDB(http)
-    if (data.ok) ElMessage.success('StashDB 同步已启动')
-    else ElMessage.warning(data.message || '功能待实现')
-  } catch {
-    ElMessage.error('StashDB 同步失败')
-  } finally {
-    syncing.value = false
-  }
-}
-
-async function doPushEmby() {
-  pushing.value = true
-  try {
-    const data = await pushEmby(http)
-    if (data.ok) ElMessage.success('Emby 推送已启动')
-    else ElMessage.warning(data.message || '功能待实现')
-  } catch {
-    ElMessage.error('Emby 推送失败')
-  } finally {
-    pushing.value = false
-  }
-}
-
-async function removeActor(row: ActorProfile) {
-  await ElMessageBox.confirm(`确认删除演员「${row.name}」？`, '提示', {
-    type: 'warning',
-  })
-  await deleteActor(http, row.id)
-  ElMessage.success('已删除')
-  loadList()
-}
+const filteredPersons = computed(() => {
+  const kw = search.value.trim().toLowerCase()
+  if (!kw) return persons.value
+  return persons.value.filter((p) =>
+    (p.Name || '').toLowerCase().includes(kw),
+  )
+})
 
 async function loadConfig() {
   try {
@@ -232,32 +194,75 @@ async function loadConfig() {
   }
 }
 
+async function loadLibraries() {
+  loadingLibraries.value = true
+  try {
+    libraries.value = await fetchEmbyLibraries(http)
+    if (libraries.value.length > 0 && !selectedLibrary.value) {
+      selectedLibrary.value = libraries.value[0].Id
+    }
+  } catch (e: any) {
+    ElMessage.warning(e?.message || '拉取媒体库失败，请检查设置')
+  } finally {
+    loadingLibraries.value = false
+  }
+}
+
+async function loadPersons() {
+  if (!selectedLibrary.value) return
+  loading.value = true
+  try {
+    persons.value = await fetchEmbyPersons(http, selectedLibrary.value)
+  } catch (e: any) {
+    ElMessage.error(e?.message || '拉取演员失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loadAll() {
+  await loadLibraries()
+  await loadPersons()
+}
+
+async function openDetail(row: EmbyPerson) {
+  showDetail.value = true
+  loadingDetail.value = true
+  detail.value = null
+  try {
+    detail.value = await fetchEmbyPersonDetail(http, row.Id)
+  } catch (e: any) {
+    ElMessage.error(e?.message || '拉取详情失败')
+  } finally {
+    loadingDetail.value = false
+  }
+}
+
 async function saveConfig() {
   await saveActorEmbyConfig(http, config.value)
   ElMessage.success('已保存')
   showConfig.value = false
+  await loadAll()
 }
 
-function avatarSrc(row: ActorProfile): string {
-  if (!row.avatar_url) return ''
-  // 如果后端返回的是外链，直接使用；如果是本地路径，走 /actor/:id/avatar
-  if (row.avatar_url.startsWith('http')) return row.avatar_url
-  return `${import.meta.env.VITE_API_BASE || ''}/actor/${row.id}/avatar`
-}
-
-function formatAliases(s: string): string {
-  if (!s) return ''
+async function doTest() {
+  testing.value = true
   try {
-    const arr = JSON.parse(s)
-    return Array.isArray(arr) ? arr.join(', ') : ''
-  } catch {
-    return s
+    const r = await testEmbyConnection(http, {
+      emby_url: config.value.emby_url,
+      emby_api_key: config.value.emby_api_key,
+      emby_user: config.value.emby_user,
+    })
+    if (r.ok) ElMessage.success(r.message)
+    else ElMessage.error(r.message)
+  } finally {
+    testing.value = false
   }
 }
 
-onMounted(() => {
-  loadList()
-  loadConfig()
+onMounted(async () => {
+  await loadConfig()
+  await loadAll()
 })
 </script>
 
@@ -278,11 +283,39 @@ onMounted(() => {
   gap: 8px;
   flex-wrap: wrap;
 }
-.search-input {
-  width: 220px;
+.footer-note {
+  margin-top: 12px;
+  text-align: right;
+  color: #909399;
+  font-size: 13px;
 }
-.pagination {
-  margin-top: 16px;
-  justify-content: flex-end;
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.detail .avatar-wrap {
+  display: flex;
+  justify-content: center;
+}
+.detail .meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.detail .row {
+  display: flex;
+  gap: 12px;
+}
+.detail .label {
+  width: 80px;
+  color: #909399;
+  flex-shrink: 0;
+}
+.detail .bio p {
+  margin: 6px 0 0;
+  line-height: 1.6;
+  color: #303133;
+  white-space: pre-wrap;
 }
 </style>
