@@ -1,24 +1,12 @@
 <template>
   <div class="actor-link">
-    <!-- 页面头部 -->
-    <div class="page-header">
-      <div class="page-title">
-        <h2>Emby 演员管理</h2>
-        <p>浏览和修改 Emby 里的演员元数据</p>
-      </div>
-      <div class="header-actions">
-        <el-button @click="showConfig = true">设置</el-button>
-        <el-button type="primary" :loading="loading" @click="loadAll">刷新</el-button>
-      </div>
-    </div>
-
-    <!-- 工具栏 -->
-    <el-card shadow="never" class="toolbar-card">
+    <div class="actor-link__header">
+      <h2>Emby 演员管理</h2>
       <div class="toolbar">
         <el-select
           v-model="selectedLibrary"
           placeholder="选择媒体库"
-          style="width: 260px"
+          style="width: 200px"
           :loading="loadingLibraries"
           @change="loadPersons"
         >
@@ -33,57 +21,44 @@
           v-model="search"
           placeholder="搜索演员名字"
           clearable
-          style="width: 260px"
+          style="width: 180px"
         />
-        <div class="toolbar-spacer" />
-        <span class="count-text">共 {{ filteredPersons.length }} 位演员</span>
+        <el-button @click="showConfig = true">设置</el-button>
+        <el-button type="primary" :loading="loading" @click="loadAll">刷新</el-button>
       </div>
-    </el-card>
+    </div>
 
-    <!-- 表格 -->
-    <el-card shadow="never" class="table-card">
-      <el-table
-        :data="filteredPersons"
-        v-loading="loading"
-        stripe
-        style="width: 100%"
-        :default-sort="{ prop: 'Name', order: 'ascending' }"
-      >
-        <el-table-column label="头像" width="90" align="center">
-          <template #default="{ row }">
-            <el-avatar :size="52" :src="embyImageUrl(row.Id)">
-              {{ row.Name?.charAt(0) || '?' }}
-            </el-avatar>
-          </template>
-        </el-table-column>
-        <el-table-column prop="Name" label="姓名" min-width="180" sortable />
-        <el-table-column
-          prop="Role"
-          label="角色"
-          min-width="140"
-          show-overflow-tooltip
-        />
-        <el-table-column
-          prop="Id"
-          label="Emby ID"
-          min-width="300"
-          show-overflow-tooltip
-        />
-        <el-table-column label="操作" width="180" fixed="right" align="center">
-          <template #default="{ row }">
-            <el-button link type="primary" @click="openEdit(row)">
-              编辑
-            </el-button>
-            <el-button link type="primary" @click="openDetail(row)">
-              详情
-            </el-button>
-          </template>
-        </el-table-column>
-        <template #empty>
-          <el-empty description="暂无数据，请先在右上角配置 Emby 后刷新" />
+    <el-table
+      :data="filteredPersons"
+      border
+      stripe
+      v-loading="loading"
+      style="width: 100%"
+    >
+      <el-table-column label="头像" width="70">
+        <template #default="{ row }">
+          <el-avatar :size="40" :src="embyImageUrl(row.Id)">
+            {{ row.Name?.charAt(0) || '?' }}
+          </el-avatar>
         </template>
-      </el-table>
-    </el-card>
+      </el-table-column>
+      <el-table-column prop="Name" label="姓名" min-width="160" sortable />
+      <el-table-column
+        prop="Id"
+        label="Emby ID"
+        min-width="240"
+        show-overflow-tooltip
+        class-name="hide-mobile"
+      />
+      <el-table-column label="操作" width="120" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button link type="primary" @click="openDetail(row)">详情</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+
+    <div class="actor-link__footer">共 {{ filteredPersons.length }} 位演员</div>
 
     <!-- 详情抽屉 -->
     <el-drawer
@@ -98,26 +73,11 @@
           </el-avatar>
         </div>
         <div class="meta">
-          <div class="row">
-            <span class="label">姓名</span>
-            <span>{{ detail.Name || '—' }}</span>
-          </div>
-          <div class="row">
-            <span class="label">生日</span>
-            <span>{{ detail.Birthday || '—' }}</span>
-          </div>
-          <div class="row">
-            <span class="label">出生地</span>
-            <span>{{ detail.PlaceOfBirth || '—' }}</span>
-          </div>
-          <div class="row">
-            <span class="label">职业</span>
-            <span>{{ detail.KnownForDepartment || '—' }}</span>
-          </div>
-          <div class="row">
-            <span class="label">标签</span>
-            <span>{{ (detail.Tags || []).join(', ') || '—' }}</span>
-          </div>
+          <div class="row"><span class="label">姓名</span><span>{{ detail.Name || '—' }}</span></div>
+          <div class="row"><span class="label">生日</span><span>{{ detail.Birthday || '—' }}</span></div>
+          <div class="row"><span class="label">出生地</span><span>{{ detail.PlaceOfBirth || '—' }}</span></div>
+          <div class="row"><span class="label">职业</span><span>{{ detail.KnownForDepartment || '—' }}</span></div>
+          <div class="row"><span class="label">标签</span><span>{{ (detail.Tags || []).join(', ') || '—' }}</span></div>
         </div>
         <div class="bio">
           <div class="label">简介</div>
@@ -144,10 +104,7 @@
           <el-input v-model="editForm.placeOfBirth" />
         </el-form-item>
         <el-form-item label="职业">
-          <el-input
-            v-model="editForm.knownForDepartment"
-            placeholder="Acting"
-          />
+          <el-input v-model="editForm.knownForDepartment" placeholder="Acting" />
         </el-form-item>
         <el-form-item label="标签">
           <el-select
@@ -212,16 +169,10 @@
     <el-dialog v-model="showConfig" title="Emby 设置" width="520px">
       <el-form :model="config" label-width="120px">
         <el-form-item label="Emby 地址">
-          <el-input
-            v-model="config.emby_url"
-            placeholder="http://192.168.1.10:8096"
-          />
+          <el-input v-model="config.emby_url" placeholder="http://192.168.1.10:8096" />
         </el-form-item>
         <el-form-item label="Emby API Key">
-          <el-input
-            v-model="config.emby_api_key"
-            placeholder="Emby API Key"
-          />
+          <el-input v-model="config.emby_api_key" placeholder="Emby API Key" />
         </el-form-item>
         <el-form-item>
           <el-button :loading="testing" @click="doTest">测试连接</el-button>
@@ -256,9 +207,7 @@ import {
 
 const http = useHttpClient()
 
-// 当前用户（第一个用户）
 const currentUserId = ref('')
-
 const libraries = ref<EmbyLibrary[]>([])
 const selectedLibrary = ref('')
 const persons = ref<EmbyPerson[]>([])
@@ -269,7 +218,6 @@ const loadingLibraries = ref(false)
 const showDetail = ref(false)
 const detail = ref<EmbyPersonDetail | null>(null)
 
-// 编辑
 const showEdit = ref(false)
 const saving = ref(false)
 const editingPersonId = ref('')
@@ -290,7 +238,6 @@ const previewAvatarUrl = computed(() => {
   return avatarUrl.value || embyImageUrl(editingPersonId.value)
 })
 
-// 配置
 const showConfig = ref(false)
 const testing = ref(false)
 const config = ref<EmbyProxyConfig>({
@@ -301,9 +248,7 @@ const config = ref<EmbyProxyConfig>({
 const filteredPersons = computed(() => {
   const kw = search.value.trim().toLowerCase()
   if (!kw) return persons.value
-  return persons.value.filter((p) =>
-    (p.Name || '').toLowerCase().includes(kw),
-  )
+  return persons.value.filter((p) => (p.Name || '').toLowerCase().includes(kw))
 })
 
 async function loadConfig() {
@@ -311,7 +256,7 @@ async function loadConfig() {
     const data = await fetchEmbyProxyConfig(http)
     config.value = { ...config.value, ...data }
   } catch {
-    // 忽略
+    // ignore
   }
 }
 
@@ -403,18 +348,12 @@ async function saveEdit() {
   saving.value = true
   try {
     await updateEmbyPerson(http, editingPersonId.value, editForm.value)
-
     if (avatarUrl.value) {
-      await uploadEmbyAvatarFromUrl(
-        http,
-        editingPersonId.value,
-        avatarUrl.value,
-      )
+      await uploadEmbyAvatarFromUrl(http, editingPersonId.value, avatarUrl.value)
       ElMessage.success('元数据和头像已保存')
     } else {
       ElMessage.success('元数据已保存')
     }
-
     showEdit.value = false
     await loadPersons()
   } catch (e: any) {
@@ -433,7 +372,7 @@ async function onAvatarFileSelected(file: File) {
   } catch (e: any) {
     ElMessage.error(e?.message || '上传头像失败')
   }
-  return false // 阻止 el-upload 默认上传
+  return false
 }
 
 async function saveConfig() {
@@ -463,104 +402,107 @@ onMounted(async () => {
 <style scoped>
 .actor-link {
   padding: 20px;
-  width: 100%;
-  box-sizing: border-box;
 }
-
-.page-header {
+.actor-link__header {
   display: flex;
-  align-items: center;
   justify-content: space-between;
+  align-items: center;
   margin-bottom: 16px;
-  flex-wrap: wrap;
   gap: 12px;
+  flex-wrap: wrap;
 }
-
-.page-title h2 {
+.actor-link__header h2 {
   margin: 0;
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 600;
-  color: #303133;
 }
-
-.page-title p {
-  margin: 4px 0 0;
-  font-size: 13px;
-  color: #909399;
-}
-
-.header-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.toolbar-card {
-  margin-bottom: 16px;
-}
-
-.toolbar-card :deep(.el-card__body) {
-  padding: 16px;
-}
-
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
 }
-
-.toolbar-spacer {
-  flex: 1;
-}
-
-.count-text {
+.actor-link__footer {
+  margin-top: 12px;
+  text-align: right;
   color: #909399;
   font-size: 13px;
 }
-
-.table-card :deep(.el-card__body) {
-  padding: 0;
-}
-
 .detail {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
-
 .detail .avatar-wrap {
   display: flex;
   justify-content: center;
 }
-
 .detail .meta {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-
 .detail .row {
   display: flex;
   gap: 12px;
 }
-
 .detail .label {
   width: 80px;
   color: #909399;
   flex-shrink: 0;
 }
-
 .detail .bio p {
   margin: 6px 0 0;
   line-height: 1.6;
   color: #303133;
   white-space: pre-wrap;
 }
-
 .avatar-edit {
   display: flex;
   align-items: center;
   gap: 12px;
   width: 100%;
+}
+
+@media (max-width: 768px) {
+  .actor-link {
+    padding: 12px;
+  }
+  .actor-link__header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .actor-link__header h2 {
+    font-size: 18px;
+  }
+  .toolbar {
+    gap: 6px;
+  }
+  .toolbar .el-select,
+  .toolbar .el-input {
+    width: 100% !important;
+  }
+  :deep(.hide-mobile) {
+    display: none !important;
+  }
+  :deep(.el-table__header-wrapper),
+  :deep(.el-table__body-wrapper) {
+    font-size: 12px;
+  }
+  :deep(.el-table .cell) {
+    padding: 0 4px;
+  }
+}
+
+@media (max-width: 480px) {
+  .actor-link {
+    padding: 8px;
+  }
+  :deep(.el-table__header-wrapper),
+  :deep(.el-table__body-wrapper) {
+    font-size: 11px;
+  }
 }
 </style>
