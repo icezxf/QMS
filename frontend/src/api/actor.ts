@@ -41,20 +41,18 @@ export async function testEmbyProxy(
   return unwrapResponse(response) ?? { ok: false, message: '未知错误' }
 }
 
-// ============ Emby 数据（直接走通用代理） ============
+// ============ 通用代理 URL 工具 ============
 
-// 拼接代理 URL 的工具函数
 export function embyProxyUrl(path: string): string {
   const p = path.startsWith('/') ? path : '/' + path
   return `${SERVER_URL}/emby-proxy${p}`
 }
 
-// 头像 URL
 export function embyImageUrl(personId: string): string {
   return embyProxyUrl(`/api/v1/people/${personId}/image`)
 }
 
-// 通用请求封装：GET
+// 通用请求封装
 export async function embyGet<T = any>(
   http: AxiosInstance,
   path: string,
@@ -64,7 +62,6 @@ export async function embyGet<T = any>(
   return response.data
 }
 
-// 通用请求封装：PATCH
 export async function embyPatch<T = any>(
   http: AxiosInstance,
   path: string,
@@ -130,16 +127,21 @@ export async function fetchEmbyPersons(
   userId: string,
   libraryId: string,
 ): Promise<EmbyPerson[]> {
-  const data = await embyGet<{
-    Items: Array<{ People?: EmbyPerson[] }>
-    TotalRecordCount: number
-  }>(http, `/emby/Users/${userId}/Items`, {
-    ParentId: libraryId,
+  const params: Record<string, any> = {
     Recursive: true,
     Fields: 'People',
     Limit: 500,
     StartIndex: 0,
-  })
+  }
+  // 只有指定库时才传 ParentId
+  if (libraryId) {
+    params.ParentId = libraryId
+  }
+
+  const data = await embyGet<{
+    Items: Array<{ People?: EmbyPerson[] }>
+    TotalRecordCount: number
+  }>(http, `/emby/Users/${userId}/Items`, params)
 
   const seen = new Map<string, EmbyPerson>()
   for (const item of data?.Items ?? []) {
@@ -199,4 +201,23 @@ export async function uploadEmbyAvatarFile(
     file,
     { headers: { 'Content-Type': file.type || 'image/jpeg' } },
   )
+}
+
+// ============ 刮削（占位，后端接口待实现） ============
+
+export interface ScrapeResult {
+  ok: boolean
+  message?: string
+}
+
+export async function scrapeEmbyPerson(
+  http: AxiosInstance,
+  personId: string,
+  personName: string,
+): Promise<ScrapeResult> {
+  const response = await http.post<APIResponse<ScrapeResult>>(
+    embyProxyUrl(`/person/${personId}/scrape`),
+    { name: personName },
+  )
+  return unwrapResponse(response) ?? { ok: false, message: '未知错误' }
 }
