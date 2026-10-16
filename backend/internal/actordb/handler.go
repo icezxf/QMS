@@ -45,6 +45,9 @@ func (h *Handler) getConfig(c *gin.Context) {
 	if len(masked.EmbyAPIKey) > 8 {
 		masked.EmbyAPIKey = masked.EmbyAPIKey[:4] + "****"
 	}
+	if len(masked.StashDBApiKey) > 8 {
+		masked.StashDBApiKey = masked.StashDBApiKey[:4] + "****"
+	}
 	c.JSON(http.StatusOK, masked)
 }
 
@@ -57,6 +60,9 @@ func (h *Handler) updateConfig(c *gin.Context) {
 	old, _ := h.Repo.GetConfig()
 	if req.EmbyAPIKey == "" || strings.Contains(req.EmbyAPIKey, "****") {
 		req.EmbyAPIKey = old.EmbyAPIKey
+	}
+	if req.StashDBApiKey == "" || strings.Contains(req.StashDBApiKey, "****") {
+		req.StashDBApiKey = old.StashDBApiKey
 	}
 	if err := h.Repo.UpdateConfig(&req); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -130,7 +136,6 @@ func (h *Handler) resetScript(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "script": DefaultScrapeScript})
 }
 
-// 试运行脚本（不落库，跑一次看结果）
 func (h *Handler) testScript(c *gin.Context) {
 	var req struct {
 		Script     string `json:"script"`
@@ -144,18 +149,17 @@ func (h *Handler) testScript(c *gin.Context) {
 	if req.Script == "" {
 		req.Script = DefaultScrapeScript
 	}
-	cli, err := h.buildEmbyClient()
+	exec, err := h.buildScriptExecutor()
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	exec := NewScriptExecutor(cli)
-	vars, results, err := exec.Run(c.Request.Context(), req.Script, map[string]any{
+	vars, results, runErr := exec.Run(c.Request.Context(), req.Script, map[string]any{
 		"personId":   req.PersonID,
 		"personName": req.PersonName,
 	})
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error(), "results": results, "vars": vars})
+	if runErr != nil {
+		c.JSON(http.StatusOK, gin.H{"ok": false, "error": runErr.Error(), "results": results, "vars": vars})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "results": results, "vars": vars})
@@ -163,7 +167,6 @@ func (h *Handler) testScript(c *gin.Context) {
 
 // ============ 刮削（走脚本） ============
 
-// scrapePerson 执行当前生效脚本刮削单个演员
 func (h *Handler) scrapePerson(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
@@ -171,7 +174,7 @@ func (h *Handler) scrapePerson(c *gin.Context) {
 	}
 	_ = c.ShouldBindJSON(&req)
 
-	cli, err := h.buildEmbyClient()
+	exec, err := h.buildScriptExecutor()
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"ok": false, "message": err.Error()})
 		return
@@ -183,24 +186,15 @@ func (h *Handler) scrapePerson(c *gin.Context) {
 		return
 	}
 
-	exec := NewScriptExecutor(cli)
 	_, results, runErr := exec.Run(c.Request.Context(), script, map[string]any{
 		"personId":   id,
 		"personName": req.Name,
 	})
 	if runErr != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"ok":      false,
-			"message": runErr.Error(),
-			"results": results,
-		})
+		c.JSON(http.StatusOK, gin.H{"ok": false, "message": runErr.Error(), "results": results})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"ok":      true,
-		"message": "刮削成功",
-		"results": results,
-	})
+	c.JSON(http.StatusOK, gin.H{"ok": true, "message": "刮削成功", "results": results})
 }
 
 // ============ 通用代理 ============
@@ -252,7 +246,7 @@ func (h *Handler) proxy(c *gin.Context) {
 
 // ============ 工具 ============
 
-func (h *Handler) buildEmbyClient() (*EmbyClient, error) {
+func (h *Handler) buildScriptExecutor() (*ScriptExecutor, error) {
 	cfg, err := h.Repo.GetConfig()
 	if err != nil {
 		return nil, err
@@ -260,7 +254,9 @@ func (h *Handler) buildEmbyClient() (*EmbyClient, error) {
 	if cfg.EmbyURL == "" || cfg.EmbyAPIKey == "" {
 		return nil, errConfigMissing
 	}
-	return NewEmbyClient(cfg.EmbyURL, cfg.EmbyAPIKey, ""), nil
+	emby := NewEmbyClient(cfg.EmbyURL, cfg.EmbyAPIKey, "")
+	stash := NewStashDBClient(cfg.StashDBEndpoint, cfg.StashDBApiKey)
+	return NewScriptExecutor(emby, stash), nil
 }
 
 var errConfigMissing = &configErr{"Emby 未配置"}
