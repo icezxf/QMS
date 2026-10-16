@@ -334,7 +334,7 @@ const search = ref('')
 const loading = ref(false)
 const loadingLibraries = ref(false)
 
-const tableRef = ref<InstanceType<typeof ElTable>>()
+const tableRef = ref<any>()
 const selectedRows = ref<EmbyPerson[]>([])
 
 const showDetail = ref(false)
