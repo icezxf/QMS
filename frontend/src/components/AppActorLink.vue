@@ -25,6 +25,7 @@
           style="width: 180px"
         />
         <el-button @click="showConfig = true">设置</el-button>
+        <el-button @click="openScript">脚本</el-button>
         <el-button :loading="loading" @click="loadAll">刷新</el-button>
         <el-button
           type="warning"
@@ -38,7 +39,6 @@
     </div>
 
     <el-table
-      ref="tableRef"
       :data="filteredPersons"
       border
       stripe
@@ -67,7 +67,6 @@
         label="Emby ID"
         min-width="220"
         show-overflow-tooltip
-        class-name="hide-mobile"
       />
       <el-table-column
         label="刮削状态"
@@ -295,6 +294,58 @@
         </el-form-item>
       </el-form>
     </el-dialog>
+
+    <!-- 脚本调试抽屉 -->
+    <el-drawer v-model="showScript" size="760px" title="刮削脚本">
+      <div class="script-panel">
+        <div class="script-toolbar">
+          <el-tag v-if="scriptIsDefault" type="info">默认脚本</el-tag>
+          <el-tag v-else type="success">自定义脚本</el-tag>
+          <div class="spacer" />
+          <el-button size="small" @click="reloadScript">重新加载</el-button>
+          <el-button size="small" @click="doResetScript">恢复默认</el-button>
+          <el-button size="small" type="primary" @click="doSaveScript">保存</el-button>
+        </div>
+
+        <el-input
+          v-model="scriptText"
+          type="textarea"
+          :rows="22"
+          placeholder="YAML 脚本"
+          class="script-editor"
+        />
+
+        <div class="script-test">
+          <h4>试运行</h4>
+          <el-form :inline="true">
+            <el-form-item label="Emby 演员 ID">
+              <el-input v-model="testPersonId" style="width: 260px" placeholder="local-xxx" />
+            </el-form-item>
+            <el-form-item label="姓名">
+              <el-input v-model="testPersonName" style="width: 160px" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="warning" :loading="scriptRunning" @click="doRunScript">
+                执行
+              </el-button>
+            </el-form-item>
+          </el-form>
+
+          <div v-if="scriptResults.length > 0" class="script-results">
+            <div
+              v-for="r in scriptResults"
+              :key="r.index"
+              :class="['result-row', r.ok ? 'ok' : 'fail']"
+            >
+              <span class="idx">#{{ r.index + 1 }}</span>
+              <span class="action">{{ r.action }}</span>
+              <span class="dur">{{ r.duration }}</span>
+              <span class="msg">{{ r.message }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -311,12 +362,16 @@ import {
   fetchEmbyPersons,
   fetchEmbyProxyConfig,
   fetchEmbyUsers,
+  fetchScrapeScript,
+  resetScrapeScript,
   saveEmbyProxyConfig,
+  saveScrapeScript,
+  scrapeEmbyPerson,
   testEmbyProxy,
+  testScrapeScript,
   updateEmbyPerson,
   uploadEmbyAvatarFile,
   uploadEmbyAvatarFromUrl,
-  scrapeEmbyPerson,
   type EmbyLibrary,
   type EmbyPerson,
   type EmbyPersonDetail,
@@ -334,7 +389,6 @@ const search = ref('')
 const loading = ref(false)
 const loadingLibraries = ref(false)
 
-const tableRef = ref<any>()
 const selectedRows = ref<EmbyPerson[]>([])
 
 const showDetail = ref(false)
@@ -368,7 +422,6 @@ const config = ref<EmbyProxyConfig>({
 })
 
 // ===== 刮削状态 =====
-// 'idle' | 'pending' | 'running' | 'success' | 'failed'
 const scrapeStatus = ref<Record<string, string>>({})
 const scraping = ref(false)
 const showScrapeProgress = ref(false)
@@ -381,6 +434,17 @@ const scrapeProgress = ref({
 })
 const scrapeResults = ref<
   Array<{ id: string; name: string; status: string; message: string }>
+>([])
+
+// ===== 脚本调试 =====
+const showScript = ref(false)
+const scriptText = ref('')
+const scriptIsDefault = ref(true)
+const scriptRunning = ref(false)
+const testPersonId = ref('')
+const testPersonName = ref('')
+const scriptResults = ref<
+  Array<{ index: number; action: string; ok: boolean; message: string; duration: string }>
 >([])
 
 const filteredPersons = computed(() => {
@@ -521,7 +585,7 @@ async function onAvatarFileSelected(file: File) {
   return false
 }
 
-// ============ 刮削逻辑 ============
+// ============ 刮削 ============
 
 async function scrapeOne(row: EmbyPerson) {
   if (scraping.value) {
@@ -629,6 +693,67 @@ async function batchScrape() {
   ElMessage.success(
     `刮削完成：成功 ${scrapeProgress.value.success}，失败 ${scrapeProgress.value.failed}`,
   )
+}
+
+// ============ 脚本管理 ============
+
+async function openScript() {
+  showScript.value = true
+  await reloadScript()
+}
+
+async function reloadScript() {
+  try {
+    const r = await fetchScrapeScript(http)
+    scriptText.value = r.script
+    scriptIsDefault.value = r.is_default
+  } catch (e: any) {
+    ElMessage.error(e?.message || '加载脚本失败')
+  }
+}
+
+async function doSaveScript() {
+  try {
+    await saveScrapeScript(http, scriptText.value)
+    ElMessage.success('已保存')
+    scriptIsDefault.value = false
+  } catch (e: any) {
+    ElMessage.error(e?.message || '保存失败')
+  }
+}
+
+async function doResetScript() {
+  try {
+    const s = await resetScrapeScript(http)
+    scriptText.value = s
+    scriptIsDefault.value = true
+    ElMessage.success('已恢复默认')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '恢复失败')
+  }
+}
+
+async function doRunScript() {
+  if (!testPersonId.value) {
+    ElMessage.warning('请填 Emby 演员 ID')
+    return
+  }
+  scriptRunning.value = true
+  scriptResults.value = []
+  try {
+    const r = await testScrapeScript(http, {
+      script: scriptText.value,
+      person_id: testPersonId.value,
+      person_name: testPersonName.value,
+    })
+    scriptResults.value = r.results || []
+    if (r.ok) ElMessage.success('执行成功')
+    else ElMessage.error(r.error || '执行失败')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '执行失败')
+  } finally {
+    scriptRunning.value = false
+  }
 }
 
 async function saveConfig() {
@@ -758,6 +883,71 @@ onMounted(async () => {
 }
 :deep(.row-success) {
   background: #f0f9eb;
+}
+
+/* ===== 脚本调试 ===== */
+.script-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.script-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.script-toolbar .spacer {
+  flex: 1;
+}
+.script-editor :deep(textarea) {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.script-test h4 {
+  margin: 0 0 8px;
+}
+.script-results {
+  margin-top: 12px;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.result-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  border-bottom: 1px solid #f5f5f5;
+}
+.result-row:last-child {
+  border-bottom: none;
+}
+.result-row.ok {
+  background: #f0f9eb;
+}
+.result-row.fail {
+  background: #fef0f0;
+}
+.result-row .idx {
+  width: 30px;
+  color: #999;
+}
+.result-row .action {
+  width: 180px;
+  color: #409eff;
+  font-family: monospace;
+}
+.result-row .dur {
+  width: 60px;
+  color: #999;
+}
+.result-row .msg {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 768px) {
