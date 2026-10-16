@@ -240,7 +240,10 @@ const editForm = ref({
   taglines: [] as string[],
 })
 const avatarUrl = ref('')
+const localAvatarPreview = ref('') // 本地文件上传后的临时预览
+
 const previewAvatarUrl = computed(() => {
+  if (localAvatarPreview.value) return localAvatarPreview.value
   return avatarUrl.value || embyImageUrl(editingPersonId.value)
 })
 
@@ -322,6 +325,7 @@ async function openDetail(row: EmbyPerson) {
 async function openEdit(row: EmbyPerson) {
   editingPersonId.value = row.Id
   avatarUrl.value = ''
+  localAvatarPreview.value = ''
   try {
     const d = await fetchEmbyPersonDetail(http, row.Id)
     editForm.value = {
@@ -380,8 +384,8 @@ async function onAvatarFileSelected(file: File) {
   try {
     await uploadEmbyAvatarFile(http, editingPersonId.value, file)
     ElMessage.success('头像已上传')
-    // 刷新预览
-    previewAvatarUrl.value = URL.createObjectURL(file)
+    // 刷新预览：用新加的 ref
+    localAvatarPreview.value = URL.createObjectURL(file)
   } catch (e: any) {
     ElMessage.error(e?.message || '上传头像失败')
   }
