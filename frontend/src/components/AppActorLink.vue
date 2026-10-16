@@ -3,7 +3,7 @@
     <el-card shadow="never">
       <template #header>
         <div class="card-header">
-          <span>Emby 演员库</span>
+          <span>Emby 演员管理</span>
           <div class="toolbar">
             <el-select
               v-model="selectedLibrary"
@@ -36,11 +36,10 @@
         v-loading="loading"
         stripe
         style="width: 100%"
-        :default-sort="{ prop: 'Name', order: 'ascending' }"
       >
         <el-table-column label="头像" width="80">
           <template #default="{ row }">
-            <el-avatar :size="48" :src="embyPersonImageUrl(row.Id)">
+            <el-avatar :size="48" :src="embyImageUrl(row.Id)">
               {{ row.Name?.charAt(0) || '?' }}
             </el-avatar>
           </template>
@@ -52,8 +51,11 @@
           min-width="240"
           show-overflow-tooltip
         />
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" width="160" fixed="right">
           <template #default="{ row }">
+            <el-button link type="primary" @click="openEdit(row)">
+              编辑
+            </el-button>
             <el-button link type="primary" @click="openDetail(row)">
               详情
             </el-button>
@@ -64,39 +66,24 @@
       <div class="footer-note">共 {{ filteredPersons.length }} 位演员</div>
     </el-card>
 
-    <!-- 演员详情抽屉 -->
+    <!-- 详情抽屉 -->
     <el-drawer
       v-model="showDetail"
       size="520px"
       :title="detail?.Name || '演员详情'"
     >
-      <div v-if="detail" class="detail" v-loading="loadingDetail">
+      <div v-if="detail" class="detail">
         <div class="avatar-wrap">
-          <el-avatar :size="120" :src="embyPersonImageUrl(detail.Id)">
+          <el-avatar :size="120" :src="embyImageUrl(detail.Id)">
             {{ detail.Name?.charAt(0) || '?' }}
           </el-avatar>
         </div>
         <div class="meta">
-          <div class="row">
-            <span class="label">姓名</span>
-            <span>{{ detail.Name || '—' }}</span>
-          </div>
-          <div class="row">
-            <span class="label">生日</span>
-            <span>{{ detail.Birthday || '—' }}</span>
-          </div>
-          <div class="row">
-            <span class="label">出生地</span>
-            <span>{{ detail.PlaceOfBirth || '—' }}</span>
-          </div>
-          <div class="row">
-            <span class="label">职业</span>
-            <span>{{ detail.KnownForDepartment || '—' }}</span>
-          </div>
-          <div class="row">
-            <span class="label">标签</span>
-            <span>{{ (detail.Tags || []).join(', ') || '—' }}</span>
-          </div>
+          <div class="row"><span class="label">姓名</span><span>{{ detail.Name || '—' }}</span></div>
+          <div class="row"><span class="label">生日</span><span>{{ detail.Birthday || '—' }}</span></div>
+          <div class="row"><span class="label">出生地</span><span>{{ detail.PlaceOfBirth || '—' }}</span></div>
+          <div class="row"><span class="label">职业</span><span>{{ detail.KnownForDepartment || '—' }}</span></div>
+          <div class="row"><span class="label">标签</span><span>{{ (detail.Tags || []).join(', ') || '—' }}</span></div>
         </div>
         <div class="bio">
           <div class="label">简介</div>
@@ -106,26 +93,92 @@
       <el-empty v-else description="暂无详情" />
     </el-drawer>
 
+    <!-- 编辑抽屉 -->
+    <el-drawer
+      v-model="showEdit"
+      size="560px"
+      :title="`编辑：${editForm.name || ''}`"
+    >
+      <el-form :model="editForm" label-width="100px">
+        <el-form-item label="姓名">
+          <el-input v-model="editForm.name" />
+        </el-form-item>
+        <el-form-item label="生日">
+          <el-input v-model="editForm.birthday" placeholder="1993-08-16" />
+        </el-form-item>
+        <el-form-item label="出生地">
+          <el-input v-model="editForm.placeOfBirth" />
+        </el-form-item>
+        <el-form-item label="职业">
+          <el-input v-model="editForm.knownForDepartment" placeholder="Acting" />
+        </el-form-item>
+        <el-form-item label="标签">
+          <el-select
+            v-model="editForm.tags"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            style="width: 100%"
+            placeholder="输入后回车添加"
+          />
+        </el-form-item>
+        <el-form-item label="标语">
+          <el-select
+            v-model="editForm.taglines"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            style="width: 100%"
+            placeholder="输入后回车添加"
+          />
+        </el-form-item>
+        <el-form-item label="简介">
+          <el-input
+            v-model="editForm.biography"
+            type="textarea"
+            :rows="8"
+            placeholder="演员简介"
+          />
+        </el-form-item>
+
+        <el-form-item label="头像">
+          <div class="avatar-edit">
+            <el-avatar :size="80" :src="previewAvatarUrl">
+              {{ editForm.name?.charAt(0) || '?' }}
+            </el-avatar>
+            <el-input
+              v-model="avatarUrl"
+              placeholder="粘贴图片 URL"
+              style="flex: 1"
+            />
+            <el-upload
+              :show-file-list="false"
+              :before-upload="onAvatarFileSelected"
+            >
+              <el-button>本地图片</el-button>
+            </el-upload>
+          </div>
+        </el-form-item>
+
+        <el-form-item>
+          <el-button type="primary" :loading="saving" @click="saveEdit">
+            保存到 Emby
+          </el-button>
+          <el-button @click="showEdit = false">取消</el-button>
+        </el-form-item>
+      </el-form>
+    </el-drawer>
+
     <!-- 设置弹窗 -->
     <el-dialog v-model="showConfig" title="Emby 设置" width="520px">
       <el-form :model="config" label-width="120px">
         <el-form-item label="Emby 地址">
-          <el-input
-            v-model="config.emby_url"
-            placeholder="http://192.168.1.10:8096"
-          />
+          <el-input v-model="config.emby_url" placeholder="http://192.168.1.10:8096" />
         </el-form-item>
         <el-form-item label="Emby API Key">
-          <el-input
-            v-model="config.emby_api_key"
-            placeholder="Emby API Key"
-          />
-        </el-form-item>
-        <el-form-item label="Emby 用户名">
-          <el-input
-            v-model="config.emby_user"
-            placeholder="例如 admin（或直接填 UUID）"
-          />
+          <el-input v-model="config.emby_api_key" placeholder="Emby API Key" />
         </el-form-item>
         <el-form-item>
           <el-button :loading="testing" @click="doTest">测试连接</el-button>
@@ -141,20 +194,27 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useHttpClient } from '@/http/client'
 import {
-  embyPersonImageUrl,
-  fetchActorEmbyConfig,
+  embyImageUrl,
   fetchEmbyLibraries,
   fetchEmbyPersonDetail,
   fetchEmbyPersons,
-  saveActorEmbyConfig,
-  testEmbyConnection,
-  type ActorEmbyConfig,
+  fetchEmbyProxyConfig,
+  fetchEmbyUsers,
+  saveEmbyProxyConfig,
+  testEmbyProxy,
+  updateEmbyPerson,
+  uploadEmbyAvatarFile,
+  uploadEmbyAvatarFromUrl,
   type EmbyLibrary,
   type EmbyPerson,
   type EmbyPersonDetail,
+  type EmbyProxyConfig,
 } from '@/api/actor'
 
 const http = useHttpClient()
+
+// 当前用户（第一个用户）
+const currentUserId = ref('')
 
 const libraries = ref<EmbyLibrary[]>([])
 const selectedLibrary = ref('')
@@ -164,40 +224,60 @@ const loading = ref(false)
 const loadingLibraries = ref(false)
 
 const showDetail = ref(false)
-const loadingDetail = ref(false)
 const detail = ref<EmbyPersonDetail | null>(null)
 
+// 编辑
+const showEdit = ref(false)
+const saving = ref(false)
+const editingPersonId = ref('')
+const editForm = ref({
+  name: '',
+  biography: '',
+  birthday: '',
+  placeOfBirth: '',
+  knownForDepartment: '',
+  tags: [] as string[],
+  taglines: [] as string[],
+})
+const avatarUrl = ref('')
+const previewAvatarUrl = computed(() => {
+  return avatarUrl.value || embyImageUrl(editingPersonId.value)
+})
+
+// 配置
 const showConfig = ref(false)
 const testing = ref(false)
-const config = ref<ActorEmbyConfig>({
+const config = ref<EmbyProxyConfig>({
   emby_url: '',
   emby_api_key: '',
-  emby_user: '',
-  stashdb_key: '',
-  sync_cron: '0 3 * * *',
 })
 
 const filteredPersons = computed(() => {
   const kw = search.value.trim().toLowerCase()
   if (!kw) return persons.value
-  return persons.value.filter((p) =>
-    (p.Name || '').toLowerCase().includes(kw),
-  )
+  return persons.value.filter((p) => (p.Name || '').toLowerCase().includes(kw))
 })
 
 async function loadConfig() {
   try {
-    const data = await fetchActorEmbyConfig(http)
+    const data = await fetchEmbyProxyConfig(http)
     config.value = { ...config.value, ...data }
   } catch {
-    // 配置尚未初始化时忽略
+    // 忽略
   }
 }
 
 async function loadLibraries() {
   loadingLibraries.value = true
   try {
-    libraries.value = await fetchEmbyLibraries(http)
+    // 先拿用户列表，用第一个用户
+    const users = await fetchEmbyUsers(http)
+    if (users.length === 0) {
+      ElMessage.warning('Emby 里没有用户')
+      return
+    }
+    currentUserId.value = users[0].Id
+    libraries.value = await fetchEmbyLibraries(http, currentUserId.value)
     if (libraries.value.length > 0 && !selectedLibrary.value) {
       selectedLibrary.value = libraries.value[0].Id
     }
@@ -209,10 +289,14 @@ async function loadLibraries() {
 }
 
 async function loadPersons() {
-  if (!selectedLibrary.value) return
+  if (!selectedLibrary.value || !currentUserId.value) return
   loading.value = true
   try {
-    persons.value = await fetchEmbyPersons(http, selectedLibrary.value)
+    persons.value = await fetchEmbyPersons(
+      http,
+      currentUserId.value,
+      selectedLibrary.value,
+    )
   } catch (e: any) {
     ElMessage.error(e?.message || '拉取演员失败')
   } finally {
@@ -227,19 +311,85 @@ async function loadAll() {
 
 async function openDetail(row: EmbyPerson) {
   showDetail.value = true
-  loadingDetail.value = true
   detail.value = null
   try {
     detail.value = await fetchEmbyPersonDetail(http, row.Id)
   } catch (e: any) {
     ElMessage.error(e?.message || '拉取详情失败')
-  } finally {
-    loadingDetail.value = false
   }
 }
 
+async function openEdit(row: EmbyPerson) {
+  editingPersonId.value = row.Id
+  avatarUrl.value = ''
+  try {
+    const d = await fetchEmbyPersonDetail(http, row.Id)
+    editForm.value = {
+      name: d.Name || '',
+      biography: d.Biography || '',
+      birthday: d.Birthday || '',
+      placeOfBirth: d.PlaceOfBirth || '',
+      knownForDepartment: d.KnownForDepartment || '',
+      tags: d.Tags || [],
+      taglines: d.Taglines || [],
+    }
+  } catch {
+    editForm.value = {
+      name: row.Name,
+      biography: '',
+      birthday: '',
+      placeOfBirth: '',
+      knownForDepartment: '',
+      tags: [],
+      taglines: [],
+    }
+  }
+  showEdit.value = true
+}
+
+async function saveEdit() {
+  if (!editForm.value.name) {
+    ElMessage.warning('姓名必填')
+    return
+  }
+  saving.value = true
+  try {
+    // 1. 更新元数据
+    await updateEmbyPerson(http, editingPersonId.value, editForm.value)
+
+    // 2. 换头像（如果用户填了 URL）
+    if (avatarUrl.value) {
+      await uploadEmbyAvatarFromUrl(http, editingPersonId.value, avatarUrl.value)
+      ElMessage.success('元数据和头像已保存')
+    } else {
+      ElMessage.success('元数据已保存')
+    }
+
+    showEdit.value = false
+    // 刷新列表，让头像立即显示
+    await loadPersons()
+  } catch (e: any) {
+    ElMessage.error(e?.message || '保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function onAvatarFileSelected(file: File) {
+  if (!editingPersonId.value) return
+  try {
+    await uploadEmbyAvatarFile(http, editingPersonId.value, file)
+    ElMessage.success('头像已上传')
+    // 刷新预览
+    previewAvatarUrl.value = URL.createObjectURL(file)
+  } catch (e: any) {
+    ElMessage.error(e?.message || '上传头像失败')
+  }
+  return false // 阻止 el-upload 默认上传
+}
+
 async function saveConfig() {
-  await saveActorEmbyConfig(http, config.value)
+  await saveEmbyProxyConfig(http, config.value)
   ElMessage.success('已保存')
   showConfig.value = false
   await loadAll()
@@ -248,11 +398,7 @@ async function saveConfig() {
 async function doTest() {
   testing.value = true
   try {
-    const r = await testEmbyConnection(http, {
-      emby_url: config.value.emby_url,
-      emby_api_key: config.value.emby_api_key,
-      emby_user: config.value.emby_user,
-    })
+    const r = await testEmbyProxy(http, config.value)
     if (r.ok) ElMessage.success(r.message)
     else ElMessage.error(r.message)
   } finally {
@@ -317,5 +463,11 @@ onMounted(async () => {
   line-height: 1.6;
   color: #303133;
   white-space: pre-wrap;
+}
+.avatar-edit {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
 }
 </style>
