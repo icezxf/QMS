@@ -3,6 +3,8 @@ import { SERVER_URL } from '@/const'
 import { unwrapResponse } from './response'
 import type { APIResponse } from './types'
 
+// ============ 本地演员库 ============
+
 export interface ActorProfile {
   id: number
   name: string
@@ -25,9 +27,12 @@ export interface ActorListResult {
 export interface ActorEmbyConfig {
   emby_url: string
   emby_api_key: string
+  emby_user: string
   stashdb_key: string
   sync_cron: string
 }
+
+// ============ 本地接口 ============
 
 export async function fetchActorList(
   http: AxiosInstance,
@@ -67,14 +72,18 @@ export async function aggregateActors(http: AxiosInstance): Promise<void> {
   unwrapResponse(response)
 }
 
-export async function syncStashDB(http: AxiosInstance): Promise<{ ok: boolean; message?: string }> {
+export async function syncStashDB(
+  http: AxiosInstance,
+): Promise<{ ok: boolean; message?: string }> {
   const response = await http.post<APIResponse<{ ok: boolean; message?: string }>>(
     `${SERVER_URL}/actor/sync-stashdb`,
   )
   return unwrapResponse(response) ?? { ok: false }
 }
 
-export async function pushEmby(http: AxiosInstance): Promise<{ ok: boolean; message?: string }> {
+export async function pushEmby(
+  http: AxiosInstance,
+): Promise<{ ok: boolean; message?: string }> {
   const response = await http.post<APIResponse<{ ok: boolean; message?: string }>>(
     `${SERVER_URL}/actor/push-emby`,
   )
@@ -99,4 +108,82 @@ export async function saveActorEmbyConfig(
     payload,
   )
   unwrapResponse(response)
+}
+
+// ============ Emby 演员浏览 ============
+
+export interface EmbyLibrary {
+  Id: string
+  Name: string
+  CollectionType: string
+}
+
+export interface EmbyPerson {
+  Id: string
+  Name: string
+  Type: string
+  Role?: string
+}
+
+export interface EmbyPersonDetail {
+  Id: string
+  Name: string
+  Biography: string
+  Birthday: string
+  PlaceOfBirth: string
+  KnownForDepartment: string
+  Tags: string[]
+  Taglines: string[]
+  imageUrl: string
+}
+
+export async function fetchEmbyLibraries(
+  http: AxiosInstance,
+): Promise<EmbyLibrary[]> {
+  const response = await http.get<APIResponse<{ list: EmbyLibrary[] }>>(
+    `${SERVER_URL}/actor/emby/libraries`,
+  )
+  return unwrapResponse(response)?.list ?? []
+}
+
+export async function fetchEmbyPersons(
+  http: AxiosInstance,
+  libraryId: string,
+): Promise<EmbyPerson[]> {
+  const response = await http.get<APIResponse<{ list: EmbyPerson[] }>>(
+    `${SERVER_URL}/actor/emby/persons`,
+    { params: { library_id: libraryId } },
+  )
+  return unwrapResponse(response)?.list ?? []
+}
+
+export async function fetchEmbyPersonDetail(
+  http: AxiosInstance,
+  personId: string,
+): Promise<EmbyPersonDetail> {
+  const response = await http.get<APIResponse<EmbyPersonDetail>>(
+    `${SERVER_URL}/actor/emby/person/${personId}`,
+  )
+  return unwrapResponse(response) as EmbyPersonDetail
+}
+
+export async function testEmbyConnection(
+  http: AxiosInstance,
+  payload: { emby_url: string; emby_api_key: string; emby_user: string },
+): Promise<{ ok: boolean; message: string }> {
+  const response = await http.post<APIResponse<{ ok: boolean; message: string }>>(
+    `${SERVER_URL}/actor/emby/test`,
+    payload,
+  )
+  return unwrapResponse(response) ?? { ok: false, message: '未知错误' }
+}
+
+// 头像 URL（供 <img src> 使用）
+export function embyPersonImageUrl(personId: string): string {
+  return `${SERVER_URL}/actor/emby/person/${personId}/image`
+}
+
+// 本地演员头像 URL
+export function localActorAvatarUrl(actorId: number): string {
+  return `${SERVER_URL}/actor/${actorId}/avatar`
 }
