@@ -23,6 +23,7 @@ import (
 	emby302https "qmediasync/emby302/util/https"
 	"qmediasync/emby302/util/logs/colors"
 	"qmediasync/emby302/web"
+	"qmediasync/internal/actordb"
 	"qmediasync/internal/aven"
 	"qmediasync/internal/avscrape"
 	"qmediasync/internal/backup"
@@ -77,11 +78,12 @@ func parseBuildUnixTime(value string) int64 {
 }
 
 type App struct {
-	isRelease   bool
-	httpServer  *http.Server
-	httpsServer *http.Server
-	version     string
-	publishDate string
+	isRelease    bool
+	httpServer   *http.Server
+	httpsServer  *http.Server
+	version      string
+	publishDate  string
+	actorHandler *actordb.Handler // ← 新增
 }
 
 func (app *App) Start() {
@@ -208,6 +210,9 @@ func (app *App) StartDatabase() error {
 		if err := models.ResetStaleEmbySyncRunOnStartup(); err != nil {
 			return err
 		}
+		// ===== 初始化 Emby 代理模块 =====
+		app.initActorHandler()
+		// ==================================
 		return nil
 	}
 	dbConfig := &database.Config{
@@ -230,7 +235,21 @@ func (app *App) StartDatabase() error {
 	if err := models.ResetStaleEmbySyncRunOnStartup(); err != nil {
 		return err
 	}
+	// ===== 初始化 Emby 代理模块 =====
+	app.initActorHandler()
+	// ==================================
 	return nil
+}
+
+// initActorHandler 初始化 Emby 代理模块（建表 + 构造 handler）
+func (app *App) initActorHandler() {
+	h, err := actordb.Init(db.Db)
+	if err != nil {
+		helpers.AppLogger.Errorf("初始化 Emby 代理模块失败：%v", err)
+		return
+	}
+	app.actorHandler = h
+	helpers.AppLogger.Infof("Emby 代理模块初始化成功")
 }
 
 func configureInitialAdminSetup() error {
@@ -342,7 +361,7 @@ func getDataAndConfigDir() error {
 			helpers.ConfigDir = configDir
 		} else {
 			oldConfigDir := os.Getenv("TRIM_PKGETC")
-			configDir = os.Getenv("TRIM_DATA_SHARE_PATHS")
+			configDir := os.Getenv("TRIM_DATA_SHARE_PATHS")
 			if configDir == "" {
 				configDir = oldConfigDir
 				needMk = false
@@ -560,6 +579,15 @@ func setRouter(r *gin.Engine) {
 	api := r.Group("/api")
 	api.Use(controllers.JWTAuthMiddleware())
 	{
+		// ===== 注册 Emby 代理路由 =====
+		if QMSApp != nil && QMSApp.actorHandler != nil {
+			QMSApp.actorHandler.RegisterRoutes(api)
+			helpers.AppLogger.Infof("Emby 代理路由已注册")
+		} else {
+			helpers.AppLogger.Warnf("Emby 代理模块未初始化，路由未注册")
+		}
+		// =============================
+
 		api.GET("/scrape/tmp-image", controllers.ScrapeTmpImage)
 		api.GET("/scrape/records/export", controllers.ExportScrapeRecords)
 		api.GET("/logs/stream", controllers.LogStream)
@@ -800,13 +828,13 @@ func initEnv() bool {
 	helpers.OAuthRelayEncryptionKey = firstNonEmpty(os.Getenv("OAUTH_RELAY_ENCRYPTION_KEY"), OAuthRelayEncryptionKey)
 	initTimeZone()
 	if err := getDataAndConfigDir(); err != nil {
-		log.Printf("初始化配置目录失败：%v", err)
+		log.Printf("初始化配置目录失败：%v\n", err)
 		return false
 	}
 	log.Printf("当前工作目录：%s\n", helpers.RootDir)
 	log.Printf("当前配置文件目录：%s\n", helpers.ConfigDir)
 	if err := checkLegacyDatabaseState(); err != nil {
-		log.Printf("数据库状态不支持：%v", err)
+		log.Printf("数据库状态不支持：%v\n", err)
 		return false
 	}
 	ipv4, _ := helpers.GetLocalIP()
@@ -821,7 +849,7 @@ func initEnv() bool {
 	log.Printf("配置文件存在，加载配置文件：%s", configPath)
 	err := helpers.InitConfig()
 	if err != nil {
-		log.Printf("初始化配置文件失败：%v", err)
+		log.Printf("初始化配置文件失败：%v\n", err)
 		return false
 	}
 	if err := helpers.InitEncryptionKey(); err != nil {
