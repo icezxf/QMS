@@ -41,6 +41,68 @@ export async function testEmbyProxy(
   return unwrapResponse(response) ?? { ok: false, message: '未知错误' }
 }
 
+// ============ 脚本管理 ============
+
+export interface ScriptResponse {
+  script: string
+  is_default: boolean
+}
+
+export interface ScriptStepResult {
+  index: number
+  action: string
+  ok: boolean
+  message: string
+  duration: string
+}
+
+export interface ScriptTestResponse {
+  ok: boolean
+  error?: string
+  results?: ScriptStepResult[]
+  vars?: Record<string, any>
+}
+
+export async function fetchScrapeScript(
+  http: AxiosInstance,
+): Promise<ScriptResponse> {
+  const r = await http.get<APIResponse<ScriptResponse>>(
+    `${SERVER_URL}/emby-proxy-config/script`,
+  )
+  return unwrapResponse(r) as ScriptResponse
+}
+
+export async function saveScrapeScript(
+  http: AxiosInstance,
+  script: string,
+): Promise<void> {
+  const r = await http.put<APIResponse<null>>(
+    `${SERVER_URL}/emby-proxy-config/script`,
+    { script },
+  )
+  unwrapResponse(r)
+}
+
+export async function resetScrapeScript(
+  http: AxiosInstance,
+): Promise<string> {
+  const r = await http.delete<APIResponse<{ script: string }>>(
+    `${SERVER_URL}/emby-proxy-config/script`,
+  )
+  return unwrapResponse(r)?.script ?? ''
+}
+
+export async function testScrapeScript(
+  http: AxiosInstance,
+  payload: { script: string; person_id: string; person_name: string },
+): Promise<ScriptTestResponse> {
+  const r = await http.post<APIResponse<ScriptTestResponse>>(
+    `${SERVER_URL}/emby-proxy-config/script/test`,
+    payload,
+  )
+  return unwrapResponse(r) ?? { ok: false, error: '未知错误' }
+}
+
 // ============ 通用代理 URL 工具 ============
 
 export function embyProxyUrl(path: string): string {
@@ -203,11 +265,12 @@ export async function uploadEmbyAvatarFile(
   )
 }
 
-// ============ 刮削（占位，后端接口待实现） ============
+// ============ 刮削（走脚本） ============
 
 export interface ScrapeResult {
   ok: boolean
   message?: string
+  results?: ScriptStepResult[]
 }
 
 export async function scrapeEmbyPerson(
@@ -216,7 +279,7 @@ export async function scrapeEmbyPerson(
   personName: string,
 ): Promise<ScrapeResult> {
   const response = await http.post<APIResponse<ScrapeResult>>(
-    embyProxyUrl(`/person/${personId}/scrape`),
+    `${SERVER_URL}/emby-proxy-scrape/person/${personId}`,
     { name: personName },
   )
   return unwrapResponse(response) ?? { ok: false, message: '未知错误' }
