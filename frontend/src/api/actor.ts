@@ -8,6 +8,8 @@ import type { APIResponse } from './types'
 export interface EmbyProxyConfig {
   emby_url: string
   emby_api_key: string
+  stashdb_endpoint: string
+  stashdb_api_key: string
 }
 
 export async function fetchEmbyProxyConfig(
@@ -114,7 +116,6 @@ export function embyImageUrl(personId: string): string {
   return embyProxyUrl(`/api/v1/people/${personId}/image`)
 }
 
-// 通用请求封装
 export async function embyGet<T = any>(
   http: AxiosInstance,
   path: string,
@@ -195,7 +196,6 @@ export async function fetchEmbyPersons(
     Limit: 500,
     StartIndex: 0,
   }
-  // 只有指定库时才传 ParentId
   if (libraryId) {
     params.ParentId = libraryId
   }
@@ -243,7 +243,6 @@ export async function uploadEmbyAvatarFromUrl(
   personId: string,
   imageUrl: string,
 ): Promise<void> {
-  // 前端先拉图片 → 转 blob → POST 到代理
   const resp = await fetch(imageUrl)
   const blob = await resp.blob()
   await http.post(
