@@ -29,6 +29,7 @@ type EmbyActorConfig struct {
 	ID         uint      `gorm:"primarykey" json:"id"`
 	EmbyURL    string    `gorm:"size:256" json:"emby_url"`
 	EmbyAPIKey string    `gorm:"size:191" json:"emby_api_key"`
+	EmbyUser   string    `gorm:"size:64" json:"emby_user"`
 	StashDBKey string    `gorm:"size:191" json:"stashdb_key"`
 	SyncCron   string    `gorm:"size:64" json:"sync_cron"`
 	UpdatedAt  time.Time `json:"updated_at"`
