@@ -14,7 +14,7 @@ export async function fetchEmbyProxyConfig(
   http: AxiosInstance,
 ): Promise<EmbyProxyConfig> {
   const response = await http.get<APIResponse<EmbyProxyConfig>>(
-    `${SERVER_URL}/emby-proxy/config`,
+    `${SERVER_URL}/emby-proxy-config`,
   )
   return unwrapResponse(response) as EmbyProxyConfig
 }
@@ -24,7 +24,7 @@ export async function saveEmbyProxyConfig(
   payload: EmbyProxyConfig,
 ): Promise<void> {
   const response = await http.put<APIResponse<null>>(
-    `${SERVER_URL}/emby-proxy/config`,
+    `${SERVER_URL}/emby-proxy-config`,
     payload,
   )
   unwrapResponse(response)
@@ -35,7 +35,7 @@ export async function testEmbyProxy(
   payload: EmbyProxyConfig,
 ): Promise<{ ok: boolean; message: string }> {
   const response = await http.post<APIResponse<{ ok: boolean; message: string }>>(
-    `${SERVER_URL}/emby-proxy/test`,
+    `${SERVER_URL}/emby-proxy-config/test`,
     payload,
   )
   return unwrapResponse(response) ?? { ok: false, message: '未知错误' }
@@ -45,7 +45,6 @@ export async function testEmbyProxy(
 
 // 拼接代理 URL 的工具函数
 export function embyProxyUrl(path: string): string {
-  // path 例如 "/emby/Users" 或 "/api/v1/people/xxx"
   const p = path.startsWith('/') ? path : '/' + path
   return `${SERVER_URL}/emby-proxy${p}`
 }
@@ -195,8 +194,6 @@ export async function uploadEmbyAvatarFile(
   personId: string,
   file: File,
 ): Promise<void> {
-  const formData = new FormData()
-  formData.append('file', file)
   await http.post(
     embyProxyUrl(`/emby/Items/${personId}/Images/Primary`),
     file,
