@@ -301,7 +301,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import type { ElTable } from 'element-plus'
 import { Edit, View, MagicStick } from '@element-plus/icons-vue'
 import { useHttpClient } from '@/http/client'
 import { useDeviceType } from '@/composables/useDeviceType'
