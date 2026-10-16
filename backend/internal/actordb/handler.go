@@ -15,12 +15,21 @@ type Handler struct {
 func NewHandler(repo *Repo) *Handler { return &Handler{Repo: repo} }
 
 func (h *Handler) RegisterRoutes(g *gin.RouterGroup) {
-	// 配置读写（独立前缀，避免和 /*path 通配符冲突）
+	// 配置读写
 	g.GET("/emby-proxy-config", h.getConfig)
 	g.PUT("/emby-proxy-config", h.updateConfig)
 	g.POST("/emby-proxy-config/test", h.testConnection)
 
-	// 通用代理（独占 /emby-proxy/ 前缀）
+	// 脚本管理
+	g.GET("/emby-proxy-config/script", h.getScript)
+	g.PUT("/emby-proxy-config/script", h.saveScript)
+	g.DELETE("/emby-proxy-config/script", h.resetScript)
+	g.POST("/emby-proxy-config/script/test", h.testScript)
+
+	// 刮削（走脚本）
+	g.POST("/emby-proxy-scrape/person/:id", h.scrapePerson)
+
+	// 通用代理（独占 /emby-proxy/ 前缀，放最后）
 	g.Any("/emby-proxy/*path", h.proxy)
 }
 
@@ -46,7 +55,6 @@ func (h *Handler) updateConfig(c *gin.Context) {
 		return
 	}
 	old, _ := h.Repo.GetConfig()
-	// 前端传了掩码或空值，保留原值
 	if req.EmbyAPIKey == "" || strings.Contains(req.EmbyAPIKey, "****") {
 		req.EmbyAPIKey = old.EmbyAPIKey
 	}
@@ -66,7 +74,6 @@ func (h *Handler) testConnection(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	// 前端传掩码或空值则用已存的 key
 	if req.EmbyAPIKey == "" || strings.Contains(req.EmbyAPIKey, "****") {
 		old, _ := h.Repo.GetConfig()
 		req.EmbyAPIKey = old.EmbyAPIKey
@@ -89,41 +96,135 @@ func (h *Handler) testConnection(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "message": "连接成功"})
 }
 
+// ============ 脚本管理 ============
+
+func (h *Handler) getScript(c *gin.Context) {
+	script, isDefault, err := LoadScript()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"script": script, "is_default": isDefault})
+}
+
+func (h *Handler) saveScript(c *gin.Context) {
+	var req struct {
+		Script string `json:"script"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := SaveScript(req.Script); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *Handler) resetScript(c *gin.Context) {
+	if err := ResetScript(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "script": DefaultScrapeScript})
+}
+
+// 试运行脚本（不落库，跑一次看结果）
+func (h *Handler) testScript(c *gin.Context) {
+	var req struct {
+		Script     string `json:"script"`
+		PersonID   string `json:"person_id"`
+		PersonName string `json:"person_name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Script == "" {
+		req.Script = DefaultScrapeScript
+	}
+	cli, err := h.buildEmbyClient()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	exec := NewScriptExecutor(cli)
+	vars, results, err := exec.Run(c.Request.Context(), req.Script, map[string]any{
+		"personId":   req.PersonID,
+		"personName": req.PersonName,
+	})
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error(), "results": results, "vars": vars})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "results": results, "vars": vars})
+}
+
+// ============ 刮削（走脚本） ============
+
+// scrapePerson 执行当前生效脚本刮削单个演员
+func (h *Handler) scrapePerson(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		Name string `json:"name"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	cli, err := h.buildEmbyClient()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"ok": false, "message": err.Error()})
+		return
+	}
+
+	script, _, err := LoadScript()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"ok": false, "message": "读取脚本失败：" + err.Error()})
+		return
+	}
+
+	exec := NewScriptExecutor(cli)
+	_, results, runErr := exec.Run(c.Request.Context(), script, map[string]any{
+		"personId":   id,
+		"personName": req.Name,
+	})
+	if runErr != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"ok":      false,
+			"message": runErr.Error(),
+			"results": results,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":      true,
+		"message": "刮削成功",
+		"results": results,
+	})
+}
+
 // ============ 通用代理 ============
 
-// proxy 把所有 /emby-proxy/*path 请求透传到 Emby。
-// 例：/emby-proxy/emby/Users/xxx/Views → {emby}/emby/Users/xxx/Views?api_key=xxx
-// 例：/emby-proxy/api/v1/people/{id}   → {emby}/api/v1/people/{id}?api_key=xxx
 func (h *Handler) proxy(c *gin.Context) {
 	cfg, err := h.Repo.GetConfig()
 	if err != nil || cfg.EmbyURL == "" || cfg.EmbyAPIKey == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Emby 未配置"})
 		return
 	}
-
-	// 拼目标 URL
-	path := c.Param("path") // 例如 /emby/Users/xxx/Views
+	path := c.Param("path")
 	target := strings.TrimRight(cfg.EmbyURL, "/") + path
 
-	// 拼 api_key
 	sep := "?"
 	if strings.Contains(target, "?") {
 		sep = "&"
 	}
 	target += sep + "api_key=" + cfg.EmbyAPIKey
 
-	// 保留原请求的 query string（如果有）
 	if qs := c.Request.URL.RawQuery; qs != "" {
 		target += "&" + qs
 	}
 
-	// 构造转发请求
-	req, err := http.NewRequestWithContext(
-		c.Request.Context(),
-		c.Request.Method,
-		target,
-		c.Request.Body,
-	)
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, target, c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -139,7 +240,6 @@ func (h *Handler) proxy(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
-	// 回传响应
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		c.Header("Content-Type", ct)
 	}
@@ -149,3 +249,22 @@ func (h *Handler) proxy(c *gin.Context) {
 	c.Status(resp.StatusCode)
 	_, _ = io.Copy(c.Writer, resp.Body)
 }
+
+// ============ 工具 ============
+
+func (h *Handler) buildEmbyClient() (*EmbyClient, error) {
+	cfg, err := h.Repo.GetConfig()
+	if err != nil {
+		return nil, err
+	}
+	if cfg.EmbyURL == "" || cfg.EmbyAPIKey == "" {
+		return nil, errConfigMissing
+	}
+	return NewEmbyClient(cfg.EmbyURL, cfg.EmbyAPIKey, ""), nil
+}
+
+var errConfigMissing = &configErr{"Emby 未配置"}
+
+type configErr struct{ msg string }
+
+func (e *configErr) Error() string { return e.msg }
