@@ -15,12 +15,12 @@ type Handler struct {
 func NewHandler(repo *Repo) *Handler { return &Handler{Repo: repo} }
 
 func (h *Handler) RegisterRoutes(g *gin.RouterGroup) {
-	// 配置读写
-	g.GET("/emby-proxy/config", h.getConfig)
-	g.PUT("/emby-proxy/config", h.updateConfig)
-	g.POST("/emby-proxy/test", h.testConnection)
+	// 配置读写（独立前缀，避免和 /*path 通配符冲突）
+	g.GET("/emby-proxy-config", h.getConfig)
+	g.PUT("/emby-proxy-config", h.updateConfig)
+	g.POST("/emby-proxy-config/test", h.testConnection)
 
-	// 通用代理（放最后，会吃掉 /emby-proxy/ 后面所有路径）
+	// 通用代理（独占 /emby-proxy/ 前缀）
 	g.Any("/emby-proxy/*path", h.proxy)
 }
 
