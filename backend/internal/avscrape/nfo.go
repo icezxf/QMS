@@ -21,6 +21,7 @@ func xmlEscape(s string) string {
 // GenerateNFO 根据 ScrapeResult 生成 NFO 文本
 // - Genres + ExtraTags 合并去重后一起输出到 <genre> / <tag>
 // - 多演员（>=2）自动加 <set><name>共演</name></set> 合集
+// - 每个演员再加一个同名 <set> 合集，便于 Emby 按演员浏览
 // - 演员 <name> 必须用 XML 转义（不能用 CDATA，Emby 读不到）
 func GenerateNFO(r *ScrapeResult) string {
 	if r == nil {
@@ -73,6 +74,19 @@ func GenerateNFO(r *ScrapeResult) string {
 	if len(r.Actors) >= 2 {
 		sb.WriteString("  <set>\n")
 		sb.WriteString("    <name>共演</name>\n")
+		sb.WriteString("  </set>\n")
+	}
+
+	// ===== 每个演员单独作为一个合集（Emby 里点演员名合集能看全部作品） =====
+	seenActor := map[string]bool{}
+	for _, a := range r.Actors {
+		name := strings.TrimSpace(a.Name)
+		if name == "" || seenActor[name] {
+			continue
+		}
+		seenActor[name] = true
+		sb.WriteString("  <set>\n")
+		sb.WriteString(fmt.Sprintf("    <name>%s</name>\n", xmlEscape(name)))
 		sb.WriteString("  </set>\n")
 	}
 	// ============================================
