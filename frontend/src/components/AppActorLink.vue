@@ -10,6 +10,7 @@
           :loading="loadingLibraries"
           @change="loadPersons"
         >
+          <el-option label="全部媒体库" value="" />
           <el-option
             v-for="lib in libraries"
             :key="lib.Id"
@@ -24,41 +25,155 @@
           style="width: 180px"
         />
         <el-button @click="showConfig = true">设置</el-button>
-        <el-button type="primary" :loading="loading" @click="loadAll">刷新</el-button>
+        <el-button :loading="loading" @click="loadAll">刷新</el-button>
+        <el-button
+          type="warning"
+          :disabled="selectedRows.length === 0 || scraping"
+          :loading="scraping"
+          @click="batchScrape"
+        >
+          批量刮削（{{ selectedRows.length }}）
+        </el-button>
       </div>
     </div>
 
     <el-table
+      ref="tableRef"
       :data="filteredPersons"
       border
       stripe
       v-loading="loading"
       style="width: 100%"
+      @selection-change="onSelectionChange"
     >
-      <el-table-column label="头像" width="70">
+      <el-table-column type="selection" width="48" reserve-selection />
+      <el-table-column label="头像" :width="isMobile ? 56 : 70">
         <template #default="{ row }">
-          <el-avatar :size="40" :src="embyImageUrl(row.Id)">
+          <el-avatar :size="isMobile ? 32 : 40" :src="embyImageUrl(row.Id)">
             {{ row.Name?.charAt(0) || '?' }}
           </el-avatar>
         </template>
       </el-table-column>
-      <el-table-column prop="Name" label="姓名" min-width="160" sortable />
       <el-table-column
+        prop="Name"
+        label="姓名"
+        :min-width="isMobile ? 100 : 160"
+        sortable
+        show-overflow-tooltip
+      />
+      <el-table-column
+        v-if="!isMobile"
         prop="Id"
         label="Emby ID"
-        min-width="240"
+        min-width="220"
         show-overflow-tooltip
         class-name="hide-mobile"
       />
-      <el-table-column label="操作" width="120" fixed="right">
+      <el-table-column
+        label="刮削状态"
+        :width="isMobile ? 60 : 110"
+        align="center"
+      >
         <template #default="{ row }">
-          <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-          <el-button link type="primary" @click="openDetail(row)">详情</el-button>
+          <template v-if="isMobile">
+            <span :class="['status-dot', scrapeStatus[row.Id] || 'idle']" />
+          </template>
+          <template v-else>
+            <el-tag v-if="scrapeStatus[row.Id] === 'pending'" type="info" size="small">待刮削</el-tag>
+            <el-tag v-else-if="scrapeStatus[row.Id] === 'running'" type="warning" size="small">刮削中</el-tag>
+            <el-tag v-else-if="scrapeStatus[row.Id] === 'success'" type="success" size="small">成功</el-tag>
+            <el-tag v-else-if="scrapeStatus[row.Id] === 'failed'" type="danger" size="small">失败</el-tag>
+            <span v-else>—</span>
+          </template>
+        </template>
+      </el-table-column>
+      <el-table-column
+        label="操作"
+        :width="isMobile ? 96 : 180"
+        fixed="right"
+        align="center"
+      >
+        <template #default="{ row }">
+          <template v-if="isMobile">
+            <el-tooltip content="编辑" placement="top">
+              <el-button link type="primary" :icon="Edit" @click="openEdit(row)" />
+            </el-tooltip>
+            <el-tooltip content="详情" placement="top">
+              <el-button link type="primary" :icon="View" @click="openDetail(row)" />
+            </el-tooltip>
+            <el-tooltip content="刮削" placement="top">
+              <el-button
+                link
+                type="warning"
+                :icon="MagicStick"
+                :loading="scrapeStatus[row.Id] === 'running'"
+                @click="scrapeOne(row)"
+              />
+            </el-tooltip>
+          </template>
+          <template v-else>
+            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button link type="primary" @click="openDetail(row)">详情</el-button>
+            <el-button
+              link
+              type="warning"
+              :loading="scrapeStatus[row.Id] === 'running'"
+              @click="scrapeOne(row)"
+            >
+              刮削
+            </el-button>
+          </template>
         </template>
       </el-table-column>
     </el-table>
 
     <div class="actor-link__footer">共 {{ filteredPersons.length }} 位演员</div>
+
+    <!-- 批量刮削进度弹窗 -->
+    <el-dialog
+      v-model="showScrapeProgress"
+      title="刮削进度"
+      width="640px"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :show-close="!scraping"
+    >
+      <div class="progress-header">
+        <el-progress
+          :percentage="scrapeProgress.percent"
+          :status="scrapeProgress.failed > 0 ? 'warning' : undefined"
+        />
+        <div class="progress-text">
+          已处理 {{ scrapeProgress.done }} / {{ scrapeProgress.total }}
+          <span v-if="scrapeProgress.success > 0" class="success">成功 {{ scrapeProgress.success }}</span>
+          <span v-if="scrapeProgress.failed > 0" class="fail">失败 {{ scrapeProgress.failed }}</span>
+        </div>
+      </div>
+
+      <el-table
+        :data="scrapeResults"
+        max-height="360"
+        border
+        size="small"
+        :row-class-name="resultRowClass"
+      >
+        <el-table-column prop="name" label="演员" min-width="140" show-overflow-tooltip />
+        <el-table-column label="结果" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.status === 'success'" type="success" size="small">成功</el-tag>
+            <el-tag v-else-if="row.status === 'failed'" type="danger" size="small">失败</el-tag>
+            <el-tag v-else-if="row.status === 'running'" type="warning" size="small">处理中</el-tag>
+            <el-tag v-else type="info" size="small">等待</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="message" label="详情" min-width="240" show-overflow-tooltip />
+      </el-table>
+
+      <template #footer>
+        <el-button v-if="!scraping" @click="showScrapeProgress = false">关闭</el-button>
+        <el-button v-else disabled>处理中…</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 详情抽屉 -->
     <el-drawer
@@ -186,7 +301,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import type { ElTable } from 'element-plus'
+import { Edit, View, MagicStick } from '@element-plus/icons-vue'
 import { useHttpClient } from '@/http/client'
+import { useDeviceType } from '@/composables/useDeviceType'
 import {
   embyImageUrl,
   fetchEmbyLibraries,
@@ -199,6 +317,7 @@ import {
   updateEmbyPerson,
   uploadEmbyAvatarFile,
   uploadEmbyAvatarFromUrl,
+  scrapeEmbyPerson,
   type EmbyLibrary,
   type EmbyPerson,
   type EmbyPersonDetail,
@@ -206,6 +325,7 @@ import {
 } from '@/api/actor'
 
 const http = useHttpClient()
+const { isMobile } = useDeviceType()
 
 const currentUserId = ref('')
 const libraries = ref<EmbyLibrary[]>([])
@@ -214,6 +334,9 @@ const persons = ref<EmbyPerson[]>([])
 const search = ref('')
 const loading = ref(false)
 const loadingLibraries = ref(false)
+
+const tableRef = ref<InstanceType<typeof ElTable>>()
+const selectedRows = ref<EmbyPerson[]>([])
 
 const showDetail = ref(false)
 const detail = ref<EmbyPersonDetail | null>(null)
@@ -245,11 +368,37 @@ const config = ref<EmbyProxyConfig>({
   emby_api_key: '',
 })
 
+// ===== 刮削状态 =====
+// 'idle' | 'pending' | 'running' | 'success' | 'failed'
+const scrapeStatus = ref<Record<string, string>>({})
+const scraping = ref(false)
+const showScrapeProgress = ref(false)
+const scrapeProgress = ref({
+  total: 0,
+  done: 0,
+  success: 0,
+  failed: 0,
+  percent: 0,
+})
+const scrapeResults = ref<
+  Array<{ id: string; name: string; status: string; message: string }>
+>([])
+
 const filteredPersons = computed(() => {
   const kw = search.value.trim().toLowerCase()
   if (!kw) return persons.value
   return persons.value.filter((p) => (p.Name || '').toLowerCase().includes(kw))
 })
+
+function onSelectionChange(rows: EmbyPerson[]) {
+  selectedRows.value = rows
+}
+
+function resultRowClass({ row }: { row: { status: string } }) {
+  if (row.status === 'failed') return 'row-failed'
+  if (row.status === 'success') return 'row-success'
+  return ''
+}
 
 async function loadConfig() {
   try {
@@ -270,9 +419,6 @@ async function loadLibraries() {
     }
     currentUserId.value = users[0].Id
     libraries.value = await fetchEmbyLibraries(http, currentUserId.value)
-    if (libraries.value.length > 0 && !selectedLibrary.value) {
-      selectedLibrary.value = libraries.value[0].Id
-    }
   } catch (e: any) {
     ElMessage.warning(e?.message || '拉取媒体库失败，请检查设置')
   } finally {
@@ -281,7 +427,7 @@ async function loadLibraries() {
 }
 
 async function loadPersons() {
-  if (!selectedLibrary.value || !currentUserId.value) return
+  if (!currentUserId.value) return
   loading.value = true
   try {
     persons.value = await fetchEmbyPersons(
@@ -289,6 +435,7 @@ async function loadPersons() {
       currentUserId.value,
       selectedLibrary.value,
     )
+    scrapeStatus.value = {}
   } catch (e: any) {
     ElMessage.error(e?.message || '拉取演员失败')
   } finally {
@@ -373,6 +520,116 @@ async function onAvatarFileSelected(file: File) {
     ElMessage.error(e?.message || '上传头像失败')
   }
   return false
+}
+
+// ============ 刮削逻辑 ============
+
+async function scrapeOne(row: EmbyPerson) {
+  if (scraping.value) {
+    ElMessage.warning('已有刮削任务进行中')
+    return
+  }
+  scraping.value = true
+  scrapeStatus.value[row.Id] = 'running'
+  showScrapeProgress.value = true
+  scrapeProgress.value = {
+    total: 1,
+    done: 0,
+    success: 0,
+    failed: 0,
+    percent: 0,
+  }
+  scrapeResults.value = [
+    { id: row.Id, name: row.Name, status: 'running', message: '' },
+  ]
+
+  try {
+    const result = await scrapeEmbyPerson(http, row.Id, row.Name)
+    if (result.ok) {
+      scrapeStatus.value[row.Id] = 'success'
+      scrapeResults.value[0].status = 'success'
+      scrapeResults.value[0].message = result.message || '刮削成功'
+      scrapeProgress.value.success = 1
+    } else {
+      scrapeStatus.value[row.Id] = 'failed'
+      scrapeResults.value[0].status = 'failed'
+      scrapeResults.value[0].message = result.message || '刮削失败'
+      scrapeProgress.value.failed = 1
+    }
+  } catch (e: any) {
+    scrapeStatus.value[row.Id] = 'failed'
+    scrapeResults.value[0].status = 'failed'
+    scrapeResults.value[0].message = e?.message || '请求失败'
+    scrapeProgress.value.failed = 1
+  } finally {
+    scrapeProgress.value.done = 1
+    scrapeProgress.value.percent = 100
+    scraping.value = false
+  }
+}
+
+async function batchScrape() {
+  const targets = selectedRows.value
+  if (targets.length === 0) {
+    ElMessage.warning('请先选择要刮削的演员')
+    return
+  }
+  if (scraping.value) {
+    ElMessage.warning('已有刮削任务进行中')
+    return
+  }
+
+  scraping.value = true
+  showScrapeProgress.value = true
+  scrapeProgress.value = {
+    total: targets.length,
+    done: 0,
+    success: 0,
+    failed: 0,
+    percent: 0,
+  }
+  scrapeResults.value = targets.map((t) => ({
+    id: t.Id,
+    name: t.Name,
+    status: 'pending',
+    message: '',
+  }))
+
+  for (let i = 0; i < targets.length; i++) {
+    const t = targets[i]
+    scrapeStatus.value[t.Id] = 'running'
+    scrapeResults.value[i].status = 'running'
+
+    try {
+      const result = await scrapeEmbyPerson(http, t.Id, t.Name)
+      if (result.ok) {
+        scrapeStatus.value[t.Id] = 'success'
+        scrapeResults.value[i].status = 'success'
+        scrapeResults.value[i].message = result.message || '刮削成功'
+        scrapeProgress.value.success++
+      } else {
+        scrapeStatus.value[t.Id] = 'failed'
+        scrapeResults.value[i].status = 'failed'
+        scrapeResults.value[i].message = result.message || '刮削失败'
+        scrapeProgress.value.failed++
+      }
+    } catch (e: any) {
+      scrapeStatus.value[t.Id] = 'failed'
+      scrapeResults.value[i].status = 'failed'
+      scrapeResults.value[i].message = e?.message || '请求失败'
+      scrapeProgress.value.failed++
+    }
+
+    scrapeProgress.value.done++
+    scrapeProgress.value.percent = Math.round(
+      (scrapeProgress.value.done / scrapeProgress.value.total) * 100,
+    )
+  }
+
+  scraping.value = false
+  ElMessage.success(
+    `刮削完成：成功 ${scrapeProgress.value.success}，失败 ${scrapeProgress.value.failed}`,
+  )
 }
 
 async function saveConfig() {
@@ -463,6 +720,46 @@ onMounted(async () => {
   gap: 12px;
   width: 100%;
 }
+.progress-header {
+  margin-bottom: 12px;
+}
+.progress-text {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #606266;
+  display: flex;
+  gap: 12px;
+}
+.progress-text .success {
+  color: #67c23a;
+}
+.progress-text .fail {
+  color: #f56c6c;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #dcdfe6;
+}
+.status-dot.running {
+  background: #e6a23c;
+}
+.status-dot.success {
+  background: #67c23a;
+}
+.status-dot.failed {
+  background: #f56c6c;
+}
+
+:deep(.row-failed) {
+  background: #fef0f0;
+}
+:deep(.row-success) {
+  background: #f0f9eb;
+}
 
 @media (max-width: 768px) {
   .actor-link {
@@ -484,15 +781,21 @@ onMounted(async () => {
   .toolbar .el-input {
     width: 100% !important;
   }
-  :deep(.hide-mobile) {
-    display: none !important;
-  }
   :deep(.el-table__header-wrapper),
   :deep(.el-table__body-wrapper) {
     font-size: 12px;
   }
   :deep(.el-table .cell) {
     padding: 0 4px;
+  }
+  :deep(.el-table .el-button + .el-button) {
+    margin-left: 4px;
+  }
+  :deep(.el-table .el-button.is-link) {
+    padding: 4px;
+  }
+  :deep(.el-table .el-button.is-link .el-icon) {
+    font-size: 16px;
   }
 }
 
