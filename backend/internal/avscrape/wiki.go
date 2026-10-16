@@ -69,7 +69,7 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 	}
 	w.mu.Unlock()
 
-	// 尝试 1：原名
+	// 尝试 1：原和名
 	zhName, err := w.fetchZh(japaneseName)
 	if err != nil {
 		return "", err
