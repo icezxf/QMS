@@ -280,16 +280,28 @@
     </el-drawer>
 
     <!-- 设置弹窗 -->
-    <el-dialog v-model="showConfig" title="Emby 设置" width="520px">
-      <el-form :model="config" label-width="120px">
+    <el-dialog v-model="showConfig" title="Emby / StashDB 设置" width="560px">
+      <el-form :model="config" label-width="140px">
         <el-form-item label="Emby 地址">
           <el-input v-model="config.emby_url" placeholder="http://192.168.1.10:8096" />
         </el-form-item>
         <el-form-item label="Emby API Key">
           <el-input v-model="config.emby_api_key" placeholder="Emby API Key" />
         </el-form-item>
+        <el-form-item label="StashDB 地址">
+          <el-input
+            v-model="config.stashdb_endpoint"
+            placeholder="留空用默认 https://stashdb.org/graphql"
+          />
+        </el-form-item>
+        <el-form-item label="StashDB API Key">
+          <el-input
+            v-model="config.stashdb_api_key"
+            placeholder="stashdb.org → Settings → API Key"
+          />
+        </el-form-item>
         <el-form-item>
-          <el-button :loading="testing" @click="doTest">测试连接</el-button>
+          <el-button :loading="testing" @click="doTest">测试 Emby 连接</el-button>
           <el-button type="primary" @click="saveConfig">保存</el-button>
         </el-form-item>
       </el-form>
@@ -419,6 +431,8 @@ const testing = ref(false)
 const config = ref<EmbyProxyConfig>({
   emby_url: '',
   emby_api_key: '',
+  stashdb_endpoint: '',
+  stashdb_api_key: '',
 })
 
 // ===== 刮削状态 =====
