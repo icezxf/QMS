@@ -33,12 +33,31 @@ func (h *Handler) RegisterRoutes(g *gin.RouterGroup) {
 	g.Any("/emby-proxy/*path", h.proxy)
 }
 
+// ============ 统一响应格式 ============
+// QMS 前端封装的 unwrapResponse 期望特定的包体结构，这样包一层才不会抛“请求失败”
+
+func respondOK(c *gin.Context, data any) {
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"data":    data,
+		"message": "success",
+	})
+}
+
+func respondErr(c *gin.Context, msg string) {
+	c.JSON(http.StatusOK, gin.H{
+		"code":    400,
+		"data":    nil,
+		"message": msg,
+	})
+}
+
 // ============ 配置 ============
 
 func (h *Handler) getConfig(c *gin.Context) {
 	cfg, err := h.Repo.GetConfig()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err.Error())
 		return
 	}
 	masked := *cfg
@@ -48,13 +67,13 @@ func (h *Handler) getConfig(c *gin.Context) {
 	if len(masked.StashDBApiKey) > 8 {
 		masked.StashDBApiKey = masked.StashDBApiKey[:4] + "****"
 	}
-	c.JSON(http.StatusOK, masked)
+	respondOK(c, masked)
 }
 
 func (h *Handler) updateConfig(c *gin.Context) {
 	var req EmbyActorConfig
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, err.Error())
 		return
 	}
 	old, _ := h.Repo.GetConfig()
@@ -65,10 +84,10 @@ func (h *Handler) updateConfig(c *gin.Context) {
 		req.StashDBApiKey = old.StashDBApiKey
 	}
 	if err := h.Repo.UpdateConfig(&req); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	respondOK(c, gin.H{"ok": true})
 }
 
 func (h *Handler) testConnection(c *gin.Context) {
@@ -77,7 +96,7 @@ func (h *Handler) testConnection(c *gin.Context) {
 		EmbyAPIKey string `json:"emby_api_key"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, err.Error())
 		return
 	}
 	if req.EmbyAPIKey == "" || strings.Contains(req.EmbyAPIKey, "****") {
@@ -91,15 +110,15 @@ func (h *Handler) testConnection(c *gin.Context) {
 	url := strings.TrimRight(req.EmbyURL, "/") + "/emby/System/Info?api_key=" + req.EmbyAPIKey
 	resp, err := http.Get(url)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"ok": false, "message": "连接失败: " + err.Error()})
+		respondOK(c, gin.H{"ok": false, "message": "连接失败: " + err.Error()})
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		c.JSON(http.StatusOK, gin.H{"ok": false, "message": "Emby 返回 " + resp.Status})
+		respondOK(c, gin.H{"ok": false, "message": "Emby 返回 " + resp.Status})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "message": "连接成功"})
+	respondOK(c, gin.H{"ok": true, "message": "连接成功"})
 }
 
 // ============ 脚本管理 ============
@@ -107,10 +126,10 @@ func (h *Handler) testConnection(c *gin.Context) {
 func (h *Handler) getScript(c *gin.Context) {
 	script, isDefault, err := LoadScript()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"script": script, "is_default": isDefault})
+	respondOK(c, gin.H{"script": script, "is_default": isDefault})
 }
 
 func (h *Handler) saveScript(c *gin.Context) {
@@ -118,22 +137,22 @@ func (h *Handler) saveScript(c *gin.Context) {
 		Script string `json:"script"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, err.Error())
 		return
 	}
 	if err := SaveScript(req.Script); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	respondOK(c, gin.H{"ok": true})
 }
 
 func (h *Handler) resetScript(c *gin.Context) {
 	if err := ResetScript(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "script": DefaultScrapeScript})
+	respondOK(c, gin.H{"ok": true, "script": DefaultScrapeScript})
 }
 
 func (h *Handler) testScript(c *gin.Context) {
@@ -143,7 +162,7 @@ func (h *Handler) testScript(c *gin.Context) {
 		PersonName string `json:"person_name"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, err.Error())
 		return
 	}
 	if req.Script == "" {
@@ -151,7 +170,7 @@ func (h *Handler) testScript(c *gin.Context) {
 	}
 	exec, err := h.buildScriptExecutor()
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, err.Error())
 		return
 	}
 	vars, results, runErr := exec.Run(c.Request.Context(), req.Script, map[string]any{
@@ -159,10 +178,10 @@ func (h *Handler) testScript(c *gin.Context) {
 		"personName": req.PersonName,
 	})
 	if runErr != nil {
-		c.JSON(http.StatusOK, gin.H{"ok": false, "error": runErr.Error(), "results": results, "vars": vars})
+		respondOK(c, gin.H{"ok": false, "error": runErr.Error(), "results": results, "vars": vars})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "results": results, "vars": vars})
+	respondOK(c, gin.H{"ok": true, "results": results, "vars": vars})
 }
 
 // ============ 刮削（走脚本） ============
@@ -176,13 +195,13 @@ func (h *Handler) scrapePerson(c *gin.Context) {
 
 	exec, err := h.buildScriptExecutor()
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"ok": false, "message": err.Error()})
+		respondOK(c, gin.H{"ok": false, "message": err.Error()})
 		return
 	}
 
 	script, _, err := LoadScript()
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"ok": false, "message": "读取脚本失败：" + err.Error()})
+		respondOK(c, gin.H{"ok": false, "message": "读取脚本失败：" + err.Error()})
 		return
 	}
 
@@ -191,10 +210,10 @@ func (h *Handler) scrapePerson(c *gin.Context) {
 		"personName": req.Name,
 	})
 	if runErr != nil {
-		c.JSON(http.StatusOK, gin.H{"ok": false, "message": runErr.Error(), "results": results})
+		respondOK(c, gin.H{"ok": false, "message": runErr.Error(), "results": results})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "message": "刮削成功", "results": results})
+	respondOK(c, gin.H{"ok": true, "message": "刮削成功", "results": results})
 }
 
 // ============ 通用代理 ============
@@ -202,7 +221,7 @@ func (h *Handler) scrapePerson(c *gin.Context) {
 func (h *Handler) proxy(c *gin.Context) {
 	cfg, err := h.Repo.GetConfig()
 	if err != nil || cfg.EmbyURL == "" || cfg.EmbyAPIKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Emby 未配置"})
+		respondErr(c, "Emby 未配置")
 		return
 	}
 	path := c.Param("path")
@@ -220,7 +239,7 @@ func (h *Handler) proxy(c *gin.Context) {
 
 	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, target, c.Request.Body)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err.Error())
 		return
 	}
 	if ct := c.Request.Header.Get("Content-Type"); ct != "" {
@@ -229,7 +248,7 @@ func (h *Handler) proxy(c *gin.Context) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err.Error())
 		return
 	}
 	defer resp.Body.Close()
