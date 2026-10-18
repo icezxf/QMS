@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,22 +39,21 @@ steps:
       place_of_birth: "{{meta.PlaceOfBirth}}"
       provider_ids: "{{meta.ProviderIds}}"
       
-      biography: |
-        【基本档案】身高 {{meta.Height}}cm | 体重 {{meta.Weight}}kg | 三围 {{meta.Waist}}-{{meta.Hip}} | {{meta.CupSize}}罩杯
-        【出生地】{{meta.PlaceOfBirth}}
+      # 标语：基本档案和别名
+      taglines:
+        - "【档案】身高 {{meta.Height}}cm | 体重 {{meta.Weight}}kg | 三围 {{meta.Waist}}-{{meta.Hip}} | {{meta.CupSize}}罩杯"
+        - "别名：{{meta.AliasesString}}"
         
+      # 简介：原简介 + 外部链接追加在后
+      biography: |
+        {{meta.Bio}}
+
         【外部链接】
         Wikipedia: https://{{meta.ProviderIds.Wikipedia}}
         StashDB: https://stashdb.org/performers/{{meta.ProviderIds.StashDB}}
         JavStash: https://javstash.org/performers/{{meta.ProviderIds.JavStash}}
         IMDb: https://www.imdb.com/name/{{meta.ProviderIds.Imdb}}
         TMDB: https://www.themoviedb.org/person/{{meta.ProviderIds.Tmdb}}
-
-        【简介】
-        {{meta.Bio}}
-        
-      taglines:
-        - "别名：{{meta.AliasesString}}"
         
       tags: []
 
@@ -120,7 +121,7 @@ type StepResult struct {
 
 const DefaultStashDBEndpoint = "https://stashdb.org/graphql"
 const DefaultJavStashEndpoint = "https://javstash.org/graphql"
-const DefaultTPDBEndpoint = "https://theporndb.net/graphql"
+const DefaultTPDBEndpoint = "https://api.theporndb.net/performers"
 
 type StashBoxClient struct {
 	Endpoint string
@@ -140,7 +141,7 @@ type StashBoxPerformer struct {
 	Country      string   `json:"country"`
 	Ethnicity    string   `json:"ethnicity"`
 	Height       int      `json:"height"`
-	Weight       int      `json:"weight"` // ★ 新增体重
+	Weight       int      `json:"weight"`
 	Gender       string   `json:"gender"`
 	Bio          string   `json:"bio"`
 	Measurements struct {
@@ -197,33 +198,129 @@ func (c *StashBoxClient) SearchTPDB(ctx context.Context, term string) (*StashBox
 	if c.APIKey == "" {
 		return nil, fmt.Errorf("TPDB API Key 未配置")
 	}
-	// ★ 补全 TPDB 查询字段：bio, weight, urls 等
-	q := `query Search($term: String!) { searchPerformer(term: $term) { id name birth_date country height weight measurements { cup_size waist hip } images { url } urls { url } bio } }`
-	body, _ := json.Marshal(map[string]any{"query": q, "variables": map[string]any{"term": term}})
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.Endpoint, bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+
+	// 1. 搜索列表拿 ID
+	searchURL := fmt.Sprintf("%s?q=%s", c.Endpoint, url.QueryEscape(term))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
-	respHttp, err := c.http.Do(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	defer respHttp.Body.Close()
+	defer resp.Body.Close()
 
-	var envelope struct {
-		Data struct {
-			SearchPerformer []StashBoxPerformer `json:"searchPerformer"`
+	var listResp struct {
+		Data []struct {
+			ID string `json:"id"`
 		} `json:"data"`
-		Errors []struct{ Message string `json:"message"` } `json:"errors"`
 	}
-	json.NewDecoder(respHttp.Body).Decode(&envelope)
-	if len(envelope.Errors) > 0 {
-		return nil, fmt.Errorf("接口报错: %s", envelope.Errors[0].Message)
+	json.NewDecoder(resp.Body).Decode(&listResp)
+	if len(listResp.Data) == 0 {
+		return nil, fmt.Errorf("TPDB 未找到演员")
 	}
-	if len(envelope.Data.SearchPerformer) == 0 {
-		return nil, fmt.Errorf("未找到演员")
+
+	// 2. 拿 ID 请求详情
+	detailURL := fmt.Sprintf("%s/%s", c.Endpoint, listResp.Data[0].ID)
+	req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, detailURL, nil)
+	req2.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req2.Header.Set("User-Agent", "Mozilla/5.0")
+	resp2, err := c.http.Do(req2)
+	if err != nil {
+		return nil, err
 	}
-	return &envelope.Data.SearchPerformer[0], nil
+	defer resp2.Body.Close()
+
+	// 3. 精准解析结构
+	var detailResp struct {
+		Data struct {
+			ID    string `json:"id"`
+			Name  string `json:"name"`
+			Bio   string `json:"bio"`
+			Image string `json:"image"`
+			Extras struct {
+				Birthday       string `json:"birthday"`
+				BirthplaceCode string `json:"birthplace_code"`
+				Height         string `json:"height"`
+				Weight         string `json:"weight"`
+				CupSize        string `json:"cupsize"`
+				Waist          string `json:"waist"`
+				Hips           string `json:"hips"`
+			} `json:"extras"`
+			Links  map[string]string `json:"links"`
+			Images []struct {
+				URL string `json:"url"`
+			} `json:"images"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&detailResp); err != nil {
+		return nil, err
+	}
+
+	d := detailResp.Data
+	p := &StashBoxPerformer{
+		ID:        d.ID,
+		Name:      d.Name,
+		Bio:       d.Bio,
+		BirthDate: d.Extras.Birthday,
+		Country:   d.Extras.BirthplaceCode,
+	}
+	
+	p.Height = parseHeight(d.Extras.Height)
+	p.Weight = parseWeight(d.Extras.Weight)
+	
+	p.Measurements.CupSize = d.Extras.CupSize
+	p.Measurements.Waist, _ = strconv.Atoi(d.Extras.Waist)
+	p.Measurements.Hip, _ = strconv.Atoi(d.Extras.Hips)
+
+	if d.Image != "" {
+		p.Images = append(p.Images, struct{ URL string `json:"url"` }{URL: d.Image})
+	}
+	for _, img := range d.Images {
+		p.Images = append(p.Images, struct{ URL string `json:"url"` }{URL: img.URL})
+	}
+
+	// 安全解析 links (Map 结构)
+	if d.Links != nil {
+		for key, link := range d.Links {
+			if key == "IMDb" || key == "TMDB" || key == "StashDB" {
+				p.Urls = append(p.Urls, struct{ URL string `json:"url"` }{URL: link})
+			}
+		}
+	}
+
+	return p, nil
+}
+
+func parseHeight(s string) int {
+	s = strings.ToLower(s)
+	if strings.Contains(s, "cm") {
+		n, _ := strconv.Atoi(strings.TrimSpace(strings.ReplaceAll(s, "cm", "")))
+		return n
+	}
+	if strings.Contains(s, "'") {
+		parts := strings.Split(s, "'")
+		feet, _ := strconv.Atoi(parts[0])
+		inches := 0
+		if len(parts) > 1 {
+			inches, _ = strconv.Atoi(strings.Trim(parts[1], "\""))
+		}
+		return int(math.Round(float64(feet*12+inches) * 2.54))
+	}
+	return 0
+}
+
+func parseWeight(s string) int {
+	s = strings.ToLower(s)
+	if strings.Contains(s, "kg") {
+		n, _ := strconv.Atoi(strings.TrimSpace(strings.ReplaceAll(s, "kg", "")))
+		return n
+	}
+	if strings.Contains(s, "lb") {
+		n, _ := strconv.Atoi(strings.TrimSpace(strings.ReplaceAll(s, "lbs", "")))
+		return int(math.Round(float64(n) * 0.453592))
+	}
+	return 0
 }
 
 // ============ 维基百科 ============
@@ -237,9 +334,7 @@ func fetchWikiData(ctx context.Context, lang, title string, email string) (strin
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	uaEmail := email
-	if uaEmail == "" {
-		uaEmail = "icezxf555@gmail.com"
-	}
+	if uaEmail == "" { uaEmail = "icezxf555@gmail.com" }
 	req.Header.Set("User-Agent", fmt.Sprintf("QMS-Actor-Scraper/1.0 (https://github.com/icezxf/QMS; %s)", uaEmail))
 
 	resp, err := http.DefaultClient.Do(req)
@@ -255,17 +350,11 @@ func fetchWikiData(ctx context.Context, lang, title string, email string) (strin
 	if query, ok := result["query"].(map[string]any); ok {
 		if pages, ok := query["pages"].([]any); ok && len(pages) > 0 {
 			p := pages[0].(map[string]any)
-			if t, ok := p["title"].(string); ok {
-				actualTitle = t
-			}
-			if b, ok := p["extract"].(string); ok {
-				bio = b
-			}
+			if t, ok := p["title"].(string); ok { actualTitle = t }
+			if b, ok := p["extract"].(string); ok { bio = b }
 			if lls, ok := p["langlinks"].([]any); ok && len(lls) > 0 {
 				if ll, ok := lls[0].(map[string]any); ok {
-					if jaTitle, ok := ll["title"].(string); ok {
-						jaName = jaTitle
-					}
+					if jaTitle, ok := ll["title"].(string); ok { jaName = jaTitle }
 				}
 			}
 		}
@@ -293,15 +382,11 @@ func (e *ScriptExecutor) Run(ctx context.Context, scriptText string, input map[s
 		return nil, nil, err
 	}
 	vars := map[string]any{}
-	for k, v := range input {
-		vars[k] = v
-	}
+	for k, v := range input { vars[k] = v }
 	var results []StepResult
 	for i, step := range s.Steps {
 		params := map[string]any{}
-		for k, v := range step.Params {
-			params[k] = resolveTemplate(v, vars)
-		}
+		for k, v := range step.Params { params[k] = resolveTemplate(v, vars) }
 		fn, ok := actionRegistry[step.Action]
 		if !ok {
 			return vars, results, fmt.Errorf("未知 action: %s", step.Action)
@@ -313,47 +398,35 @@ func (e *ScriptExecutor) Run(ctx context.Context, scriptText string, input map[s
 			results = append(results, StepResult{Index: i, Action: step.Action, OK: false, Message: err.Error(), Duration: dur.String()})
 			return vars, results, fmt.Errorf("步骤 %d (%s) 失败：%w", i+1, step.Action, err)
 		}
-		if step.Save != "" {
-			vars[step.Save] = out
-		}
+		if step.Save != "" { vars[step.Save] = out }
 		results = append(results, StepResult{Index: i, Action: step.Action, OK: true, Message: summarize(out), Duration: dur.String()})
 	}
 	return vars, results, nil
 }
-
-// ============ 模板解析 ============
 
 var tmplRe = regexp.MustCompile(`\{\{\s*([^}]+?)\s*\}\}`)
 
 func resolveTemplate(v any, vars map[string]any) any {
 	if s, ok := v.(string); ok {
 		if m := tmplRe.FindStringSubmatch(s); m != nil && m[0] == s {
-			if val, ok := getPath(vars, strings.TrimSpace(m[1])); ok {
-				return val
-			}
+			if val, ok := getPath(vars, strings.TrimSpace(m[1])); ok { return val }
 			return nil
 		}
 		return tmplRe.ReplaceAllStringFunc(s, func(mm string) string {
 			key := strings.TrimSpace(mm[2 : len(mm)-2])
 			val, ok := getPath(vars, key)
-			if !ok {
-				return ""
-			}
+			if !ok { return "" }
 			return fmt.Sprint(val)
 		})
 	}
 	if arr, ok := v.([]any); ok {
 		res := make([]any, len(arr))
-		for i, item := range arr {
-			res[i] = resolveTemplate(item, vars)
-		}
+		for i, item := range arr { res[i] = resolveTemplate(item, vars) }
 		return res
 	}
 	if m, ok := v.(map[string]any); ok {
 		res := make(map[string]any)
-		for k, item := range m {
-			res[k] = resolveTemplate(item, vars)
-		}
+		for k, item := range m { res[k] = resolveTemplate(item, vars) }
 		return res
 	}
 	return v
@@ -364,43 +437,28 @@ func getPath(obj any, path string) (any, bool) {
 	cur := obj
 	for _, p := range parts {
 		m, ok := cur.(map[string]any)
-		if !ok {
-			return nil, false
-		}
+		if !ok { return nil, false }
 		cur, ok = m[p]
-		if !ok {
-			return nil, false
-		}
+		if !ok { return nil, false }
 	}
 	return cur, true
 }
 
 func summarize(v any) string {
-	if v == nil {
-		return "ok"
-	}
+	if v == nil { return "ok" }
 	b, _ := json.Marshal(v)
 	s := string(b)
-	if len(s) > 200 {
-		s = s[:200] + "..."
-	}
+	if len(s) > 200 { s = s[:200] + "..." }
 	return s
 }
 
 func detectLanguage(text string) string {
-	if matched, _ := regexp.MatchString(`^[a-zA-Z\s\-\.]+$`, text); matched {
-		return "en"
-	}
-	if matched, _ := regexp.MatchString(`[\p{Han}]`, text); matched {
-		return "zh"
-	}
-	if matched, _ := regexp.MatchString(`[\p{Hiragana}\p{Katakana}]`, text); matched {
-		return "ja"
-	}
+	if matched, _ := regexp.MatchString(`^[a-zA-Z\s\-\.]+$`, text); matched { return "en" }
+	if matched, _ := regexp.MatchString(`[\p{Han}]`, text); matched { return "zh" }
+	if matched, _ := regexp.MatchString(`[\p{Hiragana}\p{Katakana}]`, text); matched { return "ja" }
 	return "unknown"
 }
 
-// 提取全部外部 ID，返回 map[string]any
 func extractProviderIds(urls []struct{ URL string `json:"url"` }) map[string]any {
 	ids := map[string]any{}
 	for _, u := range urls {
@@ -433,8 +491,6 @@ func extractProviderIds(urls []struct{ URL string `json:"url"` }) map[string]any
 	return ids
 }
 
-// ============ 智能核心 ============
-
 type actionFn func(ctx context.Context, exec *ScriptExecutor, params, vars map[string]any) (any, error)
 
 var actionRegistry = map[string]actionFn{
@@ -447,9 +503,7 @@ var actionRegistry = map[string]actionFn{
 
 func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars map[string]any) (any, error) {
 	originalName := toString(params["name"])
-	if originalName == "" {
-		return nil, fmt.Errorf("缺少 name")
-	}
+	if originalName == "" { return nil, fmt.Errorf("缺少 name") }
 
 	lang := detectLanguage(originalName)
 	result := map[string]any{
@@ -459,7 +513,6 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		"Images": []string{},
 	}
 
-	// 国家代码映射
 	countryMap := map[string]string{
 		"JP": "日本", "US": "美国", "KR": "韩国", "CN": "中国",
 		"TW": "中国台湾", "HK": "中国香港", "CA": "加拿大", "UK": "英国",
@@ -477,37 +530,30 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 				result["Name"] = tp.Name
 				result["BirthDate"] = tp.BirthDate
 				result["Height"] = tp.Height
-				result["Weight"] = tp.Weight // 体重
+				result["Weight"] = tp.Weight
 				result["CupSize"] = tp.Measurements.CupSize
 				result["Waist"] = tp.Measurements.Waist
 				result["Hip"] = tp.Measurements.Hip
-				result["Bio"] = tp.Bio // 简介
-
-				// 出生地映射
-				if cName, ok := countryMap[tp.Country]; ok {
-					result["PlaceOfBirth"] = cName
-				} else {
-					result["PlaceOfBirth"] = tp.Country
-				}
-
+				result["Bio"] = tp.Bio
+				
+				if cName, ok := countryMap[tp.Country]; ok { result["PlaceOfBirth"] = cName } else { result["PlaceOfBirth"] = tp.Country }
+				
 				result["ProviderIds"] = extractProviderIds(tp.Urls)
-
+				
 				tpImgs := []string{}
 				for _, img := range tp.Images { tpImgs = append(tpImgs, img.URL) }
 				if len(tpImgs) > 0 { result["ImageURL"] = tpImgs[0] }
 				result["Images"] = tpImgs
 			}
 		}
-
-		// 去 JavStash 兜底拿头像和 ID
+		
 		if exec.JavStash != nil && exec.JavStash.APIKey != "" {
 			if j, err := exec.JavStash.SearchPerformer(ctx, originalName); err == nil && len(j.Images) > 0 {
 				js = j
 				jsImgs := []string{}
 				for _, img := range j.Images { jsImgs = append(jsImgs, img.URL) }
-				result["ImageURL"] = jsImgs[0] // 覆盖为 JavStash 头像
+				result["ImageURL"] = jsImgs[0]
 				result["Images"] = jsImgs
-
 				merged := result["ProviderIds"].(map[string]any)
 				for k, v := range extractProviderIds(j.Urls) {
 					if merged[k] == nil || merged[k] == "" { merged[k] = v }
@@ -518,47 +564,29 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 	} else {
 		// ================= 中文/日文名演员 =================
 		searchCandidates := []string{originalName}
-
 		if lang == "zh" {
 			jaName, pageTitle, zhBio := fetchWikiData(ctx, "zh", originalName, exec.WikiEmail)
-			if zhBio != "" {
-				result["Bio"] = zhBio
-			}
-			if jaName != "" && jaName != originalName {
-				searchCandidates = append([]string{jaName}, searchCandidates...)
-			}
-			if pageTitle != "" && pageTitle != originalName && pageTitle != jaName {
-				searchCandidates = append(searchCandidates, pageTitle)
-			}
+			if zhBio != "" { result["Bio"] = zhBio }
+			if jaName != "" && jaName != originalName { searchCandidates = append([]string{jaName}, searchCandidates...) }
+			if pageTitle != "" && pageTitle != originalName && pageTitle != jaName { searchCandidates = append(searchCandidates, pageTitle) }
 		}
 
 		if exec.JavStash != nil && exec.JavStash.APIKey != "" {
 			for _, candidate := range searchCandidates {
 				var jsErr error
 				js, jsErr = exec.JavStash.SearchPerformer(ctx, candidate)
-				if jsErr == nil && js != nil {
-					break
-				}
+				if jsErr == nil && js != nil { break }
 			}
 		}
 
 		if js != nil {
-			if lang == "zh" {
-				result["Name"] = originalName
-			} else {
-				result["Name"] = js.Name
-			}
-			
+			if lang == "zh" { result["Name"] = originalName } else { result["Name"] = js.Name }
 			result["BirthDate"] = js.BirthDate
 			result["PlaceOfBirth"] = "日本"
 			result["AliasesString"] = strings.Join(js.Aliases, ", ")
 			
-			// 合并 JavStash 外部 ID
 			mergedIds := extractProviderIds(js.Urls)
-			// 强制塞入 JavStash 自身 ID
-			if js.ID != "" {
-				mergedIds["JavStash"] = js.ID
-			}
+			if js.ID != "" { mergedIds["JavStash"] = js.ID }
 			result["ProviderIds"] = mergedIds
 			
 			jsImgs := []string{}
@@ -569,66 +597,44 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 			if lang == "ja" && result["Bio"] == "" {
 				var jaWikiTitle string
 				for _, u := range js.Urls {
-					if strings.Contains(u.URL, "ja.wikipedia.org/wiki/") {
-						jaWikiTitle = u.URL[strings.LastIndex(u.URL, "/")+1:]
-					}
+					if strings.Contains(u.URL, "ja.wikipedia.org/wiki/") { jaWikiTitle = u.URL[strings.LastIndex(u.URL, "/")+1:] }
 				}
 				if jaWikiTitle != "" {
-					if _, _, jaBio := fetchWikiData(ctx, "ja", jaWikiTitle, exec.WikiEmail); jaBio != "" {
-						result["Bio"] = jaBio
-					}
+					if _, _, jaBio := fetchWikiData(ctx, "ja", jaWikiTitle, exec.WikiEmail); jaBio != "" { result["Bio"] = jaBio }
 				}
 			}
 
-			// 找英文别名查 TPDB
 			tpdbSearchName = js.Name
 			for _, alias := range js.Aliases {
-				if detectLanguage(alias) == "en" {
-					tpdbSearchName = alias
-					break
-				}
+				if detectLanguage(alias) == "en" { tpdbSearchName = alias; break }
 			}
 		}
 
-		// TPDB 补充三围、体重和简介
 		if tpdbSearchName != "" && exec.Tpdb != nil && exec.Tpdb.APIKey != "" {
 			if tp, err := exec.Tpdb.SearchTPDB(ctx, tpdbSearchName); err == nil {
 				result["Height"] = tp.Height
-				result["Weight"] = tp.Weight // 日/中演员也补体重
+				result["Weight"] = tp.Weight
 				result["CupSize"] = tp.Measurements.CupSize
 				result["Waist"] = tp.Measurements.Waist
 				result["Hip"] = tp.Measurements.Hip
 				
-				if result["Bio"] == "" {
-					result["Bio"] = tp.Bio
-				}
+				if result["Bio"] == "" { result["Bio"] = tp.Bio }
 				
-				// 合并 TPDB 的 ID
 				merged := result["ProviderIds"].(map[string]any)
-				for k, v := range extractProviderIds(tp.Urls) {
-					if merged[k] == nil || merged[k] == "" {
-						merged[k] = v
-					}
-				}
+				for k, v := range extractProviderIds(tp.Urls) { if merged[k] == nil || merged[k] == "" { merged[k] = v } }
 
-				// 追加图片
 				tpImgs := result["Images"].([]string)
 				for _, img := range tp.Images {
 					isNew := true
-					for _, existing := range tpImgs {
-						if existing == img.URL { isNew = false; break }
-					}
+					for _, existing := range tpImgs { if existing == img.URL { isNew = false; break } }
 					if isNew { tpImgs = append(tpImgs, img.URL) }
 				}
 				result["Images"] = tpImgs
 			}
 		}
 	}
-
 	return result, nil
 }
-
-// ============ 基础 Actions ============
 
 func actionLogInfo(ctx context.Context, exec *ScriptExecutor, params, vars map[string]any) (any, error) {
 	return fmt.Sprint(params["msg"]), nil
@@ -638,45 +644,31 @@ func actionEmbyGetPerson(ctx context.Context, exec *ScriptExecutor, params, vars
 	id := toString(params["id"])
 	url := fmt.Sprintf("%s/api/v1/people/%s?api_key=%s", exec.Emby.BaseURL, id, exec.Emby.APIKey)
 	var resp map[string]any
-	if err := httpGetJSON(ctx, url, &resp); err != nil {
-		return nil, err
-	}
+	if err := httpGetJSON(ctx, url, &resp); err != nil { return nil, err }
 	return resp, nil
 }
 
 func actionEmbyUpdatePerson(ctx context.Context, exec *ScriptExecutor, params, vars map[string]any) (any, error) {
 	id := toString(params["id"])
-	if id == "" {
-		return nil, fmt.Errorf("缺少 id")
-	}
+	if id == "" { return nil, fmt.Errorf("缺少 id") }
 	body := map[string]any{}
 	for k, v := range params {
-		if k == "id" || v == nil {
-			continue
-		}
+		if k == "id" || v == nil { continue }
 		switch k {
-		case "place_of_birth":
-			body["placeOfBirth"] = v
-		case "known_for_department":
-			body["knownForDepartment"] = v
-		case "provider_ids":
-			body["providerIds"] = v
-		default:
-			body[k] = v
+		case "place_of_birth": body["placeOfBirth"] = v
+		case "known_for_department": body["knownForDepartment"] = v
+		case "provider_ids": body["providerIds"] = v
+		default: body[k] = v
 		}
 	}
-	if _, ok := body["name"]; !ok {
-		return nil, fmt.Errorf("name 必填")
-	}
+	if _, ok := body["name"]; !ok { return nil, fmt.Errorf("name 必填") }
 
 	data, _ := json.Marshal(body)
 	url := fmt.Sprintf("%s/api/v1/people/%s?api_key=%s", exec.Emby.BaseURL, id, exec.Emby.APIKey)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { return nil, err }
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
@@ -688,36 +680,24 @@ func actionEmbyUpdatePerson(ctx context.Context, exec *ScriptExecutor, params, v
 func actionEmbyUploadAvatar(ctx context.Context, exec *ScriptExecutor, params, vars map[string]any) (any, error) {
 	id := toString(params["id"])
 	imageURL := toString(params["imageUrl"])
-	if id == "" {
-		return nil, fmt.Errorf("缺少 id")
-	}
-	if imageURL == "" {
-		return map[string]any{"ok": true, "message": "无图片URL，跳过"}, nil
-	}
-
+	if id == "" { return nil, fmt.Errorf("缺少 id") }
+	if imageURL == "" { return map[string]any{"ok": true, "message": "无图片URL，跳过"}, nil }
+	
 	imgReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
 	imgResp, err := http.DefaultClient.Do(imgReq)
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { return nil, err }
 	defer imgResp.Body.Close()
-	if imgResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("下载失败：HTTP %d", imgResp.StatusCode)
-	}
-
+	if imgResp.StatusCode != http.StatusOK { return nil, fmt.Errorf("下载失败：HTTP %d", imgResp.StatusCode) }
+	
 	ct := imgResp.Header.Get("Content-Type")
-	if ct == "" {
-		ct = "image/jpeg"
-	}
+	if ct == "" { ct = "image/jpeg" }
 	imgData, _ := io.ReadAll(imgResp.Body)
-
+	
 	url := fmt.Sprintf("%s/emby/Items/%s/Images/Primary?api_key=%s", exec.Emby.BaseURL, id, exec.Emby.APIKey)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(imgData))
 	req.Header.Set("Content-Type", ct)
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { return nil, err }
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
@@ -726,24 +706,16 @@ func actionEmbyUploadAvatar(ctx context.Context, exec *ScriptExecutor, params, v
 	return map[string]any{"ok": true, "size": len(imgData)}, nil
 }
 
-// ============ 工具 ============
-
 func toString(v any) string {
-	if v == nil {
-		return ""
-	}
-	if s, ok := v.(string); ok {
-		return s
-	}
+	if v == nil { return "" }
+	if s, ok := v.(string); ok { return s }
 	return fmt.Sprint(v)
 }
 
 func httpGetJSON(ctx context.Context, url string, out any) error {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
