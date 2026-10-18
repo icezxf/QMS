@@ -88,7 +88,7 @@
       </template>
     </el-dialog>
 
-    <!-- 详情抽屉 (注意这里是 Lux 返回的小写字段) -->
+    <!-- 详情抽屉 -->
     <el-drawer v-model="showDetail" size="520px" :title="detail?.name || '演员详情'">
       <div v-if="detail" class="detail">
         <div class="avatar-wrap">
@@ -102,7 +102,18 @@
           <div class="row"><span class="label">出生地</span><span>{{ detail.placeOfBirth || '—' }}</span></div>
           <div class="row"><span class="label">职业</span><span>{{ detail.knownForDepartment || '—' }}</span></div>
           <div class="row"><span class="label">标签</span><span>{{ (detail.tags || []).join(', ') || '—' }}</span></div>
-          <div class="row"><span class="label">外部 ID</span><span>{{ Object.keys(detail.providerIds || {}).length ? JSON.stringify(detail.providerIds) : '—' }}</span></div>
+          <!-- 外部 ID 带链接 -->
+          <div class="row">
+            <span class="label">外部 ID</span>
+            <span class="provider-links">
+              <template v-if="detail.providerIds && Object.keys(detail.providerIds).length">
+                <a v-for="(val, key) in detail.providerIds" :key="key" :href="getProviderUrl(key as string, val as string)" target="_blank" class="provider-link">
+                  {{ key }}
+                </a>
+              </template>
+              <span v-else>—</span>
+            </span>
+          </div>
         </div>
         <div class="bio">
           <div class="label">简介</div>
@@ -143,13 +154,14 @@
     </el-drawer>
 
     <!-- 设置弹窗 -->
-    <el-dialog v-model="showConfig" title="Emby / StashDB / TPDB 设置" width="560px">
-      <el-form :model="config" label-width="140px">
+    <el-dialog v-model="showConfig" title="Emby / 各类数据源设置" width="580px">
+      <el-form :model="config" label-width="150px">
         <el-form-item label="Emby 地址"><el-input v-model="config.emby_url" placeholder="http://192.168.1.10:8096" /></el-form-item>
         <el-form-item label="Emby API Key"><el-input v-model="config.emby_api_key" placeholder="Emby API Key" /></el-form-item>
-        <el-form-item label="StashDB API Key"><el-input v-model="config.stashdb_api_key" placeholder="stashdb.org 设置里获取" /></el-form-item>
-        <el-form-item label="JavStash API Key"><el-input v-model="config.javstash_api_key" placeholder="javstash.org 设置里获取" /></el-form-item>
+        <el-form-item label="StashDB API Key"><el-input v-model="config.stashdb_api_key" placeholder="stashdb.org 获取" /></el-form-item>
+        <el-form-item label="JavStash API Key"><el-input v-model="config.javstash_api_key" placeholder="javstash.org 获取" /></el-form-item>
         <el-form-item label="TPDB API Key"><el-input v-model="config.tpdb_api_key" placeholder="theporndb.net 获取" /></el-form-item>
+        <el-form-item label="维基百科联系邮箱"><el-input v-model="config.wiki_email" placeholder="icezxf555@gmail.com" /></el-form-item>
         <el-form-item>
           <el-button :loading="testing" @click="doTest">测试 Emby 连接</el-button>
           <el-button type="primary" @click="saveConfig">保存</el-button>
@@ -231,7 +243,8 @@ const previewAvatarUrl = computed(() => {
 const showConfig = ref(false)
 const testing = ref(false)
 const config = ref<EmbyProxyConfig>({
-  emby_url: '', emby_api_key: '', stashdb_endpoint: '', stashdb_api_key: '', javstash_endpoint: '', javstash_api_key: '', tpdb_api_key: '',
+  emby_url: '', emby_api_key: '', stashdb_endpoint: '', stashdb_api_key: '', 
+  javstash_endpoint: '', javstash_api_key: '', tpdb_api_key: '', wiki_email: '',
 })
 
 const scrapeStatus = ref<Record<string, string>>({})
@@ -259,6 +272,18 @@ function resultRowClass({ row }: { row: { status: string } }) {
   if (row.status === 'failed') return 'row-failed'
   if (row.status === 'success') return 'row-success'
   return ''
+}
+
+// 拼接外部链接
+function getProviderUrl(key: string, id: string): string {
+  switch (key) {
+    case 'Tmdb': return `https://www.themoviedb.org/person/${id}`
+    case 'Imdb': return `https://www.imdb.com/name/${id}/`
+    case 'Wikidata': return `https://www.wikidata.org/wiki/${id}`
+    case 'StashDB': return `https://stashdb.org/performers/${id}`
+    case 'JavStash': return `https://javstash.org/performers/${id}`
+    default: return '#'
+  }
 }
 
 async function loadConfig() {
@@ -435,6 +460,9 @@ onMounted(async () => { await loadConfig(); await loadAll() })
 .status-dot.failed { background: #f56c6c; }
 :deep(.row-failed) { background: #fef0f0; }
 :deep(.row-success) { background: #f0f9eb; }
+.provider-links { display: flex; gap: 8px; flex-wrap: wrap; }
+.provider-link { display: inline-block; padding: 2px 8px; background: #f0f9eb; color: #67c23a; border-radius: 4px; text-decoration: none; font-size: 12px; border: 1px solid #e1f3d8; transition: all 0.2s; }
+.provider-link:hover { background: #67c23a; color: #fff; }
 .script-panel { display: flex; flex-direction: column; gap: 16px; }
 .script-toolbar { display: flex; align-items: center; gap: 8px; }
 .script-toolbar .spacer { flex: 1; }
