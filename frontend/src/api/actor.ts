@@ -161,6 +161,7 @@ export interface EmbyPerson {
   Name: string
   Type: string
   Role?: string
+  PrimaryImageTag?: string
   Taglines?: string[] // ★ 新增
   ProviderIds?: Record<string, string> // ★ 新增
 }
