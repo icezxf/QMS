@@ -88,7 +88,7 @@
       </template>
     </el-dialog>
 
-    <!-- 详情抽屉 -->
+    <!-- 详情抽屉 (注意使用小写字段适配 Lux 返回) -->
     <el-drawer v-model="showDetail" size="520px" :title="detail?.name || '演员详情'">
       <div v-if="detail" class="detail">
         <div class="avatar-wrap">
@@ -144,6 +144,12 @@
             <el-avatar :size="80" :src="previewAvatarUrl">{{ editForm.name?.charAt(0) || '?' }}</el-avatar>
             <el-input v-model="avatarUrl" placeholder="粘贴图片 URL" style="flex: 1" />
             <el-upload :show-file-list="false" :before-upload="onAvatarFileSelected"><el-button>本地图片</el-button></el-upload>
+          </div>
+        </el-form-item>
+        <!-- 自动抓取的多图选择 -->
+        <el-form-item label="网络选图" v-if="fetchedImages.length > 0">
+          <div class="image-list">
+            <img v-for="(img, idx) in fetchedImages" :key="idx" :src="img" @click="avatarUrl = img" :class="{ active: avatarUrl === img }" />
           </div>
         </el-form-item>
         <el-form-item>
@@ -212,7 +218,8 @@ import {
   embyImageUrl, fetchEmbyLibraries, fetchEmbyPersonDetail, fetchEmbyPersons, fetchEmbyProxyConfig,
   fetchEmbyUsers, fetchScrapeScript, resetScrapeScript, saveEmbyProxyConfig, saveScrapeScript,
   scrapeEmbyPerson, testEmbyProxy, testScrapeScript, updateEmbyPerson, uploadEmbyAvatarFile,
-  uploadEmbyAvatarFromUrl, type EmbyLibrary, type EmbyPerson, type EmbyPersonDetail, type EmbyProxyConfig,
+  uploadEmbyAvatarFromUrl, previewActor, 
+  type EmbyLibrary, type EmbyPerson, type EmbyPersonDetail, type EmbyProxyConfig,
 } from '@/api/actor'
 
 const http = useHttpClient()
@@ -234,6 +241,7 @@ const editingPersonId = ref('')
 const editForm = ref({ name: '', biography: '', birthday: '', placeOfBirth: '', knownForDepartment: '', tags: [] as string[], taglines: [] as string[] })
 const avatarUrl = ref('')
 const localAvatarPreview = ref('')
+const fetchedImages = ref<string[]>([]) // ★ 抓取到的网络图片列表
 
 const previewAvatarUrl = computed(() => {
   if (localAvatarPreview.value) return localAvatarPreview.value
@@ -282,6 +290,7 @@ function getProviderUrl(key: string, id: string): string {
     case 'Wikidata': return `https://www.wikidata.org/wiki/${id}`
     case 'StashDB': return `https://stashdb.org/performers/${id}`
     case 'JavStash': return `https://javstash.org/performers/${id}`
+    case 'Wikipedia': return `https://${id}` // 直接拼完整维基百科链接
     default: return '#'
   }
 }
@@ -324,6 +333,8 @@ async function openEdit(row: EmbyPerson) {
   editingPersonId.value = row.Id
   avatarUrl.value = ''
   localAvatarPreview.value = ''
+  fetchedImages.value = []
+  
   try {
     const d = await fetchEmbyPersonDetail(http, row.Id)
     editForm.value = {
@@ -331,6 +342,21 @@ async function openEdit(row: EmbyPerson) {
       placeOfBirth: d.placeOfBirth || '', knownForDepartment: d.knownForDepartment || '',
       tags: d.tags || [], taglines: d.taglines || [],
     }
+    
+    // ★ 自动去网络拉取预览数据和所有图片
+    try {
+      const preview = await previewActor(http, editForm.value.name || row.Name)
+      if (preview.Images && preview.Images.length > 0) {
+        fetchedImages.value = preview.Images
+        // 如果当前没头像，默认选中网络的第一张
+        if (!avatarUrl.value) {
+           avatarUrl.value = preview.Images[0]
+        }
+      }
+    } catch (e) {
+      console.error('拉取网络图片失败', e)
+    }
+
   } catch {
     editForm.value = { name: row.Name, biography: '', birthday: '', placeOfBirth: '', knownForDepartment: '', tags: [], taglines: [] }
   }
@@ -463,6 +489,30 @@ onMounted(async () => { await loadConfig(); await loadAll() })
 .provider-links { display: flex; gap: 8px; flex-wrap: wrap; }
 .provider-link { display: inline-block; padding: 2px 8px; background: #f0f9eb; color: #67c23a; border-radius: 4px; text-decoration: none; font-size: 12px; border: 1px solid #e1f3d8; transition: all 0.2s; }
 .provider-link:hover { background: #67c23a; color: #fff; }
+
+/* 编辑框内网络选图样式 */
+.image-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px dashed #dcdfe6;
+  border-radius: 4px;
+}
+.image-list img {
+  width: 60px;
+  height: 80px;
+  object-fit: cover;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: all 0.2s;
+}
+.image-list img:hover { border-color: #a0cfff; }
+.image-list img.active { border-color: #409eff; box-shadow: 0 0 8px rgba(64, 158, 255, 0.5); }
+
 .script-panel { display: flex; flex-direction: column; gap: 16px; }
 .script-toolbar { display: flex; align-items: center; gap: 8px; }
 .script-toolbar .spacer { flex: 1; }
