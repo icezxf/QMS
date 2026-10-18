@@ -65,7 +65,7 @@ describe('HTTP 客户端组织', () => {
     await client.post('/protected', undefined, { headers: { Authorization: 'Bearer stale-token' } })
 
     const headers = AxiosHeaders.from(requestConfig?.headers)
-    expect(client.defaults.timeout).toBe(10000)
+    expect(client.defaults.timeout).toBe(60000)
     expect(client.defaults.withCredentials).toBe(true)
     expect(headers.get('Authorization')).toBeUndefined()
     expect(headers.get('X-CSRF-Token')).toBe('csrf-token')
