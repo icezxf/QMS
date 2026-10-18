@@ -33,7 +33,7 @@ export const useHttpClient = (): AxiosInstance => {
 export const configureHttpClient = (options: ConfigureHttpClientOptions) => {
   const client = options.http ?? http
 
-  client.defaults.timeout = 10000
+  client.defaults.timeout = 60000
   client.defaults.withCredentials = true
 
   const requestInterceptorID = client.interceptors.request.use(
