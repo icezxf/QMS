@@ -15,6 +15,7 @@ type EmbyActorConfig struct {
 	JavStashEndpoint string    `gorm:"size:256" json:"javstash_endpoint"`
 	JavStashApiKey   string    `gorm:"size:191" json:"javstash_api_key"`
 	TpdbApiKey       string    `gorm:"size:191" json:"tpdb_api_key"`
+	WikiEmail        string    `gorm:"size:191" json:"wiki_email"` // 维基百科联系邮箱
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
