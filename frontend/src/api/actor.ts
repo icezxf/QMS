@@ -148,3 +148,23 @@ export async function uploadEmbyAvatarFromUrl(http: AxiosInstance, personId: str
 export async function uploadEmbyAvatarFile(http: AxiosInstance, personId: string, file: File): Promise<void> {
   await http.post(embyProxyUrl(`/emby/Items/${personId}/Images/Primary`), file, { headers: { 'Content-Type': file.type || 'image/jpeg' } })
 }
+
+export interface PreviewResponse {
+  Name: string
+  BirthDate: string
+  PlaceOfBirth: string
+  Bio: string
+  Height: number
+  CupSize: string
+  Waist: number
+  Hip: number
+  ImageURL: string
+  Images: string[]
+  AliasesString: string
+  ProviderIds: Record<string, string>
+}
+
+export async function previewActor(http: AxiosInstance, name: string): Promise<PreviewResponse> {
+  const r = await http.post<APIResponse<PreviewResponse>>(`${SERVER_URL}/emby-proxy-scrape/preview`, { name })
+  return unwrapResponse(r) as PreviewResponse
+}
