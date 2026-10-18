@@ -396,17 +396,23 @@ func detectLanguage(text string) string {
 	return "unknown"
 }
 
-func extractProviderIds(urls []struct{ URL string }) map[string]string {
+func extractProviderIds(urls []struct {
+	URL string `json:"url"`
+}) map[string]string {
 	ids := map[string]string{}
 	for _, u := range urls {
 		urlStr := u.URL
 		if strings.Contains(urlStr, "themoviedb.org/person/") {
 			parts := strings.Split(urlStr, "/person/")
-			if len(parts) > 1 { ids["Tmdb"] = strings.Split(parts[1], "-")[0] }
+			if len(parts) > 1 {
+				ids["Tmdb"] = strings.Split(parts[1], "-")[0]
+			}
 		}
 		if strings.Contains(urlStr, "imdb.com/name/") {
 			parts := strings.Split(urlStr, "/name/")
-			if len(parts) > 1 { ids["Imdb"] = strings.Trim(parts[1], "/") }
+			if len(parts) > 1 {
+				ids["Imdb"] = strings.Trim(parts[1], "/")
+			}
 		}
 		if strings.Contains(urlStr, "wikidata.org/wiki/") {
 			parts := strings.Split(urlStr, "/")
