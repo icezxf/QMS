@@ -36,11 +36,25 @@ steps:
       birthday: "{{meta.BirthDate}}"
       place_of_birth: "{{meta.PlaceOfBirth}}"
       provider_ids: "{{meta.ProviderIds}}"
-      biography: "{{meta.Bio}}"
+      
+      biography: |
+        【基本档案】身高 {{meta.Height}}cm | 体重 {{meta.Weight}}kg | 三围 {{meta.Waist}}-{{meta.Hip}} | {{meta.CupSize}}罩杯
+        【出生地】{{meta.PlaceOfBirth}}
+        
+        【外部链接】
+        Wikipedia: https://{{meta.ProviderIds.Wikipedia}}
+        StashDB: https://stashdb.org/performers/{{meta.ProviderIds.StashDB}}
+        JavStash: https://javstash.org/performers/{{meta.ProviderIds.JavStash}}
+        IMDb: https://www.imdb.com/name/{{meta.ProviderIds.Imdb}}
+        TMDB: https://www.themoviedb.org/person/{{meta.ProviderIds.Tmdb}}
+
+        【简介】
+        {{meta.Bio}}
+        
       taglines:
-        - "【档案】身高 {{meta.Height}}cm | 三围 {{meta.Waist}}-{{meta.Hip}} | {{meta.CupSize}}罩杯"
-      tags:
-        - "别名:{{meta.AliasesString}}"
+        - "别名：{{meta.AliasesString}}"
+        
+      tags: []
 
   - action: emby.uploadAvatar
     params:
@@ -126,6 +140,7 @@ type StashBoxPerformer struct {
 	Country      string   `json:"country"`
 	Ethnicity    string   `json:"ethnicity"`
 	Height       int      `json:"height"`
+	Weight       int      `json:"weight"` // ★ 新增体重
 	Gender       string   `json:"gender"`
 	Bio          string   `json:"bio"`
 	Measurements struct {
@@ -182,7 +197,8 @@ func (c *StashBoxClient) SearchTPDB(ctx context.Context, term string) (*StashBox
 	if c.APIKey == "" {
 		return nil, fmt.Errorf("TPDB API Key 未配置")
 	}
-	q := `query Search($term: String!) { searchPerformer(term: $term) { id name birth_date country height measurements { cup_size waist hip } images { url } urls { url } } }`
+	// ★ 补全 TPDB 查询字段：bio, weight, urls 等
+	q := `query Search($term: String!) { searchPerformer(term: $term) { id name birth_date country height weight measurements { cup_size waist hip } images { url } urls { url } bio } }`
 	body, _ := json.Marshal(map[string]any{"query": q, "variables": map[string]any{"term": term}})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.Endpoint, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -210,9 +226,8 @@ func (c *StashBoxClient) SearchTPDB(ctx context.Context, term string) (*StashBox
 	return &envelope.Data.SearchPerformer[0], nil
 }
 
-// ============ 维基百科数据获取 ============
+// ============ 维基百科 ============
 
-// 返回：日文名, 实际页面标题(处理重定向), 中文简介
 func fetchWikiData(ctx context.Context, lang, title string, email string) (string, string, string) {
 	prop := "extracts"
 	if lang == "zh" {
@@ -240,7 +255,6 @@ func fetchWikiData(ctx context.Context, lang, title string, email string) (strin
 	if query, ok := result["query"].(map[string]any); ok {
 		if pages, ok := query["pages"].([]any); ok && len(pages) > 0 {
 			p := pages[0].(map[string]any)
-
 			if t, ok := p["title"].(string); ok {
 				actualTitle = t
 			}
@@ -386,25 +400,31 @@ func detectLanguage(text string) string {
 	return "unknown"
 }
 
-// 只提取需要的三种外部 ID
-func extractProviderIds(urls []struct{ URL string `json:"url"` }) map[string]string {
-	ids := map[string]string{}
+// 提取全部外部 ID，返回 map[string]any
+func extractProviderIds(urls []struct{ URL string `json:"url"` }) map[string]any {
+	ids := map[string]any{}
 	for _, u := range urls {
 		urlStr := u.URL
-
-		// 提取维基百科 (返回如 zh.wikipedia.org/wiki/...)
+		if strings.Contains(urlStr, "themoviedb.org/person/") {
+			parts := strings.Split(urlStr, "/person/")
+			if len(parts) > 1 { ids["Tmdb"] = strings.Split(parts[1], "-")[0] }
+		}
+		if strings.Contains(urlStr, "imdb.com/name/") {
+			parts := strings.Split(urlStr, "/name/")
+			if len(parts) > 1 { ids["Imdb"] = strings.Trim(parts[1], "/") }
+		}
+		if strings.Contains(urlStr, "wikidata.org/wiki/") {
+			parts := strings.Split(urlStr, "/")
+			ids["Wikidata"] = parts[len(parts)-1]
+		}
 		if strings.Contains(urlStr, "wikipedia.org/wiki/") {
 			parts := strings.Split(urlStr, "//")
-			if len(parts) > 1 {
-				ids["Wikipedia"] = parts[1]
-			}
+			if len(parts) > 1 { ids["Wikipedia"] = parts[1] }
 		}
-		// 提取 StashDB
 		if strings.Contains(urlStr, "stashdb.org/performers/") {
 			parts := strings.Split(urlStr, "/")
 			ids["StashDB"] = parts[len(parts)-1]
 		}
-		// 提取 JavStash
 		if strings.Contains(urlStr, "javstash.org/performers/") {
 			parts := strings.Split(urlStr, "/")
 			ids["JavStash"] = parts[len(parts)-1]
@@ -413,7 +433,7 @@ func extractProviderIds(urls []struct{ URL string `json:"url"` }) map[string]str
 	return ids
 }
 
-// ============ 核心智能聚合 Action ============
+// ============ 智能核心 ============
 
 type actionFn func(ctx context.Context, exec *ScriptExecutor, params, vars map[string]any) (any, error)
 
@@ -434,9 +454,17 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 	lang := detectLanguage(originalName)
 	result := map[string]any{
 		"Name": originalName, "BirthDate": "", "PlaceOfBirth": "",
-		"ImageURL": "", "ProviderIds": map[string]string{}, "Bio": "",
-		"CupSize": "", "Waist": 0, "Hip": 0, "Height": 0, "AliasesString": "",
+		"ImageURL": "", "ProviderIds": map[string]any{}, "Bio": "",
+		"CupSize": "", "Waist": 0, "Hip": 0, "Height": 0, "Weight": 0, "AliasesString": "",
 		"Images": []string{},
+	}
+
+	// 国家代码映射
+	countryMap := map[string]string{
+		"JP": "日本", "US": "美国", "KR": "韩国", "CN": "中国",
+		"TW": "中国台湾", "HK": "中国香港", "CA": "加拿大", "UK": "英国",
+		"GB": "英国", "AU": "澳大利亚", "FR": "法国", "DE": "德国",
+		"RU": "俄罗斯", "IT": "意大利", "ES": "西班牙", "BR": "巴西",
 	}
 
 	var tpdbSearchName string
@@ -444,18 +472,26 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 
 	if lang == "en" {
 		// ================= 英文名演员 =================
-		// 走 TPDB 抓所有元数据
 		if exec.Tpdb != nil && exec.Tpdb.APIKey != "" {
 			if tp, err := exec.Tpdb.SearchTPDB(ctx, originalName); err == nil {
 				result["Name"] = tp.Name
 				result["BirthDate"] = tp.BirthDate
 				result["Height"] = tp.Height
+				result["Weight"] = tp.Weight // 体重
 				result["CupSize"] = tp.Measurements.CupSize
 				result["Waist"] = tp.Measurements.Waist
 				result["Hip"] = tp.Measurements.Hip
-				result["Bio"] = tp.Bio
+				result["Bio"] = tp.Bio // 简介
+
+				// 出生地映射
+				if cName, ok := countryMap[tp.Country]; ok {
+					result["PlaceOfBirth"] = cName
+				} else {
+					result["PlaceOfBirth"] = tp.Country
+				}
+
 				result["ProviderIds"] = extractProviderIds(tp.Urls)
-				
+
 				tpImgs := []string{}
 				for _, img := range tp.Images { tpImgs = append(tpImgs, img.URL) }
 				if len(tpImgs) > 0 { result["ImageURL"] = tpImgs[0] }
@@ -463,7 +499,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 			}
 		}
 
-		// 头像优先尝试去 JavStash 拿
+		// 去 JavStash 兜底拿头像和 ID
 		if exec.JavStash != nil && exec.JavStash.APIKey != "" {
 			if j, err := exec.JavStash.SearchPerformer(ctx, originalName); err == nil && len(j.Images) > 0 {
 				js = j
@@ -471,19 +507,11 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 				for _, img := range j.Images { jsImgs = append(jsImgs, img.URL) }
 				result["ImageURL"] = jsImgs[0] // 覆盖为 JavStash 头像
 				result["Images"] = jsImgs
-				
-				// 合并 JavStash 的外部 ID
-				merged := result["ProviderIds"].(map[string]string)
-				for k, v := range extractProviderIds(j.Urls) {
-					if merged[k] == "" { merged[k] = v }
-				}
-			}
-		}
 
-		// 如果 JavStash 也没图，退回使用 TPDB 的第一张图（前面已赋值，无需操作）
-		if result["ImageURL"] == "" {
-			if imgs, ok := result["Images"].([]string); ok && len(imgs) > 0 {
-				result["ImageURL"] = imgs[0]
+				merged := result["ProviderIds"].(map[string]any)
+				for k, v := range extractProviderIds(j.Urls) {
+					if merged[k] == nil || merged[k] == "" { merged[k] = v }
+				}
 			}
 		}
 
@@ -492,7 +520,6 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		searchCandidates := []string{originalName}
 
 		if lang == "zh" {
-			// 1. 中文名：查中文维基拿简介和日文名
 			jaName, pageTitle, zhBio := fetchWikiData(ctx, "zh", originalName, exec.WikiEmail)
 			if zhBio != "" {
 				result["Bio"] = zhBio
@@ -500,13 +527,11 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 			if jaName != "" && jaName != originalName {
 				searchCandidates = append([]string{jaName}, searchCandidates...)
 			}
-			// 维基重定向的真实标题（比如 田中柠檬 -> 楓可憐）
 			if pageTitle != "" && pageTitle != originalName && pageTitle != jaName {
 				searchCandidates = append(searchCandidates, pageTitle)
 			}
 		}
 
-		// 2. 依次尝试去 JavStash 搜
 		if exec.JavStash != nil && exec.JavStash.APIKey != "" {
 			for _, candidate := range searchCandidates {
 				var jsErr error
@@ -518,7 +543,6 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		}
 
 		if js != nil {
-			// 名字策略：中文名保留原名，日文名用 JavStash 标准名
 			if lang == "zh" {
 				result["Name"] = originalName
 			} else {
@@ -528,14 +552,20 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 			result["BirthDate"] = js.BirthDate
 			result["PlaceOfBirth"] = "日本"
 			result["AliasesString"] = strings.Join(js.Aliases, ", ")
-			result["ProviderIds"] = extractProviderIds(js.Urls)
+			
+			// 合并 JavStash 外部 ID
+			mergedIds := extractProviderIds(js.Urls)
+			// 强制塞入 JavStash 自身 ID
+			if js.ID != "" {
+				mergedIds["JavStash"] = js.ID
+			}
+			result["ProviderIds"] = mergedIds
 			
 			jsImgs := []string{}
 			for _, img := range js.Images { jsImgs = append(jsImgs, img.URL) }
 			if len(jsImgs) > 0 { result["ImageURL"] = jsImgs[0] }
 			result["Images"] = jsImgs
 
-			// 3. 日文名：去日文维基拿简介
 			if lang == "ja" && result["Bio"] == "" {
 				var jaWikiTitle string
 				for _, u := range js.Urls {
@@ -550,7 +580,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 				}
 			}
 
-			// 4. 提取英文别名去查 TPDB
+			// 找英文别名查 TPDB
 			tpdbSearchName = js.Name
 			for _, alias := range js.Aliases {
 				if detectLanguage(alias) == "en" {
@@ -560,32 +590,35 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 			}
 		}
 
-		// 5. TPDB 补充三围数据
+		// TPDB 补充三围、体重和简介
 		if tpdbSearchName != "" && exec.Tpdb != nil && exec.Tpdb.APIKey != "" {
 			if tp, err := exec.Tpdb.SearchTPDB(ctx, tpdbSearchName); err == nil {
 				result["Height"] = tp.Height
+				result["Weight"] = tp.Weight // 日/中演员也补体重
 				result["CupSize"] = tp.Measurements.CupSize
 				result["Waist"] = tp.Measurements.Waist
 				result["Hip"] = tp.Measurements.Hip
 				
-				// 兜底简介
 				if result["Bio"] == "" {
 					result["Bio"] = tp.Bio
 				}
 				
-				// 追加 TPDB 图片
+				// 合并 TPDB 的 ID
+				merged := result["ProviderIds"].(map[string]any)
+				for k, v := range extractProviderIds(tp.Urls) {
+					if merged[k] == nil || merged[k] == "" {
+						merged[k] = v
+					}
+				}
+
+				// 追加图片
 				tpImgs := result["Images"].([]string)
 				for _, img := range tp.Images {
 					isNew := true
 					for _, existing := range tpImgs {
-						if existing == img.URL {
-							isNew = false
-							break
-						}
+						if existing == img.URL { isNew = false; break }
 					}
-					if isNew {
-						tpImgs = append(tpImgs, img.URL)
-					}
+					if isNew { tpImgs = append(tpImgs, img.URL) }
 				}
 				result["Images"] = tpImgs
 			}
