@@ -35,19 +35,21 @@ steps:
     params:
       id: "{{personId}}"
       name: "{{meta.Name}}"
+      character: "Actor"
       birthday: "{{meta.BirthDate}}"
       place_of_birth: "{{meta.PlaceOfBirth}}"
+      production_locations: "{{meta.ProductionLocations}}"
+      premiere_date: "{{meta.PremiereDate}}"
+      production_year: "{{meta.ProductionYear}}"
+      known_for_department: "{{meta.KnownForDepartment}}"
       
       provider_ids: "{{meta.ProviderIds}}"
-      premiere_date: "{{meta.PremiereDate}}"
       
       taglines:
         - "【档案】身高 {{meta.Height}}cm | 体重 {{meta.Weight}}kg | 三围 {{meta.Waist}}-{{meta.Hip}} | {{meta.CupSize}}罩杯"
-        - "别名：{{meta.AliasesString}}"
+        - "【别名】：{{meta.AliasesString}}"
         
-      biography: |
-        {{meta.Bio}}
-        {{meta.ExternalLinks}}
+      biography: "{{meta.Bio}}\n{{meta.ExternalLinks}}"
         
       tags: []
 
@@ -138,7 +140,7 @@ type StashBoxPerformer struct {
 	Weight       int      `json:"weight"`
 	Gender       string   `json:"gender"`
 	Bio          string   `json:"bio"`
-	CareerStart  int      `json:"career_start_year"` // ★ 出道年份
+	CareerStart  int      `json:"career_start_year"`
 	Measurements struct {
 		CupSize string `json:"cup_size"`
 		Waist   int    `json:"waist"`
@@ -163,8 +165,20 @@ func (c *StashBoxClient) SearchPerformer(ctx context.Context, term string) (*Sta
 	if c.APIKey == "" {
 		return nil, fmt.Errorf("API Key 未配置")
 	}
-	q := fmt.Sprintf(`query Search($term: String!) { searchPerformer(term: $term) { %s } }`, stashGraphQLFields)
-	body, _ := json.Marshal(map[string]any{"query": q, "variables": map[string]any{"term": term}})
+	
+	isUUID := len(term) == 36 && strings.Count(term, "-") == 4
+	var q string
+	var vars map[string]any
+
+	if isUUID {
+		q = fmt.Sprintf(`query Find($id: ID!) { findPerformer(id: $id) { %s } }`, stashGraphQLFields)
+		vars = map[string]any{"id": term}
+	} else {
+		q = fmt.Sprintf(`query Search($term: String!) { searchPerformer(term: $term) { %s } }`, stashGraphQLFields)
+		vars = map[string]any{"term": term}
+	}
+
+	body, _ := json.Marshal(map[string]any{"query": q, "variables": vars})
 	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(reqCtx, http.MethodPost, c.Endpoint, bytes.NewReader(body))
@@ -176,6 +190,25 @@ func (c *StashBoxClient) SearchPerformer(ctx context.Context, term string) (*Sta
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	if isUUID {
+		var envelope struct {
+			Data struct {
+				FindPerformer *StashBoxPerformer `json:"findPerformer"`
+			} `json:"data"`
+			Errors []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+		json.NewDecoder(resp.Body).Decode(&envelope)
+		if len(envelope.Errors) > 0 {
+			return nil, fmt.Errorf("接口报错: %s", envelope.Errors[0].Message)
+		}
+		if envelope.Data.FindPerformer == nil {
+			return nil, fmt.Errorf("未找到该ID的演员")
+		}
+		return envelope.Data.FindPerformer, nil
+	}
 
 	var envelope struct {
 		Data struct {
@@ -200,29 +233,37 @@ func (c *StashBoxClient) SearchTPDB(ctx context.Context, term string) (*StashBox
 		return nil, fmt.Errorf("TPDB API Key 未配置")
 	}
 
-	// 1. 搜索列表拿 ID
-	searchURL := fmt.Sprintf("%s?q=%s", c.Endpoint, url.QueryEscape(term))
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+	isUUID := len(term) == 36 && strings.Count(term, "-") == 4
+	bestID := ""
 
-	var listResp struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	json.NewDecoder(resp.Body).Decode(&listResp)
-	if len(listResp.Data) == 0 {
-		return nil, fmt.Errorf("TPDB 未找到演员")
+	if isUUID {
+		bestID = term
+	} else {
+		// 1. 搜索列表拿 ID
+		searchURL := fmt.Sprintf("%s?q=%s", c.Endpoint, url.QueryEscape(term))
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		var listResp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		json.NewDecoder(resp.Body).Decode(&listResp)
+		if len(listResp.Data) == 0 {
+			return nil, fmt.Errorf("TPDB 未找到演员")
+		}
+		bestID = listResp.Data[0].ID
 	}
 
 	// 2. 拿 ID 请求详情
-	detailURL := fmt.Sprintf("%s/%s", c.Endpoint, listResp.Data[0].ID)
+	detailURL := fmt.Sprintf("%s/%s", c.Endpoint, bestID)
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, detailURL, nil)
 	req2.Header.Set("Authorization", "Bearer "+c.APIKey)
 	req2.Header.Set("User-Agent", "Mozilla/5.0")
@@ -569,13 +610,20 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		return nil, fmt.Errorf("缺少 name")
 	}
 
+	forceSource := toString(params["force_source"])
+	if forceSource == "" {
+		forceSource = "auto"
+	}
+
 	lang := detectLanguage(originalName)
+	isUUID := len(originalName) == 36 && strings.Count(originalName, "-") == 4
+
 	result := map[string]any{
 		"Name": originalName, "BirthDate": "", "PlaceOfBirth": "",
 		"ImageURL": "", "ProviderIds": map[string]any{}, "Bio": "", "ExternalLinks": "",
 		"CupSize": "", "Waist": 0, "Hip": 0, "Height": 0, "Weight": 0, "AliasesString": "",
 		"Images": []string{},
-		"PremiereDate": "",
+		"PremiereDate": "", "ProductionYear": 0, "KnownForDepartment": "Acting", "ProductionLocations": []string{},
 	}
 
 	countryMap := map[string]string{
@@ -588,8 +636,8 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 	var tpdbSearchName string
 	var js *StashBoxPerformer
 
-	if lang == "en" {
-		// ================= 英文名演员 =================
+	if lang == "en" || forceSource == "tpdb" || isUUID {
+		// ================= 英文名演员 / 强制 TPDB / 按 ID 匹配 =================
 		if exec.Tpdb != nil && exec.Tpdb.APIKey != "" {
 			if tp, err := exec.Tpdb.SearchTPDB(ctx, originalName); err == nil {
 				result["Name"] = tp.Name
@@ -600,23 +648,22 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 				result["Waist"] = tp.Measurements.Waist
 				result["Hip"] = tp.Measurements.Hip
 				result["Bio"] = tp.Bio
-				
-				// 英文名演员无别名
-				result["AliasesString"] = ""
+				result["AliasesString"] = "" // 英文/ID 匹配无别名
 
-				// 英文名的出道年份
 				if tp.CareerStart > 0 {
 					result["PremiereDate"] = fmt.Sprintf("%d-01-01", tp.CareerStart)
+					result["ProductionYear"] = tp.CareerStart
 				}
 
 				if cName, ok := countryMap[tp.Country]; ok {
 					result["PlaceOfBirth"] = cName
+					result["ProductionLocations"] = []string{cName}
 				} else {
 					result["PlaceOfBirth"] = tp.Country
+					result["ProductionLocations"] = []string{tp.Country}
 				}
 
 				result["ProviderIds"] = extractProviderIds(tp.Urls)
-
 				tpImgs := []string{}
 				for _, img := range tp.Images {
 					tpImgs = append(tpImgs, img.URL)
@@ -628,7 +675,8 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 			}
 		}
 
-		if exec.JavStash != nil && exec.JavStash.APIKey != "" {
+		// 如果是 UUID 或找不到，尝试用 JavStash 兜底
+		if (isUUID || result["Bio"] == "") && exec.JavStash != nil && exec.JavStash.APIKey != "" {
 			if j, err := exec.JavStash.SearchPerformer(ctx, originalName); err == nil && len(j.Images) > 0 {
 				js = j
 				jsImgs := []string{}
@@ -642,6 +690,9 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 					if merged[k] == nil || merged[k] == "" {
 						merged[k] = v
 					}
+				}
+				if j.ID != "" {
+					merged["JavStash"] = j.ID
 				}
 			}
 		}
@@ -680,16 +731,16 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 			}
 			result["BirthDate"] = js.BirthDate
 			result["PlaceOfBirth"] = "日本"
+			result["ProductionLocations"] = []string{"日本"}
 			result["AliasesString"] = strings.Join(js.Aliases, ", ")
 
-			// 日/中演员身高优先用 JavStash
 			if js.Height > 0 {
 				result["Height"] = js.Height
 			}
 
-			// 日/中演员出道年份
 			if js.CareerStart > 0 {
 				result["PremiereDate"] = fmt.Sprintf("%d-01-01", js.CareerStart)
+				result["ProductionYear"] = js.CareerStart
 			}
 
 			mergedIds := extractProviderIds(js.Urls)
@@ -732,7 +783,6 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 
 		if tpdbSearchName != "" && exec.Tpdb != nil && exec.Tpdb.APIKey != "" {
 			if tp, err := exec.Tpdb.SearchTPDB(ctx, tpdbSearchName); err == nil {
-				// 只有在 JavStash 没身高的情况下，才用 TPDB 的身高
 				if result["Height"] == 0 {
 					result["Height"] = tp.Height
 				}
@@ -770,7 +820,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		}
 	}
 
-	// 核心：动态生成外部链接（只有拿到 ID 才拼接）
+	// 动态生成外部链接
 	var links []string
 	ids := result["ProviderIds"].(map[string]any)
 	if val := ids["Wikipedia"]; val != nil && val != "" {
@@ -832,6 +882,12 @@ func actionEmbyUpdatePerson(ctx context.Context, exec *ScriptExecutor, params, v
 			body["providerIds"] = v
 		case "premiere_date":
 			body["premiereDate"] = v
+		case "production_locations":
+			body["productionLocations"] = v
+		case "production_year":
+			body["productionYear"] = v
+		case "character":
+			body["character"] = v
 		default:
 			body[k] = v
 		}
@@ -867,6 +923,7 @@ func actionEmbyUploadAvatar(ctx context.Context, exec *ScriptExecutor, params, v
 	}
 
 	imgReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
+	imgReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	imgResp, err := http.DefaultClient.Do(imgReq)
 	if err != nil {
 		return nil, err
