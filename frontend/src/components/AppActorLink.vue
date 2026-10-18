@@ -26,8 +26,9 @@
           </el-avatar>
         </template>
       </el-table-column>
-      <el-table-column prop="Name" label="姓名" :min-width="isMobile ? 100 : 160" sortable show-overflow-tooltip />
-      <el-table-column v-if="!isMobile" prop="Id" label="Emby ID" min-width="220" show-overflow-tooltip />
+      <el-table-column prop="Name" label="姓名" min-width="100" sortable show-overflow-tooltip />
+      <!-- 建议把 ID 列的宽度稍微收一点，避免挤占姓名列的空间 -->
+      <el-table-column v-if="!isMobile" prop="Id" label="Emby ID" min-width="180" show-overflow-tooltip />
       <el-table-column label="刮削状态" :width="isMobile ? 60 : 110" align="center">
         <template #default="{ row }">
           <template v-if="isMobile">
