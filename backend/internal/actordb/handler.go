@@ -15,41 +15,28 @@ type Handler struct {
 func NewHandler(repo *Repo) *Handler { return &Handler{Repo: repo} }
 
 func (h *Handler) RegisterRoutes(g *gin.RouterGroup) {
-	// 配置读写
 	g.GET("/emby-proxy-config", h.getConfig)
 	g.PUT("/emby-proxy-config", h.updateConfig)
 	g.POST("/emby-proxy-config/test", h.testConnection)
 
-	// 脚本管理
 	g.GET("/emby-proxy-config/script", h.getScript)
 	g.PUT("/emby-proxy-config/script", h.saveScript)
 	g.DELETE("/emby-proxy-config/script", h.resetScript)
 	g.POST("/emby-proxy-config/script/test", h.testScript)
 
-	// 刮削（走脚本）
 	g.POST("/emby-proxy-scrape/person/:id", h.scrapePerson)
 
-	// 通用代理（独占 /emby-proxy/ 前缀，放最后）
 	g.Any("/emby-proxy/*path", h.proxy)
 }
 
 // ============ 统一响应格式 ============
-// QMS 前端封装的 unwrapResponse 期望特定的包体结构，这样包一层才不会抛“请求失败”
 
 func respondOK(c *gin.Context, data any) {
-	c.JSON(http.StatusOK, gin.H{
-		"code":    200,
-		"data":    data,
-		"message": "success",
-	})
+	c.JSON(http.StatusOK, gin.H{"code": 200, "data": data, "message": "success"})
 }
 
 func respondErr(c *gin.Context, msg string) {
-	c.JSON(http.StatusOK, gin.H{
-		"code":    400,
-		"data":    nil,
-		"message": msg,
-	})
+	c.JSON(http.StatusOK, gin.H{"code": 400, "data": nil, "message": msg})
 }
 
 // ============ 配置 ============
@@ -61,12 +48,10 @@ func (h *Handler) getConfig(c *gin.Context) {
 		return
 	}
 	masked := *cfg
-	if len(masked.EmbyAPIKey) > 8 {
-		masked.EmbyAPIKey = masked.EmbyAPIKey[:4] + "****"
-	}
-	if len(masked.StashDBApiKey) > 8 {
-		masked.StashDBApiKey = masked.StashDBApiKey[:4] + "****"
-	}
+	if len(masked.EmbyAPIKey) > 8 { masked.EmbyAPIKey = masked.EmbyAPIKey[:4] + "****" }
+	if len(masked.StashDBApiKey) > 8 { masked.StashDBApiKey = masked.StashDBApiKey[:4] + "****" }
+	if len(masked.JavStashApiKey) > 8 { masked.JavStashApiKey = masked.JavStashApiKey[:4] + "****" }
+	if len(masked.TpdbApiKey) > 8 { masked.TpdbApiKey = masked.TpdbApiKey[:4] + "****" }
 	respondOK(c, masked)
 }
 
@@ -77,12 +62,11 @@ func (h *Handler) updateConfig(c *gin.Context) {
 		return
 	}
 	old, _ := h.Repo.GetConfig()
-	if req.EmbyAPIKey == "" || strings.Contains(req.EmbyAPIKey, "****") {
-		req.EmbyAPIKey = old.EmbyAPIKey
-	}
-	if req.StashDBApiKey == "" || strings.Contains(req.StashDBApiKey, "****") {
-		req.StashDBApiKey = old.StashDBApiKey
-	}
+	if req.EmbyAPIKey == "" || strings.Contains(req.EmbyAPIKey, "****") { req.EmbyAPIKey = old.EmbyAPIKey }
+	if req.StashDBApiKey == "" || strings.Contains(req.StashDBApiKey, "****") { req.StashDBApiKey = old.StashDBApiKey }
+	if req.JavStashApiKey == "" || strings.Contains(req.JavStashApiKey, "****") { req.JavStashApiKey = old.JavStashApiKey }
+	if req.TpdbApiKey == "" || strings.Contains(req.TpdbApiKey, "****") { req.TpdbApiKey = old.TpdbApiKey }
+
 	if err := h.Repo.UpdateConfig(&req); err != nil {
 		respondErr(c, err.Error())
 		return
@@ -133,9 +117,7 @@ func (h *Handler) getScript(c *gin.Context) {
 }
 
 func (h *Handler) saveScript(c *gin.Context) {
-	var req struct {
-		Script string `json:"script"`
-	}
+	var req struct { Script string `json:"script"` }
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondErr(c, err.Error())
 		return
@@ -165,9 +147,7 @@ func (h *Handler) testScript(c *gin.Context) {
 		respondErr(c, err.Error())
 		return
 	}
-	if req.Script == "" {
-		req.Script = DefaultScrapeScript
-	}
+	if req.Script == "" { req.Script = DefaultScrapeScript }
 	exec, err := h.buildScriptExecutor()
 	if err != nil {
 		respondErr(c, err.Error())
@@ -184,13 +164,11 @@ func (h *Handler) testScript(c *gin.Context) {
 	respondOK(c, gin.H{"ok": true, "results": results, "vars": vars})
 }
 
-// ============ 刮削（走脚本） ============
+// ============ 刮削 ============
 
 func (h *Handler) scrapePerson(c *gin.Context) {
 	id := c.Param("id")
-	var req struct {
-		Name string `json:"name"`
-	}
+	var req struct { Name string `json:"name"` }
 	_ = c.ShouldBindJSON(&req)
 
 	exec, err := h.buildScriptExecutor()
@@ -228,23 +206,17 @@ func (h *Handler) proxy(c *gin.Context) {
 	target := strings.TrimRight(cfg.EmbyURL, "/") + path
 
 	sep := "?"
-	if strings.Contains(target, "?") {
-		sep = "&"
-	}
+	if strings.Contains(target, "?") { sep = "&" }
 	target += sep + "api_key=" + cfg.EmbyAPIKey
 
-	if qs := c.Request.URL.RawQuery; qs != "" {
-		target += "&" + qs
-	}
+	if qs := c.Request.URL.RawQuery; qs != "" { target += "&" + qs }
 
 	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, target, c.Request.Body)
 	if err != nil {
 		respondErr(c, err.Error())
 		return
 	}
-	if ct := c.Request.Header.Get("Content-Type"); ct != "" {
-		req.Header.Set("Content-Type", ct)
-	}
+	if ct := c.Request.Header.Get("Content-Type"); ct != "" { req.Header.Set("Content-Type", ct) }
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -253,12 +225,8 @@ func (h *Handler) proxy(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		c.Header("Content-Type", ct)
-	}
-	if cl := resp.Header.Get("Content-Length"); cl != "" {
-		c.Header("Content-Length", cl)
-	}
+	if ct := resp.Header.Get("Content-Type"); ct != "" { c.Header("Content-Type", ct) }
+	if cl := resp.Header.Get("Content-Length"); cl != "" { c.Header("Content-Length", cl) }
 	c.Status(resp.StatusCode)
 	_, _ = io.Copy(c.Writer, resp.Body)
 }
@@ -267,19 +235,24 @@ func (h *Handler) proxy(c *gin.Context) {
 
 func (h *Handler) buildScriptExecutor() (*ScriptExecutor, error) {
 	cfg, err := h.Repo.GetConfig()
-	if err != nil {
-		return nil, err
-	}
-	if cfg.EmbyURL == "" || cfg.EmbyAPIKey == "" {
-		return nil, errConfigMissing
-	}
+	if err != nil { return nil, err }
+	if cfg.EmbyURL == "" || cfg.EmbyAPIKey == "" { return nil, errConfigMissing }
+	
 	emby := NewEmbyClient(cfg.EmbyURL, cfg.EmbyAPIKey, "")
-	stash := NewStashDBClient(cfg.StashDBEndpoint, cfg.StashDBApiKey)
-	return NewScriptExecutor(emby, stash), nil
+	
+	stashEndpoint := cfg.StashDBEndpoint
+	if stashEndpoint == "" { stashEndpoint = DefaultStashDBEndpoint }
+	stash := NewStashBoxClient(stashEndpoint, cfg.StashDBApiKey)
+	
+	jsEndpoint := cfg.JavStashEndpoint
+	if jsEndpoint == "" { jsEndpoint = DefaultJavStashEndpoint }
+	javStash := NewStashBoxClient(jsEndpoint, cfg.JavStashApiKey)
+	
+	tpdb := NewStashBoxClient("https://theporndb.net/graphql", cfg.TpdbApiKey)
+
+	return NewScriptExecutor(emby, stash, javStash, tpdb), nil
 }
 
 var errConfigMissing = &configErr{"Emby 未配置"}
-
 type configErr struct{ msg string }
-
 func (e *configErr) Error() string { return e.msg }
