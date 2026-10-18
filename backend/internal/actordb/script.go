@@ -179,7 +179,10 @@ func (c *StashBoxClient) SearchTPDB(ctx context.Context, term string) (*StashBox
 func fetchWikiData(ctx context.Context, lang, title string, email string) (string, string) {
 	prop := "extracts"
 	if lang == "zh" { prop = "langlinks|extracts" }
-	apiURL := fmt.Sprintf("https://%s.wikipedia.org/w/api.php?action=query&titles=%s&prop=%s&lllang=ja&exintro=1&explaintext=1&format=json", lang, url.QueryEscape(title), prop)
+	
+	// ★ 核心修复：加上 &redirects=1 和 &formatversion=2（让 pages 变成数组）
+	apiURL := fmt.Sprintf("https://%s.wikipedia.org/w/api.php?action=query&titles=%s&prop=%s&lllang=ja&exintro=1&explaintext=1&format=json&redirects=1&formatversion=2", lang, url.QueryEscape(title), prop)
+	
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	uaEmail := email
 	if uaEmail == "" { uaEmail = "icezxf555@gmail.com" }
@@ -194,13 +197,21 @@ func fetchWikiData(ctx context.Context, lang, title string, email string) (strin
 	
 	jaName, bio := "", ""
 	if query, ok := result["query"].(map[string]any); ok {
-		if pages, ok := query["pages"].(map[string]any); ok {
-			for _, page := range pages {
-				p := page.(map[string]any)
-				if b, ok := p["extract"].(string); ok { bio = b }
-				if lls, ok := p["langlinks"].([]any); ok && len(lls) > 0 {
-					if ll, ok := lls[0].(map[string]any); ok {
-						if star, ok := ll["*"].(string); ok { jaName = star }
+		// formatversion=2 返回的 pages 是数组，不是 map
+		if pages, ok := query["pages"].([]any); ok && len(pages) > 0 {
+			p := pages[0].(map[string]any)
+			
+			// 1. 提取简介
+			if b, ok := p["extract"].(string); ok { 
+				bio = b 
+			}
+			
+			// 2. 提取日文名（处理 formatversion=2 的数组结构）
+			if lls, ok := p["langlinks"].([]any); ok && len(lls) > 0 {
+				if ll, ok := lls[0].(map[string]any); ok {
+					// formatversion=2 返回的 key 是 "title"
+					if jaTitle, ok := ll["title"].(string); ok { 
+						jaName = jaTitle 
 					}
 				}
 			}
