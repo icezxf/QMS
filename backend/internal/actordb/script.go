@@ -313,17 +313,39 @@ func extractProviderIds(urls []struct{ URL string `json:"url"` }) map[string]str
 	ids := map[string]string{}
 	for _, u := range urls {
 		urlStr := u.URL
+		
+		// 1. 提取 TMDB (例如: https://www.themoviedb.org/person/1735622-alexa-nova)
 		if strings.Contains(urlStr, "themoviedb.org/person/") {
 			parts := strings.Split(urlStr, "/person/")
-			if len(parts) > 1 { ids["Tmdb"] = strings.Split(parts[1], "-")[0] }
+			if len(parts) > 1 {
+				ids["Tmdb"] = strings.Split(parts[1], "-")[0]
+			}
 		}
+		
+		// 2. 提取 IMDb (例如: https://www.imdb.com/name/nm7382630/)
 		if strings.Contains(urlStr, "imdb.com/name/") {
 			parts := strings.Split(urlStr, "/name/")
-			if len(parts) > 1 { ids["Imdb"] = strings.Trim(parts[1], "/") }
+			if len(parts) > 1 {
+				ids["Imdb"] = strings.Trim(parts[1], "/")
+			}
 		}
-		// ★ 获取维基百科本身的链接
+		
+		// 3. 提取 Wikidata (例如: https://www.wikidata.org/wiki/Q22128111)
+		if strings.Contains(urlStr, "wikidata.org/wiki/") {
+			parts := strings.Split(urlStr, "/")
+			ids["Wikidata"] = parts[len(parts)-1]
+		}
+		
+		// 4. 提取 StashDB (例如: https://stashdb.org/performers/4490fd08-...)
+		if strings.Contains(urlStr, "stashdb.org/performers/") {
+			parts := strings.Split(urlStr, "/")
+			ids["StashDB"] = parts[len(parts)-1]
+		}
+		
+		// 5. 提取维基百科 (例如: https://ja.wikipedia.org/wiki/三上悠亜)
 		if strings.Contains(urlStr, "wikipedia.org/wiki/") {
-			parts := strings.Split(urlStr, "/wiki/")
+			// 存下 host + path，比如 "ja.wikipedia.org/wiki/三上悠亜"
+			parts := strings.Split(urlStr, "//")
 			if len(parts) > 1 {
 				ids["Wikipedia"] = parts[1]
 			}
