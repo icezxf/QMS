@@ -29,8 +29,6 @@ func (h *Handler) RegisterRoutes(g *gin.RouterGroup) {
 	g.Any("/emby-proxy/*path", h.proxy)
 }
 
-// ============ 统一响应格式 ============
-
 func respondOK(c *gin.Context, data any) {
 	c.JSON(http.StatusOK, gin.H{"code": 200, "data": data, "message": "success"})
 }
@@ -105,35 +103,23 @@ func (h *Handler) testConnection(c *gin.Context) {
 	respondOK(c, gin.H{"ok": true, "message": "连接成功"})
 }
 
-// ============ 脚本管理 ============
+// ============ 脚本 ============
 
 func (h *Handler) getScript(c *gin.Context) {
 	script, isDefault, err := LoadScript()
-	if err != nil {
-		respondErr(c, err.Error())
-		return
-	}
+	if err != nil { respondErr(c, err.Error()); return }
 	respondOK(c, gin.H{"script": script, "is_default": isDefault})
 }
 
 func (h *Handler) saveScript(c *gin.Context) {
 	var req struct { Script string `json:"script"` }
-	if err := c.ShouldBindJSON(&req); err != nil {
-		respondErr(c, err.Error())
-		return
-	}
-	if err := SaveScript(req.Script); err != nil {
-		respondErr(c, err.Error())
-		return
-	}
+	if err := c.ShouldBindJSON(&req); err != nil { respondErr(c, err.Error()); return }
+	if err := SaveScript(req.Script); err != nil { respondErr(c, err.Error()); return }
 	respondOK(c, gin.H{"ok": true})
 }
 
 func (h *Handler) resetScript(c *gin.Context) {
-	if err := ResetScript(); err != nil {
-		respondErr(c, err.Error())
-		return
-	}
+	if err := ResetScript(); err != nil { respondErr(c, err.Error()); return }
 	respondOK(c, gin.H{"ok": true, "script": DefaultScrapeScript})
 }
 
@@ -143,16 +129,12 @@ func (h *Handler) testScript(c *gin.Context) {
 		PersonID   string `json:"person_id"`
 		PersonName string `json:"person_name"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		respondErr(c, err.Error())
-		return
-	}
+	if err := c.ShouldBindJSON(&req); err != nil { respondErr(c, err.Error()); return }
 	if req.Script == "" { req.Script = DefaultScrapeScript }
+	
 	exec, err := h.buildScriptExecutor()
-	if err != nil {
-		respondErr(c, err.Error())
-		return
-	}
+	if err != nil { respondErr(c, err.Error()); return }
+	
 	vars, results, runErr := exec.Run(c.Request.Context(), req.Script, map[string]any{
 		"personId":   req.PersonID,
 		"personName": req.PersonName,
@@ -172,16 +154,10 @@ func (h *Handler) scrapePerson(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 
 	exec, err := h.buildScriptExecutor()
-	if err != nil {
-		respondOK(c, gin.H{"ok": false, "message": err.Error()})
-		return
-	}
+	if err != nil { respondOK(c, gin.H{"ok": false, "message": err.Error()}); return }
 
 	script, _, err := LoadScript()
-	if err != nil {
-		respondOK(c, gin.H{"ok": false, "message": "读取脚本失败：" + err.Error()})
-		return
-	}
+	if err != nil { respondOK(c, gin.H{"ok": false, "message": "读取脚本失败：" + err.Error()}); return }
 
 	_, results, runErr := exec.Run(c.Request.Context(), script, map[string]any{
 		"personId":   id,
@@ -194,7 +170,7 @@ func (h *Handler) scrapePerson(c *gin.Context) {
 	respondOK(c, gin.H{"ok": true, "message": "刮削成功", "results": results})
 }
 
-// ============ 通用代理 ============
+// ============ 代理 ============
 
 func (h *Handler) proxy(c *gin.Context) {
 	cfg, err := h.Repo.GetConfig()
@@ -212,17 +188,11 @@ func (h *Handler) proxy(c *gin.Context) {
 	if qs := c.Request.URL.RawQuery; qs != "" { target += "&" + qs }
 
 	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, target, c.Request.Body)
-	if err != nil {
-		respondErr(c, err.Error())
-		return
-	}
+	if err != nil { respondErr(c, err.Error()); return }
 	if ct := c.Request.Header.Get("Content-Type"); ct != "" { req.Header.Set("Content-Type", ct) }
 
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		respondErr(c, err.Error())
-		return
-	}
+	if err != nil { respondErr(c, err.Error()); return }
 	defer resp.Body.Close()
 
 	if ct := resp.Header.Get("Content-Type"); ct != "" { c.Header("Content-Type", ct) }
@@ -248,9 +218,11 @@ func (h *Handler) buildScriptExecutor() (*ScriptExecutor, error) {
 	if jsEndpoint == "" { jsEndpoint = DefaultJavStashEndpoint }
 	javStash := NewStashBoxClient(jsEndpoint, cfg.JavStashApiKey)
 	
-	tpdb := NewStashBoxClient("https://theporndb.net/graphql", cfg.TpdbApiKey)
+	tpdb := NewStashBoxClient(DefaultTPDBEndpoint, cfg.TpdbApiKey)
 
-	return NewScriptExecutor(emby, stash, javStash, tpdb), nil
+	exec := NewScriptExecutor(emby, stash, javStash, tpdb)
+	exec.WikiEmail = cfg.WikiEmail
+	return exec, nil
 }
 
 var errConfigMissing = &configErr{"Emby 未配置"}
