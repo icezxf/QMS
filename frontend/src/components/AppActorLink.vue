@@ -21,13 +21,13 @@
       <el-table-column type="selection" width="48" reserve-selection />
       <el-table-column label="头像" :width="isMobile ? 56 : 70">
         <template #default="{ row }">
-          <el-avatar :size="isMobile ? 32 : 40" :src="embyImageUrl(row.Id)">
+          <!-- ★ 头像防缓存 -->
+          <el-avatar :size="isMobile ? 32 : 40" :src="embyImageUrl(row.Id, avatarVersions[row.Id])">
             {{ row.Name?.charAt(0) || '?' }}
           </el-avatar>
         </template>
       </el-table-column>
       <el-table-column prop="Name" label="姓名" min-width="100" sortable show-overflow-tooltip />
-      <!-- 建议把 ID 列的宽度稍微收一点，避免挤占姓名列的空间 -->
       <el-table-column v-if="!isMobile" prop="Id" label="Emby ID" min-width="180" show-overflow-tooltip />
       <el-table-column label="刮削状态" :width="isMobile ? 60 : 110" align="center">
         <template #default="{ row }">
@@ -89,11 +89,12 @@
       </template>
     </el-dialog>
 
-    <!-- 详情抽屉 (注意使用小写字段适配 Lux 返回) -->
+    <!-- 详情抽屉 (Lux 返回小写，带外部链接) -->
     <el-drawer v-model="showDetail" size="520px" :title="detail?.name || '演员详情'">
       <div v-if="detail" class="detail">
         <div class="avatar-wrap">
-          <el-avatar :size="120" :src="embyImageUrl(detail.id)">
+          <!-- ★ 详情页头像防缓存 -->
+          <el-avatar :size="120" :src="embyImageUrl(detail.id, avatarVersions[detail.id])">
             {{ detail.name?.charAt(0) || '?' }}
           </el-avatar>
         </div>
@@ -103,7 +104,6 @@
           <div class="row"><span class="label">出生地</span><span>{{ detail.placeOfBirth || '—' }}</span></div>
           <div class="row"><span class="label">职业</span><span>{{ detail.knownForDepartment || '—' }}</span></div>
           <div class="row"><span class="label">标签</span><span>{{ (detail.tags || []).join(', ') || '—' }}</span></div>
-          <!-- 外部 ID 带链接 -->
           <div class="row">
             <span class="label">外部 ID</span>
             <span class="provider-links">
@@ -242,7 +242,8 @@ const editingPersonId = ref('')
 const editForm = ref({ name: '', biography: '', birthday: '', placeOfBirth: '', knownForDepartment: '', tags: [] as string[], taglines: [] as string[] })
 const avatarUrl = ref('')
 const localAvatarPreview = ref('')
-const fetchedImages = ref<string[]>([]) // ★ 抓取到的网络图片列表
+const fetchedImages = ref<string[]>([])
+const avatarVersions = ref<Record<string, number>>({}) // ★ 强制刷新头像缓存
 
 const previewAvatarUrl = computed(() => {
   if (localAvatarPreview.value) return localAvatarPreview.value
@@ -344,12 +345,11 @@ async function openEdit(row: EmbyPerson) {
       tags: d.tags || [], taglines: d.taglines || [],
     }
     
-    // ★ 自动去网络拉取预览数据和所有图片
+    // 自动去网络拉取预览数据和所有图片
     try {
       const preview = await previewActor(http, editForm.value.name || row.Name)
       if (preview.Images && preview.Images.length > 0) {
         fetchedImages.value = preview.Images
-        // 如果当前没头像，默认选中网络的第一张
         if (!avatarUrl.value) {
            avatarUrl.value = preview.Images[0]
         }
@@ -368,14 +368,44 @@ async function saveEdit() {
   if (!editForm.value.name) { ElMessage.warning('姓名必填'); return }
   saving.value = true
   try {
+    // 1. 更新文字元数据
     await updateEmbyPerson(http, editingPersonId.value, editForm.value)
-    if (avatarUrl.value) {
+    
+    // 2. 更新头像
+    const hasNewAvatar = !!avatarUrl.value
+    if (hasNewAvatar) {
       await uploadEmbyAvatarFromUrl(http, editingPersonId.value, avatarUrl.value)
-      ElMessage.success('元数据和头像已保存')
-    } else { ElMessage.success('元数据已保存') }
+    }
+
+    // 3. ★ 核心：本地瞬间更新状态
+    // 更新表格名字
+    const target = persons.value.find(p => p.Id === editingPersonId.value)
+    if (target) target.Name = editForm.value.name
+    
+    // 更新详情抽屉数据
+    if (detail.value && detail.value.id === editingPersonId.value) {
+      detail.value.name = editForm.value.name
+      detail.value.biography = editForm.value.biography
+      detail.value.birthday = editForm.value.birthday
+      detail.value.placeOfBirth = editForm.value.placeOfBirth
+    }
+
+    // 换头像加时间戳刷新缓存
+    if (hasNewAvatar) {
+      avatarVersions.value[editingPersonId.value] = Date.now()
+    }
+
+    ElMessage.success(hasNewAvatar ? '元数据和头像已保存并更新' : '元数据已保存并更新')
     showEdit.value = false
-    await loadPersons()
-  } catch (e: any) { ElMessage.error(e?.message || '保存失败') } finally { saving.value = false }
+    
+    // 后台静默同步
+    loadPersons().catch(() => {})
+    
+  } catch (e: any) { 
+    ElMessage.error(e?.message || '保存失败') 
+  } finally { 
+    saving.value = false 
+  }
 }
 
 async function onAvatarFileSelected(file: File) {
@@ -384,6 +414,9 @@ async function onAvatarFileSelected(file: File) {
     await uploadEmbyAvatarFile(http, editingPersonId.value, file)
     ElMessage.success('头像已上传')
     localAvatarPreview.value = URL.createObjectURL(file)
+    
+    // 本地选文件，也要触发缓存刷新
+    avatarVersions.value[editingPersonId.value] = Date.now()
   } catch (e: any) { ElMessage.error(e?.message || '上传头像失败') }
   return false
 }
