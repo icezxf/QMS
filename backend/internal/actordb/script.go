@@ -14,8 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"qmediasync/internal/helpers"
-
 	"gopkg.in/yaml.v3"
 )
 
