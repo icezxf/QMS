@@ -15,11 +15,8 @@
           批量刮削（{{ selectedRows.length }}）
         </el-button>
         
-        <!-- 批量操作下拉 -->
         <el-dropdown @command="handleBatchAction" v-if="selectedRows.length > 0">
-          <el-button>
-            批量操作 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-          </el-button>
+          <el-button>批量操作 <el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item command="clear_tags">清空选中标签</el-dropdown-item>
@@ -41,7 +38,6 @@
       </el-table-column>
       <el-table-column prop="Name" label="姓名" min-width="100" sortable show-overflow-tooltip />
       
-      <!-- 档案速览列 -->
       <el-table-column label="档案速览" min-width="160" show-overflow-tooltip>
         <template #default="{ row }">
           <span style="color: #67c23a; font-size: 12px;">
@@ -155,7 +151,6 @@
     <el-drawer v-model="showEdit" size="560px" :title="`编辑：${editForm.name || ''}`">
       <el-form :model="editForm" label-width="100px">
         
-        <!-- 按 ID 强制匹配 -->
         <el-form-item label="外部ID匹配">
           <el-input v-model="forceMatchId" placeholder="粘贴 TPDB 或 JavStash 的 UUID" style="flex: 1">
             <template #append>
@@ -193,7 +188,6 @@
           </div>
         </el-form-item>
         
-        <!-- 自动抓取的多图选择 -->
         <el-form-item label="网络选图" v-if="fetchedImages.length > 0">
           <div class="image-list">
             <img v-for="(img, idx) in fetchedImages" :key="idx" :src="img" @click="avatarUrl = img" :class="{ active: avatarUrl === img }" />
@@ -243,7 +237,6 @@
             <el-form-item><el-button type="warning" :loading="scriptRunning" @click="doRunScript">执行</el-button></el-form-item>
           </el-form>
           
-          <!-- 日志点击查看 JSON -->
           <div v-if="scriptResults.length > 0" class="script-results">
             <div v-for="r in scriptResults" :key="r.index" :class="['result-row', r.ok ? 'ok' : 'fail']" @click="showLogDetail(r)" style="cursor: pointer;">
               <span class="idx">#{{ r.index + 1 }}</span>
@@ -348,7 +341,6 @@ function resultRowClass({ row }: { row: { status: string } }) {
   return ''
 }
 
-// 解析档案速览
 function extractTagline(taglines: string[] | undefined) {
   if (!taglines || taglines.length === 0) return '—'
   const doc = taglines.find(t => t.includes('身高'))
@@ -356,7 +348,6 @@ function extractTagline(taglines: string[] | undefined) {
   return taglines[0]
 }
 
-// 批量操作
 async function handleBatchAction(command: string) {
   if (command === 'clear_tags') {
     await ElMessageBox.confirm(`确定清空选中的 ${selectedRows.value.length} 个演员的标签吗？`, '提示', { type: 'warning' })
@@ -375,7 +366,6 @@ async function handleBatchAction(command: string) {
   }
 }
 
-// 日志点击查看 JSON
 function showLogDetail(r: any) {
   if (!r.message) return
   ElMessageBox.alert(
@@ -561,6 +551,12 @@ async function scrapeOne(row: EmbyPerson) {
     if (result.ok) {
       scrapeStatus.value[row.Id] = 'success'; scrapeResults.value[0].status = 'success'; scrapeResults.value[0].message = result.message || '刮削成功'; scrapeProgress.value.success = 1
       avatarVersions.value[row.Id] = Date.now()
+      
+      // 实时更新档案速览
+      fetchEmbyPersonDetail(http, row.Id).then(d => {
+        const target = persons.value.find(p => p.Id === row.Id)
+        if (target) target.Taglines = d.taglines
+      })
     } else {
       scrapeStatus.value[row.Id] = 'failed'; scrapeResults.value[0].status = 'failed'; scrapeResults.value[0].message = result.message || '刮削失败'; scrapeProgress.value.failed = 1
     }
@@ -585,6 +581,12 @@ async function batchScrape() {
       if (result.ok) {
         scrapeStatus.value[t.Id] = 'success'; scrapeResults.value[i].status = 'success'; scrapeResults.value[i].message = result.message || '刮削成功'; scrapeProgress.value.success++
         avatarVersions.value[t.Id] = Date.now()
+        
+        // 实时更新档案速览
+        fetchEmbyPersonDetail(http, t.Id).then(d => {
+          const target = persons.value.find(p => p.Id === t.Id)
+          if (target) target.Taglines = d.taglines
+        })
       } else {
         scrapeStatus.value[t.Id] = 'failed'; scrapeResults.value[i].status = 'failed'; scrapeResults.value[i].message = result.message || '刮削失败'; scrapeProgress.value.failed++
       }
@@ -656,7 +658,6 @@ onMounted(async () => { await loadConfig(); await loadAll() })
 .provider-link { display: inline-block; padding: 2px 8px; background: #f0f9eb; color: #67c23a; border-radius: 4px; text-decoration: none; font-size: 12px; border: 1px solid #e1f3d8; transition: all 0.2s; }
 .provider-link:hover { background: #67c23a; color: #fff; }
 
-/* 编辑框内网络选图样式 */
 .image-list {
   display: flex;
   gap: 8px;
