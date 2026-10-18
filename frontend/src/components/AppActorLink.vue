@@ -8,6 +8,10 @@
           <el-option v-for="lib in libraries" :key="lib.Id" :label="lib.Name" :value="lib.Id" />
         </el-select>
         <el-input v-model="search" placeholder="搜索演员名字" clearable style="width: 180px" />
+        
+        <!-- ★ 新增：仅显示无头像筛选 -->
+        <el-checkbox v-model="onlyNoAvatar">仅显示无头像</el-checkbox>
+        
         <el-button @click="showConfig = true">设置</el-button>
         <el-button @click="openScript">脚本</el-button>
         <el-button :loading="loading" @click="loadAll">刷新</el-button>
@@ -273,6 +277,7 @@ const libraries = ref<EmbyLibrary[]>([])
 const selectedLibrary = ref('')
 const persons = ref<EmbyPerson[]>([])
 const search = ref('')
+const onlyNoAvatar = ref(false) // ★ 仅显示无头像
 const loading = ref(false)
 const loadingLibraries = ref(false)
 const selectedRows = ref<EmbyPerson[]>([])
@@ -329,9 +334,23 @@ const testPersonName = ref('')
 const scriptResults = ref<Array<{ index: number; action: string; ok: boolean; message: string; duration: string }>>([])
 
 const filteredPersons = computed(() => {
+  let result = persons.value
+  
+  // 1. 名字过滤
   const kw = search.value.trim().toLowerCase()
-  if (!kw) return persons.value
-  return persons.value.filter((p) => (p.Name || '').toLowerCase().includes(kw))
+  if (kw) {
+    result = result.filter((p) => (p.Name || '').toLowerCase().includes(kw))
+  }
+  
+  // 2. 无头像过滤
+  if (onlyNoAvatar.value) {
+    result = result.filter((p) => {
+      // 兼容判断：如果 PrimaryImageTag 没有，且 ImageTags 里也没有 Primary
+      return !p.PrimaryImageTag && !(p as any).ImageTags?.Primary
+    })
+  }
+  
+  return result
 })
 
 function onSelectionChange(rows: EmbyPerson[]) { selectedRows.value = rows }
@@ -470,16 +489,29 @@ async function doForceMatch() {
   matching.value = true
   try {
     const preview = await previewActor(http, forceMatchId.value)
-    editForm.value.name = preview.Name || editForm.value.name
-    editForm.value.birthday = preview.BirthDate || ''
-    editForm.value.placeOfBirth = preview.PlaceOfBirth || ''
-    editForm.value.biography = preview.Bio || ''
+    
+    if (preview.Name) editForm.value.name = preview.Name
+    if (preview.BirthDate) editForm.value.birthday = preview.BirthDate
+    if (preview.PlaceOfBirth) editForm.value.placeOfBirth = preview.PlaceOfBirth
+    if (preview.Bio) editForm.value.biography = preview.Bio
+    
+    // 拼装档案（Taglines）
+    if (preview.Height || preview.CupSize) {
+      const doc = `【档案】身高 ${preview.Height || 0}cm | 体重 ${preview.Weight || 0}kg | 三围 ${preview.Waist || 0}-${preview.Hip || 0} | ${preview.CupSize || ''}罩杯`
+      const oldAlias = editForm.value.taglines.find(t => t.includes('别名'))
+      if (oldAlias) {
+        editForm.value.taglines = [doc, oldAlias]
+      } else {
+        editForm.value.taglines = [doc]
+      }
+    }
     
     if (preview.Images && preview.Images.length > 0) {
       fetchedImages.value = preview.Images
       avatarUrl.value = preview.Images[0]
     }
-    ElMessage.success('拉取成功，数据已填入表单')
+    
+    ElMessage.success('拉取成功，档案和简介已更新')
   } catch (e: any) {
     ElMessage.error(e?.message || '拉取失败，请检查 ID 是否正确')
   } finally {
@@ -495,7 +527,12 @@ async function saveEdit() {
     
     const hasNewAvatar = !!avatarUrl.value
     if (hasNewAvatar) {
-      await uploadEmbyAvatarFromUrl(http, editingPersonId.value, avatarUrl.value)
+      try {
+        await uploadEmbyAvatarFromUrl(http, editingPersonId.value, avatarUrl.value)
+      } catch (e) {
+        console.error('图片下载超时', e)
+        ElMessage.warning('元数据已保存，但图片下载超时了')
+      }
     }
 
     const target = persons.value.find(p => p.Id === editingPersonId.value)
