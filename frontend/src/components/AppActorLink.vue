@@ -391,7 +391,7 @@ function getProviderUrl(key: string, id: string): string {
     case 'Imdb': return `https://www.imdb.com/name/${id}/`
     case 'Wikidata': return `https://www.wikidata.org/wiki/${id}`
     case 'StashDB': return `https://stashdb.org/performers/${id}`
-    case 'JavStash': return `https://javastash.org/performers/${id}`
+    case 'JavStash': return `https://javstash.org/performers/${id}`
     case 'Wikipedia': return `https://${id}`
     case 'Porndb': return `https://theporndb.net/performers/${id}`
     default: return '#'
