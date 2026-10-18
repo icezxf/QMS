@@ -3,8 +3,6 @@ import { SERVER_URL } from '@/const'
 import { unwrapResponse } from './response'
 import type { APIResponse } from './types'
 
-// ============ 配置 ============
-
 export interface EmbyProxyConfig {
   emby_url: string
   emby_api_key: string
@@ -13,69 +11,34 @@ export interface EmbyProxyConfig {
   javstash_endpoint: string
   javstash_api_key: string
   tpdb_api_key: string
+  wiki_email: string
 }
 
-export async function fetchEmbyProxyConfig(
-  http: AxiosInstance,
-): Promise<EmbyProxyConfig> {
-  const response = await http.get<APIResponse<EmbyProxyConfig>>(
-    `${SERVER_URL}/emby-proxy-config`,
-  )
-  return unwrapResponse(response) as EmbyProxyConfig
-}
+export interface EmbyUser { Id: string; Name: string; Policy?: any }
+export interface EmbyLibrary { Id: string; Name: string; CollectionType?: string }
+export interface EmbyPerson { Id: string; Name: string; Type: string; Role?: string }
 
-export async function saveEmbyProxyConfig(
-  http: AxiosInstance,
-  payload: EmbyProxyConfig,
-): Promise<void> {
-  const response = await http.put<APIResponse<null>>(
-    `${SERVER_URL}/emby-proxy-config`,
-    payload,
-  )
-  unwrapResponse(response)
+// Lux 详情接口返回的是小写
+export interface EmbyPersonDetail {
+  id: string
+  name: string
+  biography: string
+  birthday: string
+  placeOfBirth: string
+  knownForDepartment: string
+  tags: string[]
+  taglines: string[]
+  providerIds?: Record<string, string>
+  imageUrl: string
 }
-
-export async function testEmbyProxy(
-  http: AxiosInstance,
-  payload: { emby_url: string; emby_api_key: string },
-): Promise<{ ok: boolean; message: string }> {
-  const response = await http.post<APIResponse<{ ok: boolean; message: string }>>(
-    `${SERVER_URL}/emby-proxy-config/test`,
-    payload,
-  )
-  return unwrapResponse(response) ?? { ok: false, message: '未知错误' }
-}
-
-// ============ 脚本管理 ============
 
 export interface ScriptResponse { script: string; is_default: boolean }
 export interface ScriptStepResult { index: number; action: string; ok: boolean; message: string; duration: string }
 export interface ScriptTestResponse { ok: boolean; error?: string; results?: ScriptStepResult[]; vars?: Record<string, any> }
 
-export async function fetchScrapeScript(http: AxiosInstance): Promise<ScriptResponse> {
-  const r = await http.get<APIResponse<ScriptResponse>>(`${SERVER_URL}/emby-proxy-config/script`)
-  return unwrapResponse(r) as ScriptResponse
-}
+export interface ScrapeResult { ok: boolean; message?: string; results?: ScriptStepResult[] }
 
-export async function saveScrapeScript(http: AxiosInstance, script: string): Promise<void> {
-  const r = await http.put<APIResponse<null>>(`${SERVER_URL}/emby-proxy-config/script`, { script })
-  unwrapResponse(r)
-}
-
-export async function resetScrapeScript(http: AxiosInstance): Promise<string> {
-  const r = await http.delete<APIResponse<{ script: string }>>(`${SERVER_URL}/emby-proxy-config/script`)
-  return unwrapResponse(r)?.script ?? ''
-}
-
-export async function testScrapeScript(
-  http: AxiosInstance,
-  payload: { script: string; person_id: string; person_name: string },
-): Promise<ScriptTestResponse> {
-  const r = await http.post<APIResponse<ScriptTestResponse>>(`${SERVER_URL}/emby-proxy-config/script/test`, payload)
-  return unwrapResponse(r) ?? { ok: false, error: '未知错误' }
-}
-
-// ============ 代理 URL 与请求 ============
+// ============ 工具请求 ============
 
 export function embyProxyUrl(path: string): string {
   const p = path.startsWith('/') ? path : '/' + path
@@ -96,26 +59,47 @@ export async function embyPatch<T = any>(http: AxiosInstance, path: string, body
   return response.data
 }
 
-// ============ 类型定义 ============
+// ============ 接口封装 ============
 
-export interface EmbyUser { Id: string; Name: string; Policy?: any }
-export interface EmbyLibrary { Id: string; Name: string; CollectionType?: string }
-export interface EmbyPerson { Id: string; Name: string; Type: string; Role?: string }
-
-export interface EmbyPersonDetail {
-  id: string
-  name: string
-  biography: string
-  birthday: string
-  placeOfBirth: string
-  knownForDepartment: string
-  tags: string[]
-  taglines: string[]
-  providerIds?: Record<string, string>
-  imageUrl: string
+export async function fetchEmbyProxyConfig(http: AxiosInstance): Promise<EmbyProxyConfig> {
+  const r = await http.get<APIResponse<EmbyProxyConfig>>(`${SERVER_URL}/emby-proxy-config`)
+  return unwrapResponse(r) as EmbyProxyConfig
 }
 
-// ============ Emby 接口封装 ============
+export async function saveEmbyProxyConfig(http: AxiosInstance, payload: EmbyProxyConfig): Promise<void> {
+  const r = await http.put<APIResponse<null>>(`${SERVER_URL}/emby-proxy-config`, payload)
+  unwrapResponse(r)
+}
+
+export async function testEmbyProxy(http: AxiosInstance, payload: { emby_url: string; emby_api_key: string }): Promise<{ ok: boolean; message: string }> {
+  const r = await http.post<APIResponse<{ ok: boolean; message: string }>>(`${SERVER_URL}/emby-proxy-config/test`, payload)
+  return unwrapResponse(r) ?? { ok: false, message: '未知错误' }
+}
+
+export async function fetchScrapeScript(http: AxiosInstance): Promise<ScriptResponse> {
+  const r = await http.get<APIResponse<ScriptResponse>>(`${SERVER_URL}/emby-proxy-config/script`)
+  return unwrapResponse(r) as ScriptResponse
+}
+
+export async function saveScrapeScript(http: AxiosInstance, script: string): Promise<void> {
+  const r = await http.put<APIResponse<null>>(`${SERVER_URL}/emby-proxy-config/script`, { script })
+  unwrapResponse(r)
+}
+
+export async function resetScrapeScript(http: AxiosInstance): Promise<string> {
+  const r = await http.delete<APIResponse<{ script: string }>>(`${SERVER_URL}/emby-proxy-config/script`)
+  return unwrapResponse(r)?.script ?? ''
+}
+
+export async function testScrapeScript(http: AxiosInstance, payload: { script: string; person_id: string; person_name: string }): Promise<ScriptTestResponse> {
+  const r = await http.post<APIResponse<ScriptTestResponse>>(`${SERVER_URL}/emby-proxy-config/script/test`, payload)
+  return unwrapResponse(r) ?? { ok: false, error: '未知错误' }
+}
+
+export async function scrapeEmbyPerson(http: AxiosInstance, personId: string, personName: string): Promise<ScrapeResult> {
+  const r = await http.post<APIResponse<ScrapeResult>>(`${SERVER_URL}/emby-proxy-scrape/person/${personId}`, { name: personName })
+  return unwrapResponse(r) ?? { ok: false, message: '未知错误' }
+}
 
 export async function fetchEmbyUsers(http: AxiosInstance): Promise<EmbyUser[]> {
   const data = await embyGet<EmbyUser[]>(http, '/emby/Users')
@@ -134,7 +118,6 @@ export async function fetchEmbyPersons(http: AxiosInstance, userId: string, libr
   const data = await embyGet<{ Items: Array<{ People?: EmbyPerson[] }>; TotalRecordCount: number }>(
     http, `/emby/Users/${userId}/Items`, params
   )
-
   const seen = new Map<string, EmbyPerson>()
   for (const item of data?.Items ?? []) {
     for (const p of item.People ?? []) {
@@ -164,13 +147,4 @@ export async function uploadEmbyAvatarFromUrl(http: AxiosInstance, personId: str
 
 export async function uploadEmbyAvatarFile(http: AxiosInstance, personId: string, file: File): Promise<void> {
   await http.post(embyProxyUrl(`/emby/Items/${personId}/Images/Primary`), file, { headers: { 'Content-Type': file.type || 'image/jpeg' } })
-}
-
-// ============ 刮削 ============
-
-export interface ScrapeResult { ok: boolean; message?: string; results?: ScriptStepResult[] }
-
-export async function scrapeEmbyPerson(http: AxiosInstance, personId: string, personName: string): Promise<ScrapeResult> {
-  const response = await http.post<APIResponse<ScrapeResult>>(`${SERVER_URL}/emby-proxy-scrape/person/${personId}`, { name: personName })
-  return unwrapResponse(response) ?? { ok: false, message: '未知错误' }
 }
