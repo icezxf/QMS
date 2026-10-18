@@ -185,6 +185,7 @@ export interface PreviewResponse {
   PlaceOfBirth: string
   Bio: string
   Height: number
+  Weight: number
   CupSize: string
   Waist: number
   Hip: number
@@ -270,7 +271,6 @@ export async function uploadEmbyAvatarFromUrl(
   personId: string,
   imageUrl: string,
 ): Promise<void> {
-  // 前端先拉图片 → 转 blob → POST 到代理
   const resp = await fetch(imageUrl)
   const blob = await resp.blob()
   await http.post(
