@@ -14,6 +14,19 @@
         <el-button type="warning" :disabled="selectedRows.length === 0 || scraping" :loading="scraping" @click="batchScrape">
           批量刮削（{{ selectedRows.length }}）
         </el-button>
+        
+        <!-- 批量操作下拉 -->
+        <el-dropdown @command="handleBatchAction" v-if="selectedRows.length > 0">
+          <el-button>
+            批量操作 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="clear_tags">清空选中标签</el-dropdown-item>
+              <el-dropdown-item command="clear_taglines">清空选中档案</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </div>
 
@@ -21,13 +34,22 @@
       <el-table-column type="selection" width="48" reserve-selection />
       <el-table-column label="头像" :width="isMobile ? 56 : 70">
         <template #default="{ row }">
-          <!-- ★ 头像防缓存 -->
           <el-avatar :size="isMobile ? 32 : 40" :src="embyImageUrl(row.Id, avatarVersions[row.Id])">
             {{ row.Name?.charAt(0) || '?' }}
           </el-avatar>
         </template>
       </el-table-column>
       <el-table-column prop="Name" label="姓名" min-width="100" sortable show-overflow-tooltip />
+      
+      <!-- 档案速览列 -->
+      <el-table-column label="档案速览" min-width="160" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span style="color: #67c23a; font-size: 12px;">
+            {{ extractTagline(row.Taglines) }}
+          </span>
+        </template>
+      </el-table-column>
+      
       <el-table-column v-if="!isMobile" prop="Id" label="Emby ID" min-width="180" show-overflow-tooltip />
       <el-table-column label="刮削状态" :width="isMobile ? 60 : 110" align="center">
         <template #default="{ row }">
@@ -89,19 +111,24 @@
       </template>
     </el-dialog>
 
-    <!-- 详情抽屉 (Lux 返回小写，带外部链接) -->
+    <!-- 详情抽屉 -->
     <el-drawer v-model="showDetail" size="520px" :title="detail?.name || '演员详情'">
       <div v-if="detail" class="detail">
         <div class="avatar-wrap">
-          <!-- ★ 详情页头像防缓存 -->
           <el-avatar :size="120" :src="embyImageUrl(detail.id, avatarVersions[detail.id])">
             {{ detail.name?.charAt(0) || '?' }}
           </el-avatar>
         </div>
         <div class="meta">
           <div class="row"><span class="label">姓名</span><span>{{ detail.name || '—' }}</span></div>
+          <div class="row"><span class="label">类型</span><span>{{ detail.character || '—' }}</span></div>
+          <div class="row"><span class="label">档案</span><span>{{ (detail.taglines || []).join(' | ') || '—' }}</span></div>
           <div class="row"><span class="label">生日</span><span>{{ detail.birthday || '—' }}</span></div>
+          <div class="row"><span class="label">逝世</span><span>{{ detail.deathday || '—' }}</span></div>
+          <div class="row"><span class="label">出道</span><span>{{ detail.premiereDate || '—' }}</span></div>
+          <div class="row"><span class="label">年份</span><span>{{ detail.productionYear || '—' }}</span></div>
           <div class="row"><span class="label">出生地</span><span>{{ detail.placeOfBirth || '—' }}</span></div>
+          <div class="row"><span class="label">地区</span><span>{{ (detail.productionLocations || []).join(', ') || '—' }}</span></div>
           <div class="row"><span class="label">职业</span><span>{{ detail.knownForDepartment || '—' }}</span></div>
           <div class="row"><span class="label">标签</span><span>{{ (detail.tags || []).join(', ') || '—' }}</span></div>
           <div class="row">
@@ -127,19 +154,37 @@
     <!-- 编辑抽屉 -->
     <el-drawer v-model="showEdit" size="560px" :title="`编辑：${editForm.name || ''}`">
       <el-form :model="editForm" label-width="100px">
+        
+        <!-- 按 ID 强制匹配 -->
+        <el-form-item label="外部ID匹配">
+          <el-input v-model="forceMatchId" placeholder="粘贴 TPDB 或 JavStash 的 UUID" style="flex: 1">
+            <template #append>
+              <el-button :loading="matching" @click="doForceMatch">拉取</el-button>
+            </template>
+          </el-input>
+        </el-form-item>
+
+        <el-form-item label="类型"><el-input v-model="editForm.character" placeholder="Actor" /></el-form-item>
         <el-form-item label="姓名"><el-input v-model="editForm.name" /></el-form-item>
-        <el-form-item label="生日"><el-input v-model="editForm.birthday" placeholder="1993-08-16" /></el-form-item>
+        <el-form-item label="生日"><el-input v-model="editForm.birthday" placeholder="YYYY-MM-DD" /></el-form-item>
+        <el-form-item label="逝世"><el-input v-model="editForm.deathday" placeholder="YYYY-MM-DD" /></el-form-item>
+        <el-form-item label="出道年份"><el-input v-model="editForm.premiereDate" placeholder="YYYY-MM-DD" /></el-form-item>
+        <el-form-item label="年份"><el-input-number v-model="editForm.productionYear" :controls="false" placeholder="YYYY" style="width: 100%" /></el-form-item>
         <el-form-item label="出生地"><el-input v-model="editForm.placeOfBirth" /></el-form-item>
+        <el-form-item label="地区"><el-select v-model="editForm.productionLocations" multiple filterable allow-create default-first-option style="width: 100%" placeholder="输入后回车添加" /></el-form-item>
         <el-form-item label="职业"><el-input v-model="editForm.knownForDepartment" placeholder="Acting" /></el-form-item>
+        
         <el-form-item label="标签">
           <el-select v-model="editForm.tags" multiple filterable allow-create default-first-option style="width: 100%" placeholder="输入后回车添加" />
         </el-form-item>
-        <el-form-item label="标语">
+        <el-form-item label="标语(档案)">
           <el-select v-model="editForm.taglines" multiple filterable allow-create default-first-option style="width: 100%" placeholder="输入后回车添加" />
         </el-form-item>
+        
         <el-form-item label="简介">
           <el-input v-model="editForm.biography" type="textarea" :rows="8" placeholder="演员简介" />
         </el-form-item>
+        
         <el-form-item label="头像">
           <div class="avatar-edit">
             <el-avatar :size="80" :src="previewAvatarUrl">{{ editForm.name?.charAt(0) || '?' }}</el-avatar>
@@ -147,12 +192,14 @@
             <el-upload :show-file-list="false" :before-upload="onAvatarFileSelected"><el-button>本地图片</el-button></el-upload>
           </div>
         </el-form-item>
+        
         <!-- 自动抓取的多图选择 -->
         <el-form-item label="网络选图" v-if="fetchedImages.length > 0">
           <div class="image-list">
             <img v-for="(img, idx) in fetchedImages" :key="idx" :src="img" @click="avatarUrl = img" :class="{ active: avatarUrl === img }" />
           </div>
         </el-form-item>
+        
         <el-form-item>
           <el-button type="primary" :loading="saving" @click="saveEdit">保存到 Emby</el-button>
           <el-button @click="showEdit = false">取消</el-button>
@@ -195,8 +242,10 @@
             <el-form-item label="姓名"><el-input v-model="testPersonName" style="width: 160px" /></el-form-item>
             <el-form-item><el-button type="warning" :loading="scriptRunning" @click="doRunScript">执行</el-button></el-form-item>
           </el-form>
+          
+          <!-- 日志点击查看 JSON -->
           <div v-if="scriptResults.length > 0" class="script-results">
-            <div v-for="r in scriptResults" :key="r.index" :class="['result-row', r.ok ? 'ok' : 'fail']">
+            <div v-for="r in scriptResults" :key="r.index" :class="['result-row', r.ok ? 'ok' : 'fail']" @click="showLogDetail(r)" style="cursor: pointer;">
               <span class="idx">#{{ r.index + 1 }}</span>
               <span class="action">{{ r.action }}</span>
               <span class="dur">{{ r.duration }}</span>
@@ -211,8 +260,8 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Edit, View, MagicStick } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Edit, View, MagicStick, ArrowDown } from '@element-plus/icons-vue'
 import { useHttpClient } from '@/http/client'
 import { useDeviceType } from '@/composables/useDeviceType'
 import {
@@ -239,11 +288,26 @@ const detail = ref<EmbyPersonDetail | null>(null)
 const showEdit = ref(false)
 const saving = ref(false)
 const editingPersonId = ref('')
-const editForm = ref({ name: '', biography: '', birthday: '', placeOfBirth: '', knownForDepartment: '', tags: [] as string[], taglines: [] as string[] })
+const editForm = ref({ 
+  name: '', 
+  character: '',
+  biography: '', 
+  birthday: '', 
+  deathday: '', 
+  premiereDate: '', 
+  productionYear: 0, 
+  placeOfBirth: '', 
+  knownForDepartment: '', 
+  productionLocations: [] as string[],
+  tags: [] as string[], 
+  taglines: [] as string[] 
+})
 const avatarUrl = ref('')
 const localAvatarPreview = ref('')
 const fetchedImages = ref<string[]>([])
-const avatarVersions = ref<Record<string, number>>({}) // ★ 强制刷新头像缓存
+const avatarVersions = ref<Record<string, number>>({})
+const forceMatchId = ref('')
+const matching = ref(false)
 
 const previewAvatarUrl = computed(() => {
   if (localAvatarPreview.value) return localAvatarPreview.value
@@ -284,15 +348,52 @@ function resultRowClass({ row }: { row: { status: string } }) {
   return ''
 }
 
-// 拼接外部链接
+// 解析档案速览
+function extractTagline(taglines: string[] | undefined) {
+  if (!taglines || taglines.length === 0) return '—'
+  const doc = taglines.find(t => t.includes('身高'))
+  if (doc) return doc.replace('【档案】', '')
+  return taglines[0]
+}
+
+// 批量操作
+async function handleBatchAction(command: string) {
+  if (command === 'clear_tags') {
+    await ElMessageBox.confirm(`确定清空选中的 ${selectedRows.value.length} 个演员的标签吗？`, '提示', { type: 'warning' })
+    for (const row of selectedRows.value) {
+      await updateEmbyPerson(http, row.Id, { name: row.Name, tags: [] })
+    }
+    ElMessage.success('标签已清空')
+    await loadPersons()
+  } else if (command === 'clear_taglines') {
+    await ElMessageBox.confirm(`确定清空选中的 ${selectedRows.value.length} 个演员的档案(标语)吗？`, '提示', { type: 'warning' })
+    for (const row of selectedRows.value) {
+      await updateEmbyPerson(http, row.Id, { name: row.Name, taglines: [] })
+    }
+    ElMessage.success('档案已清空')
+    await loadPersons()
+  }
+}
+
+// 日志点击查看 JSON
+function showLogDetail(r: any) {
+  if (!r.message) return
+  ElMessageBox.alert(
+    `<pre style="white-space: pre-wrap; word-wrap: break-word; max-height: 400px; overflow-y: auto; font-size: 12px;">${r.message}</pre>`,
+    `步骤 #${r.index + 1} 详情`,
+    { dangerouslyUseHTMLString: true }
+  )
+}
+
 function getProviderUrl(key: string, id: string): string {
   switch (key) {
     case 'Tmdb': return `https://www.themoviedb.org/person/${id}`
     case 'Imdb': return `https://www.imdb.com/name/${id}/`
     case 'Wikidata': return `https://www.wikidata.org/wiki/${id}`
     case 'StashDB': return `https://stashdb.org/performers/${id}`
-    case 'JavStash': return `https://javstash.org/performers/${id}`
-    case 'Wikipedia': return `https://${id}` // 直接拼完整维基百科链接
+    case 'JavStash': return `https://javastash.org/performers/${id}`
+    case 'Wikipedia': return `https://${id}`
+    case 'Porndb': return `https://theporndb.net/performers/${id}`
     default: return '#'
   }
 }
@@ -336,71 +437,102 @@ async function openEdit(row: EmbyPerson) {
   avatarUrl.value = ''
   localAvatarPreview.value = ''
   fetchedImages.value = []
+  forceMatchId.value = ''
   
   try {
     const d = await fetchEmbyPersonDetail(http, row.Id)
     editForm.value = {
-      name: d.name || '', biography: d.biography || '', birthday: d.birthday || '',
-      placeOfBirth: d.placeOfBirth || '', knownForDepartment: d.knownForDepartment || '',
-      tags: d.tags || [], taglines: d.taglines || [],
+      name: d.name || '', 
+      character: d.character || '',
+      biography: d.biography || '', 
+      birthday: d.birthday || '',
+      deathday: d.deathday || '',
+      premiereDate: d.premiereDate || '', 
+      productionYear: d.productionYear || 0,
+      placeOfBirth: d.placeOfBirth || '', 
+      knownForDepartment: d.knownForDepartment || '',
+      productionLocations: d.productionLocations || [],
+      tags: d.tags || [], 
+      taglines: d.taglines || [],
     }
     
-    // 自动去网络拉取预览数据和所有图片
     try {
       const preview = await previewActor(http, editForm.value.name || row.Name)
       if (preview.Images && preview.Images.length > 0) {
         fetchedImages.value = preview.Images
-        if (!avatarUrl.value) {
-           avatarUrl.value = preview.Images[0]
-        }
+        if (!avatarUrl.value) avatarUrl.value = preview.Images[0]
       }
     } catch (e) {
       console.error('拉取网络图片失败', e)
     }
-
   } catch {
-    editForm.value = { name: row.Name, biography: '', birthday: '', placeOfBirth: '', knownForDepartment: '', tags: [], taglines: [] }
+    editForm.value = { 
+      name: row.Name, character: '', biography: '', birthday: '', deathday: '', 
+      premiereDate: '', productionYear: 0, placeOfBirth: '', knownForDepartment: '', 
+      productionLocations: [], tags: [], taglines: [] 
+    }
   }
   showEdit.value = true
+}
+
+async function doForceMatch() {
+  if (!forceMatchId.value) return
+  matching.value = true
+  try {
+    const preview = await previewActor(http, forceMatchId.value)
+    editForm.value.name = preview.Name || editForm.value.name
+    editForm.value.birthday = preview.BirthDate || ''
+    editForm.value.placeOfBirth = preview.PlaceOfBirth || ''
+    editForm.value.biography = preview.Bio || ''
+    
+    if (preview.Images && preview.Images.length > 0) {
+      fetchedImages.value = preview.Images
+      avatarUrl.value = preview.Images[0]
+    }
+    ElMessage.success('拉取成功，数据已填入表单')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '拉取失败，请检查 ID 是否正确')
+  } finally {
+    matching.value = false
+  }
 }
 
 async function saveEdit() {
   if (!editForm.value.name) { ElMessage.warning('姓名必填'); return }
   saving.value = true
   try {
-    // 1. 更新文字元数据
     await updateEmbyPerson(http, editingPersonId.value, editForm.value)
     
-    // 2. 更新头像
     const hasNewAvatar = !!avatarUrl.value
     if (hasNewAvatar) {
       await uploadEmbyAvatarFromUrl(http, editingPersonId.value, avatarUrl.value)
     }
 
-    // 3. ★ 核心：本地瞬间更新状态
-    // 更新表格名字
     const target = persons.value.find(p => p.Id === editingPersonId.value)
     if (target) target.Name = editForm.value.name
     
-    // 更新详情抽屉数据
     if (detail.value && detail.value.id === editingPersonId.value) {
       detail.value.name = editForm.value.name
+      detail.value.character = editForm.value.character
       detail.value.biography = editForm.value.biography
       detail.value.birthday = editForm.value.birthday
+      detail.value.deathday = editForm.value.deathday
+      detail.value.premiereDate = editForm.value.premiereDate
+      detail.value.productionYear = editForm.value.productionYear
       detail.value.placeOfBirth = editForm.value.placeOfBirth
+      detail.value.knownForDepartment = editForm.value.knownForDepartment
+      detail.value.productionLocations = [...editForm.value.productionLocations]
+      detail.value.tags = [...editForm.value.tags]
+      detail.value.taglines = [...editForm.value.taglines]
     }
 
-    // 换头像加时间戳刷新缓存
     if (hasNewAvatar) {
       avatarVersions.value[editingPersonId.value] = Date.now()
     }
 
     ElMessage.success(hasNewAvatar ? '元数据和头像已保存并更新' : '元数据已保存并更新')
     showEdit.value = false
-    
-    // 后台静默同步
     loadPersons().catch(() => {})
-    
   } catch (e: any) { 
     ElMessage.error(e?.message || '保存失败') 
   } finally { 
@@ -414,8 +546,6 @@ async function onAvatarFileSelected(file: File) {
     await uploadEmbyAvatarFile(http, editingPersonId.value, file)
     ElMessage.success('头像已上传')
     localAvatarPreview.value = URL.createObjectURL(file)
-    
-    // 本地选文件，也要触发缓存刷新
     avatarVersions.value[editingPersonId.value] = Date.now()
   } catch (e: any) { ElMessage.error(e?.message || '上传头像失败') }
   return false
@@ -430,6 +560,7 @@ async function scrapeOne(row: EmbyPerson) {
     const result = await scrapeEmbyPerson(http, row.Id, row.Name)
     if (result.ok) {
       scrapeStatus.value[row.Id] = 'success'; scrapeResults.value[0].status = 'success'; scrapeResults.value[0].message = result.message || '刮削成功'; scrapeProgress.value.success = 1
+      avatarVersions.value[row.Id] = Date.now()
     } else {
       scrapeStatus.value[row.Id] = 'failed'; scrapeResults.value[0].status = 'failed'; scrapeResults.value[0].message = result.message || '刮削失败'; scrapeProgress.value.failed = 1
     }
@@ -453,6 +584,7 @@ async function batchScrape() {
       const result = await scrapeEmbyPerson(http, t.Id, t.Name)
       if (result.ok) {
         scrapeStatus.value[t.Id] = 'success'; scrapeResults.value[i].status = 'success'; scrapeResults.value[i].message = result.message || '刮削成功'; scrapeProgress.value.success++
+        avatarVersions.value[t.Id] = Date.now()
       } else {
         scrapeStatus.value[t.Id] = 'failed'; scrapeResults.value[i].status = 'failed'; scrapeResults.value[i].message = result.message || '刮削失败'; scrapeProgress.value.failed++
       }
