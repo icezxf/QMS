@@ -37,17 +37,16 @@ steps:
       name: "{{meta.Name}}"
       birthday: "{{meta.BirthDate}}"
       place_of_birth: "{{meta.PlaceOfBirth}}"
-      provider_ids: "{{meta.ProviderIds}}"
       
-      # 标语：档案和别名
+      provider_ids: "{{meta.ProviderIds}}"
+      premiere_date: "{{meta.PremiereDate}}"
+      
       taglines:
         - "【档案】身高 {{meta.Height}}cm | 体重 {{meta.Weight}}kg | 三围 {{meta.Waist}}-{{meta.Hip}} | {{meta.CupSize}}罩杯"
         - "别名：{{meta.AliasesString}}"
         
-      # 简介：原简介 + 外部链接
       biography: |
         {{meta.Bio}}
-
         {{meta.ExternalLinks}}
         
       tags: []
@@ -139,6 +138,7 @@ type StashBoxPerformer struct {
 	Weight       int      `json:"weight"`
 	Gender       string   `json:"gender"`
 	Bio          string   `json:"bio"`
+	CareerStart  int      `json:"career_start_year"` // ★ 出道年份
 	Measurements struct {
 		CupSize string `json:"cup_size"`
 		Waist   int    `json:"waist"`
@@ -153,7 +153,7 @@ type StashBoxPerformer struct {
 }
 
 const stashGraphQLFields = `
-	id name aliases birth_date country ethnicity height gender
+	id name aliases birth_date country ethnicity height gender career_start_year
 	measurements { cup_size waist hip }
 	images { url }
 	urls { url }
@@ -247,6 +247,7 @@ func (c *StashBoxClient) SearchTPDB(ctx context.Context, term string) (*StashBox
 				CupSize        string `json:"cupsize"`
 				Waist          string `json:"waist"`
 				Hips           string `json:"hips"`
+				CareerStart    int    `json:"career_start_year"`
 			} `json:"extras"`
 			Links  map[string]string `json:"links"`
 			Images []struct {
@@ -260,11 +261,12 @@ func (c *StashBoxClient) SearchTPDB(ctx context.Context, term string) (*StashBox
 
 	d := detailResp.Data
 	p := &StashBoxPerformer{
-		ID:        d.ID,
-		Name:      d.Name,
-		Bio:       d.Bio,
-		BirthDate: d.Extras.Birthday,
-		Country:   d.Extras.BirthplaceCode,
+		ID:          d.ID,
+		Name:        d.Name,
+		Bio:         d.Bio,
+		BirthDate:   d.Extras.Birthday,
+		Country:     d.Extras.BirthplaceCode,
+		CareerStart: d.Extras.CareerStart,
 	}
 
 	p.Height = parseHeight(d.Extras.Height)
@@ -285,7 +287,7 @@ func (c *StashBoxClient) SearchTPDB(ctx context.Context, term string) (*StashBox
 		}{URL: img.URL})
 	}
 
-	// 安全解析 links (Map 结构)
+	// 安全解析 links
 	if d.Links != nil {
 		for key, link := range d.Links {
 			if key == "IMDb" || key == "TMDB" || key == "StashDB" {
@@ -296,7 +298,7 @@ func (c *StashBoxClient) SearchTPDB(ctx context.Context, term string) (*StashBox
 		}
 	}
 
-	// 自动补上 Porndb 的链接
+	// 补上自身链接
 	p.Urls = append(p.Urls, struct {
 		URL string `json:"url"`
 	}{URL: fmt.Sprintf("https://theporndb.net/performers/%s", p.ID)})
@@ -573,6 +575,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		"ImageURL": "", "ProviderIds": map[string]any{}, "Bio": "", "ExternalLinks": "",
 		"CupSize": "", "Waist": 0, "Hip": 0, "Height": 0, "Weight": 0, "AliasesString": "",
 		"Images": []string{},
+		"PremiereDate": "",
 	}
 
 	countryMap := map[string]string{
@@ -598,8 +601,13 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 				result["Hip"] = tp.Measurements.Hip
 				result["Bio"] = tp.Bio
 				
-				// ★ 英文名演员不要别名
+				// 英文名演员无别名
 				result["AliasesString"] = ""
+
+				// 英文名的出道年份
+				if tp.CareerStart > 0 {
+					result["PremiereDate"] = fmt.Sprintf("%d-01-01", tp.CareerStart)
+				}
 
 				if cName, ok := countryMap[tp.Country]; ok {
 					result["PlaceOfBirth"] = cName
@@ -674,9 +682,14 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 			result["PlaceOfBirth"] = "日本"
 			result["AliasesString"] = strings.Join(js.Aliases, ", ")
 
-			// ★ 日/中演员身高优先用 JavStash
+			// 日/中演员身高优先用 JavStash
 			if js.Height > 0 {
 				result["Height"] = js.Height
+			}
+
+			// 日/中演员出道年份
+			if js.CareerStart > 0 {
+				result["PremiereDate"] = fmt.Sprintf("%d-01-01", js.CareerStart)
 			}
 
 			mergedIds := extractProviderIds(js.Urls)
@@ -719,7 +732,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 
 		if tpdbSearchName != "" && exec.Tpdb != nil && exec.Tpdb.APIKey != "" {
 			if tp, err := exec.Tpdb.SearchTPDB(ctx, tpdbSearchName); err == nil {
-				// ★ 只有在 JavStash 没身高的情况下，才用 TPDB 的身高
+				// 只有在 JavStash 没身高的情况下，才用 TPDB 的身高
 				if result["Height"] == 0 {
 					result["Height"] = tp.Height
 				}
@@ -757,7 +770,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		}
 	}
 
-	// ★ 核心：动态生成外部链接（只有拿到 ID 才拼接）
+	// 核心：动态生成外部链接（只有拿到 ID 才拼接）
 	var links []string
 	ids := result["ProviderIds"].(map[string]any)
 	if val := ids["Wikipedia"]; val != nil && val != "" {
@@ -817,6 +830,8 @@ func actionEmbyUpdatePerson(ctx context.Context, exec *ScriptExecutor, params, v
 			body["knownForDepartment"] = v
 		case "provider_ids":
 			body["providerIds"] = v
+		case "premiere_date":
+			body["premiereDate"] = v
 		default:
 			body[k] = v
 		}
