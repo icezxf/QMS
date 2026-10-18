@@ -55,6 +55,8 @@ steps:
       imageUrl: "{{meta.ImageURL}}"
 `
 
+// ============ 文件读写 ============
+
 func scriptFilePath() string {
 	return filepath.Join("/app/config", "emby_scrape_script.yaml")
 }
@@ -80,6 +82,8 @@ func ResetScript() error {
 	return nil
 }
 
+// ============ 脚本结构 ============
+
 type Script struct {
 	Name  string `yaml:"name"`
 	Steps []Step `yaml:"steps"`
@@ -98,6 +102,8 @@ type StepResult struct {
 	Message  string `json:"message"`
 	Duration string `json:"duration"`
 }
+
+// ============ API 客户端 ============
 
 const DefaultStashDBEndpoint = "https://stashdb.org/graphql"
 const DefaultJavStashEndpoint = "https://javstash.org/graphql"
@@ -143,9 +149,11 @@ const stashGraphQLFields = `
 
 func (c *StashBoxClient) SearchPerformer(ctx context.Context, term string) (*StashBoxPerformer, error) {
 	if c.APIKey == "" { return nil, fmt.Errorf("API Key 未配置") }
+	
 	isUUID := len(term) == 36 && strings.Count(term, "-") == 4
 	var q string
 	var vars map[string]any
+
 	if isUUID {
 		q = fmt.Sprintf(`query Find($id: ID!) { findPerformer(id: $id) { %s } }`, stashGraphQLFields)
 		vars = map[string]any{"id": term}
@@ -183,13 +191,24 @@ func (c *StashBoxClient) SearchPerformer(ctx context.Context, term string) (*Sta
 	json.NewDecoder(resp.Body).Decode(&envelope)
 	if len(envelope.Errors) > 0 { return nil, fmt.Errorf("接口报错: %s", envelope.Errors[0].Message) }
 	if len(envelope.Data.SearchPerformer) == 0 { return nil, fmt.Errorf("未找到演员") }
-	return &envelope.Data.SearchPerformer[0], nil
+
+	// ★ 核心修复：校验名字，防止瞎返回默认的第一个演员
+	first := envelope.Data.SearchPerformer[0]
+	tName := strings.ToLower(first.Name)
+	sTerm := strings.ToLower(term)
+	if !strings.Contains(tName, sTerm) && !strings.Contains(sTerm, tName) {
+		return nil, fmt.Errorf("未找到匹配的演员 (JavStash 返回了无关数据: %s)", first.Name)
+	}
+
+	return &first, nil
 }
 
 func (c *StashBoxClient) SearchTPDB(ctx context.Context, term string) (*StashBoxPerformer, error) {
 	if c.APIKey == "" { return nil, fmt.Errorf("TPDB API Key 未配置") }
+
 	isUUID := len(term) == 36 && strings.Count(term, "-") == 4
 	bestID := ""
+
 	if isUUID {
 		bestID = term
 	} else {
@@ -260,6 +279,16 @@ func (c *StashBoxClient) SearchTPDB(ctx context.Context, term string) (*StashBox
 		}
 	}
 	p.Urls = append(p.Urls, struct{ URL string `json:"url"` }{URL: fmt.Sprintf("https://theporndb.net/performers/%s", p.ID)})
+
+	// ★ 核心修复：校验 TPDB 名字
+	if !isUUID {
+		tName := strings.ToLower(p.Name)
+		sTerm := strings.ToLower(term)
+		if !strings.Contains(tName, sTerm) && !strings.Contains(sTerm, tName) {
+			return nil, fmt.Errorf("未找到匹配的演员 (TPDB 返回了无关数据: %s)", p.Name)
+		}
+	}
+
 	return p, nil
 }
 
@@ -480,7 +509,8 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 	if lang == "en" || forceSource == "tpdb" || isUUID {
 		// ================= 英文名演员 =================
 		if exec.Tpdb != nil && exec.Tpdb.APIKey != "" {
-			if tp, err := exec.Tpdb.SearchTPDB(ctx, originalName); err == nil {
+			tp, err := exec.Tpdb.SearchTPDB(ctx, originalName)
+			if err == nil {
 				result["Name"] = tp.Name
 				result["BirthDate"] = tp.BirthDate
 				result["Height"] = tp.Height
@@ -489,7 +519,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 				result["Waist"] = tp.Measurements.Waist
 				result["Hip"] = tp.Measurements.Hip
 				result["Bio"] = tp.Bio
-				result["AliasesString"] = "" // 英文名不要别名
+				result["AliasesString"] = "" // 英文名无别名
 
 				if tp.CareerStart > 0 {
 					result["PremiereDate"] = fmt.Sprintf("%d-01-01", tp.CareerStart)
@@ -509,21 +539,22 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 				for _, img := range tp.Images { tpImgs = append(tpImgs, img.URL) }
 				if len(tpImgs) > 0 { result["ImageURL"] = tpImgs[0] }
 				result["Images"] = tpImgs
+			} else if isUUID {
+				// 如果是 UUID 匹配失败，直接报错，不覆盖现有名字
+				return nil, fmt.Errorf("TPDB 未找到该 UUID: %v", err)
 			}
 		}
 
-		// 查 JavStash，合并所有外部 ID，并优先覆盖头像
+		// 查 JavStash 拿头像和 ID（兜底）
 		if exec.JavStash != nil && exec.JavStash.APIKey != "" {
 			if j, err := exec.JavStash.SearchPerformer(ctx, originalName); err == nil {
 				js = j
-				// 只要有图，就覆盖为 JavStash 头像
 				if len(j.Images) > 0 {
 					jsImgs := []string{}
 					for _, img := range j.Images { jsImgs = append(jsImgs, img.URL) }
 					result["ImageURL"] = jsImgs[0]
 					result["Images"] = jsImgs
 				}
-				// 无条件合并 ID（包含 Wiki, StashDB, JavStash）
 				merged := result["ProviderIds"].(map[string]any)
 				for k, v := range extractProviderIds(j.Urls) {
 					if merged[k] == nil || merged[k] == "" { merged[k] = v }
@@ -556,8 +587,8 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 			result["PlaceOfBirth"] = "日本"
 			result["ProductionLocations"] = []string{"日本"}
 			result["AliasesString"] = strings.Join(js.Aliases, ", ")
+			
 			if js.Height > 0 { result["Height"] = js.Height }
-
 			if js.CareerStart > 0 {
 				result["PremiereDate"] = fmt.Sprintf("%d-01-01", js.CareerStart)
 				result["ProductionYear"] = js.CareerStart
@@ -631,7 +662,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		externalLinks = "【外部链接】\n" + strings.Join(links, "\n")
 	}
 
-	// ★ 核心解决：强制裁掉原简介首尾的空白和换行符，保证中间绝对只空一行
+	// 强制裁掉原简介首尾的空白和换行符，保证中间绝对只空一行
 	bioText := strings.TrimSpace(toString(result["Bio"]))
 	if externalLinks != "" {
 		if bioText != "" {
@@ -643,7 +674,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		result["Bio"] = bioText
 	}
 
-	// ★ 核心解决：动态生成标语。英文名没有别名，所以不会出现别名行
+	// 动态生成标语。英文名没有别名，所以不会出现别名行
 	var taglines []string
 	doc := fmt.Sprintf("【档案】身高 %dcm | 体重 %dkg | 三围 %d-%d | %s罩杯", result["Height"], result["Weight"], result["Waist"], result["Hip"], result["CupSize"])
 	taglines = append(taglines, doc)
