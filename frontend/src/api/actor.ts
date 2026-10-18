@@ -116,7 +116,6 @@ export function embyProxyUrl(path: string): string {
   return `${SERVER_URL}/emby-proxy${p}`
 }
 
-// ★ 增加 version 参数用于刷新缓存
 export function embyImageUrl(personId: string, version?: number | string): string {
   let url = embyProxyUrl(`/api/v1/people/${personId}/image`)
   if (version) {
@@ -162,23 +161,29 @@ export interface EmbyPerson {
   Name: string
   Type: string
   Role?: string
+  Taglines?: string[] // ★ 新增
+  ProviderIds?: Record<string, string> // ★ 新增
 }
 
-// Lux 详情接口返回小写
 export interface EmbyPersonDetail {
   id: string
   name: string
+  character?: string
   biography: string
   birthday: string
+  deathday?: string
   placeOfBirth: string
   knownForDepartment: string
+  genres?: string[]
   tags: string[]
+  productionLocations?: string[]
+  premiereDate?: string
+  productionYear?: number
   taglines: string[]
   providerIds?: Record<string, string>
   imageUrl: string
 }
 
-// ★ 预览接口返回结构
 export interface PreviewResponse {
   Name: string
   BirthDate: string
@@ -193,6 +198,10 @@ export interface PreviewResponse {
   Images: string[]
   AliasesString: string
   ProviderIds: Record<string, string>
+  PremiereDate: string
+  ProductionYear: number
+  KnownForDepartment: string
+  ProductionLocations: string[]
 }
 
 // ============ Emby 接口封装 ============
@@ -220,7 +229,7 @@ export async function fetchEmbyPersons(
 ): Promise<EmbyPerson[]> {
   const params: Record<string, any> = {
     Recursive: true,
-    Fields: 'People',
+    Fields: 'People,Taglines,ProviderIds', // ★ 拉取更多字段
     Limit: 500,
     StartIndex: 0,
   }
@@ -255,10 +264,15 @@ export async function updateEmbyPerson(
   personId: string,
   payload: {
     name: string
+    character?: string
     biography?: string
     birthday?: string
+    deathday?: string
     placeOfBirth?: string
     knownForDepartment?: string
+    productionLocations?: string[]
+    productionYear?: number
+    premiereDate?: string
     tags?: string[]
     taglines?: string[]
   },
@@ -312,7 +326,6 @@ export async function scrapeEmbyPerson(
   return unwrapResponse(response) ?? { ok: false, message: '未知错误' }
 }
 
-// 预览（调用后端的 actionSmartFetch）
 export async function previewActor(
   http: AxiosInstance,
   name: string,
