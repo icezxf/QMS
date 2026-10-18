@@ -7,12 +7,15 @@ import (
 )
 
 type EmbyActorConfig struct {
-	ID              uint      `gorm:"primarykey" json:"id"`
-	EmbyURL         string    `gorm:"size:256" json:"emby_url"`
-	EmbyAPIKey      string    `gorm:"size:191" json:"emby_api_key"`
-	StashDBEndpoint string    `gorm:"size:256" json:"stashdb_endpoint"`
-	StashDBApiKey   string    `gorm:"size:191" json:"stashdb_api_key"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID               uint      `gorm:"primarykey" json:"id"`
+	EmbyURL          string    `gorm:"size:256" json:"emby_url"`
+	EmbyAPIKey       string    `gorm:"size:191" json:"emby_api_key"`
+	StashDBEndpoint  string    `gorm:"size:256" json:"stashdb_endpoint"`
+	StashDBApiKey    string    `gorm:"size:191" json:"stashdb_api_key"`
+	JavStashEndpoint string    `gorm:"size:256" json:"javstash_endpoint"`
+	JavStashApiKey   string    `gorm:"size:191" json:"javstash_api_key"`
+	TpdbApiKey       string    `gorm:"size:191" json:"tpdb_api_key"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 func (EmbyActorConfig) TableName() string { return "emby_proxy_configs" }
