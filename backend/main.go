@@ -871,6 +871,12 @@ func initEnv() bool {
 	}
 
 	db.InitCache()
+
+	// ★ 新增：初始化字典模块（在后台异步加载数据）
+	if err := dictdb.InitDictDB(); err != nil {
+	    helpers.AppLogger.Errorr("初始化字典模块失败：%v", err)
+	    
+	}
 	initOthers()
 	return true
 }
