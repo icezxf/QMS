@@ -39,7 +39,7 @@ import (
 	"qmediasync/internal/synccron"
 	"qmediasync/internal/syncstrm"
 	"qmediasync/internal/v115open"
-
+ "qmediasync/internal/dictdb" // ★ 加上这一行
 	"github.com/gin-gonic/gin"
 )
 
