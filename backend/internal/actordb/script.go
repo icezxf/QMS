@@ -222,29 +222,30 @@ func (c *StashBoxClient) SearchPerformer(ctx context.Context, term string) (*Sta
 		return nil, fmt.Errorf("未找到演员")
 	}
 
-	// ★ 核心修复：绝对精确校验
-	first := envelope.Data.SearchPerformer[0]
+	// ★ 严格校验：遍历全部结果，只有名字或别名严格包含搜索词才放行
 	sTerm := strings.ToLower(strings.TrimSpace(term))
-	tName := strings.ToLower(first.Name)
-	matched := false
-
-	if strings.Contains(tName, sTerm) || strings.Contains(sTerm, tName) {
-		matched = true
-	} else {
-		for _, alias := range first.Aliases {
-			aName := strings.ToLower(alias)
-			if strings.Contains(aName, sTerm) || strings.Contains(sTerm, aName) {
-				matched = true
-				break
+	for _, p := range envelope.Data.SearchPerformer {
+		tName := strings.ToLower(p.Name)
+		matched := false
+		
+		if strings.Contains(tName, sTerm) || strings.Contains(sTerm, tName) {
+			matched = true
+		} else {
+			for _, alias := range p.Aliases {
+				aName := strings.ToLower(alias)
+				if strings.Contains(aName, sTerm) || strings.Contains(sTerm, aName) {
+					matched = true
+					break
+				}
 			}
+		}
+
+		if matched {
+			return &p, nil
 		}
 	}
 
-	if !matched {
-		return nil, fmt.Errorf("未找到匹配的演员 (JavStash 返回了无关数据: %s)", first.Name)
-	}
-
-	return &first, nil
+	return nil, fmt.Errorf("未找到匹配的演员 (JavStash 返回了无关数据)")
 }
 
 func (c *StashBoxClient) SearchTPDB(ctx context.Context, term string) (*StashBoxPerformer, error) {
@@ -360,7 +361,7 @@ func (c *StashBoxClient) SearchTPDB(ctx context.Context, term string) (*StashBox
 		URL string `json:"url"`
 	}{URL: fmt.Sprintf("https://theporndb.net/performers/%s", p.ID)})
 
-	// ★ 绝对精确校验（TPDB）
+	// ★ 严格校验：TPDB 名字校验
 	if !isUUID {
 		sTerm := strings.ToLower(strings.TrimSpace(term))
 		tName := strings.ToLower(p.Name)
@@ -455,7 +456,7 @@ func fetchWikiData(ctx context.Context, lang, title string, email string) (strin
 			if lls, ok := p["langlinks"].([]any); ok && len(lls) > 0 {
 				if ll, ok := lls[0].(map[string]any); ok {
 					if jaTitle, ok := ll["title"].(string); ok {
-						// ★ 核心修改：现在 key 是 "title" 而不是 "*"
+						// 去掉括号
 						re := regexp.MustCompile(`\s*\(.*?\)`)
 						jaName = re.ReplaceAllString(jaTitle, "")
 						jaName = strings.TrimSpace(jaName)
@@ -652,6 +653,11 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		return nil, fmt.Errorf("缺少 name")
 	}
 
+	forceSource := toString(params["force_source"])
+	if forceSource == "" {
+		forceSource = "auto"
+	}
+
 	lang := detectLanguage(originalName)
 	isUUID := len(originalName) == 36 && strings.Count(originalName, "-") == 4
 
@@ -673,37 +679,44 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 	var tpdbSearchName string
 	var js *StashBoxPerformer
 
-	// 1. 如果是英文名或 TPDB 的 UUID，先尝试直接从 TPDB 抓取（一步到位）
-	if lang == "en" || isUUID {
-		if exec.Tpdb != nil && exec.Tpdb.APIKey != "" {
-			if tp, err := exec.Tpdb.SearchTPDB(ctx, originalName); err == nil {
-				result["Name"] = tp.Name
-				result["BirthDate"] = tp.BirthDate
-				result["Height"] = tp.Height
-				result["Weight"] = tp.Weight
-				result["CupSize"] = tp.Measurements.CupSize
-				result["Waist"] = tp.Measurements.Waist
-				result["Hip"] = tp.Measurements.Hip
-				result["Bio"] = tp.Bio
-				result["AliasesString"] = ""
+	// 1. 先尝试用原名去查 TPDB（如果是英文或 TPDB的UUID，这里一步到位）
+	if exec.Tpdb != nil && exec.Tpdb.APIKey != "" {
+		tp, err := exec.Tpdb.SearchTPDB(ctx, originalName)
+		if err == nil {
+			result["Name"] = tp.Name
+			result["BirthDate"] = tp.BirthDate
+			result["Height"] = tp.Height
+			result["Weight"] = tp.Weight
+			result["CupSize"] = tp.Measurements.CupSize
+			result["Waist"] = tp.Measurements.Waist
+			result["Hip"] = tp.Measurements.Hip
+			result["Bio"] = tp.Bio
+			result["AliasesString"] = "" // 英文名无别名
 
-				if tp.CareerStart > 0 {
-					result["PremiereDate"] = fmt.Sprintf("%d-01-01", tp.CareerStart)
-					result["ProductionYear"] = tp.CareerStart
-				}
-				if cName, ok := countryMap[tp.Country]; ok {
-					result["PlaceOfBirth"] = cName
-					result["ProductionLocations"] = []string{cName}
-				} else {
-					result["PlaceOfBirth"] = tp.Country
-					result["ProductionLocations"] = []string{tp.Country}
-				}
-				result["ProviderIds"] = extractProviderIds(tp.Urls)
-				tpImgs := []string{}
-				for _, img := range tp.Images { tpImgs = append(tpImgs, img.URL) }
-				if len(tpImgs) > 0 { result["ImageURL"] = tpImgs[0] }
-				result["Images"] = tpImgs
+			if tp.CareerStart > 0 {
+				result["PremiereDate"] = fmt.Sprintf("%d-01-01", tp.CareerStart)
+				result["ProductionYear"] = tp.CareerStart
 			}
+
+			if cName, ok := countryMap[tp.Country]; ok {
+				result["PlaceOfBirth"] = cName
+				result["ProductionLocations"] = []string{cName}
+			} else {
+				result["PlaceOfBirth"] = tp.Country
+				result["ProductionLocations"] = []string{tp.Country}
+			}
+
+			result["ProviderIds"] = extractProviderIds(tp.Urls)
+			tpImgs := []string{}
+			for _, img := range tp.Images {
+				tpImgs = append(tpImgs, img.URL)
+			}
+			if len(tpImgs) > 0 {
+				result["ImageURL"] = tpImgs[0]
+			}
+			result["Images"] = tpImgs
+		} else if isUUID && !strings.Contains(err.Error(), "未找到") {
+			return nil, fmt.Errorf("TPDB 接口异常: %v", err)
 		}
 	}
 
@@ -776,7 +789,6 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 
 	// 3. ★ 核心逻辑：只要前面没抓到三围（比如 JavStash 没数据，或者 JavStash 数据里没三围），就拿找到的英文名（或原名）去 TPDB 补充
 	if result["Height"] == 0 && tpdbSearchName != "" && exec.Tpdb != nil && exec.Tpdb.APIKey != "" {
-		// 为了避免由于 TPDB 搜索严格导致补全失败，这里如果报错直接忽略即可
 		if tp, err := exec.Tpdb.SearchTPDB(ctx, tpdbSearchName); err == nil {
 			result["Height"] = tp.Height
 			result["Weight"] = tp.Weight
@@ -802,7 +814,57 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		}
 	}
 
-	// （后面的动态生成外部链接和标语、简介逻辑保持不变...）
+	// 动态生成外部链接
+	var links []string
+	ids := result["ProviderIds"].(map[string]any)
+	if val := ids["Wikipedia"]; val != nil && val != "" {
+		links = append(links, fmt.Sprintf("Wikipedia: https://%s", val))
+	}
+	if val := ids["StashDB"]; val != nil && val != "" {
+		links = append(links, fmt.Sprintf("StashDB: https://stashdb.org/performers/%s", val))
+	}
+	if val := ids["JavStash"]; val != nil && val != "" {
+		links = append(links, fmt.Sprintf("JavStash: https://javstash.org/performers/%s", val))
+	}
+	if val := ids["Imdb"]; val != nil && val != "" {
+		links = append(links, fmt.Sprintf("IMDb: https://www.imdb.com/name/%s/", val))
+	}
+	if val := ids["Tmdb"]; val != nil && val != "" {
+		links = append(links, fmt.Sprintf("TMDB: https://www.themoviedb.org/person/%s", val))
+	}
+	if val := ids["Porndb"]; val != nil && val != "" {
+		links = append(links, fmt.Sprintf("Porndb: https://theporndb.net/performers/%s", val))
+	}
+
+	externalLinks := ""
+	if len(links) > 0 {
+		externalLinks = "【外部链接】\n" + strings.Join(links, "\n")
+	}
+
+	// 强制裁掉原简介首尾的空白和换行符，保证中间绝对只空一行
+	bioText := strings.TrimSpace(toString(result["Bio"]))
+	if externalLinks != "" {
+		if bioText != "" {
+			result["Bio"] = bioText + "\n\n" + externalLinks
+		} else {
+			result["Bio"] = externalLinks
+		}
+	} else {
+		result["Bio"] = bioText
+	}
+
+	// 动态生成标语。英文名没有别名，所以不会出现别名行
+	var taglines []string
+	doc := fmt.Sprintf("【档案】身高 %dcm | 体重 %dkg | 三围 %d-%d | %s罩杯", result["Height"], result["Weight"], result["Waist"], result["Hip"], result["CupSize"])
+	taglines = append(taglines, doc)
+	
+	if aliases := toString(result["AliasesString"]); aliases != "" {
+		taglines = append(taglines, "【别名】："+aliases)
+	}
+	result["Taglines"] = taglines
+
+	return result, nil
+}
 
 func actionLogInfo(ctx context.Context, exec *ScriptExecutor, params, vars map[string]any) (any, error) {
 	return fmt.Sprint(params["msg"]), nil
