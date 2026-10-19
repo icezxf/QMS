@@ -266,11 +266,17 @@ func (t *Translator) TranslateResult(r *ScrapeResult) []string {
 	}
 
 	// 标题翻译
-	if s, err := t.Translate(r.Title); err != nil {
-		warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("标题翻译失败: %v", err))
-	} else if s != "" {
-		r.Title = s
-		helpers.AppLogger.Infof("[翻译] 标题 -> %s", s)
+	if r.Title != "" {
+		if t.SourceLang == "en" || isJapanese(r.Title) {
+			if s, err := t.Translate(r.Title); err != nil {
+				warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("标题翻译失败: %v", err))
+			} else if s != "" {
+				r.Title = s
+				helpers.AppLogger.Infof("[翻译] 标题 -> %s", s)
+			}
+		} else {
+			helpers.AppLogger.Infof("[翻译] 标题命中字典(纯中文)，跳过 AI 翻译")
+		}
 	}
 
 	// 简介翻译
@@ -381,14 +387,23 @@ func (t *Translator) TranslateResultBatch(r *ScrapeResult) []string {
 	}
 	var items []textItem
 
-	if r.Title != "" {
+	// ★ 核心修改 1：判断标题。如果标题已经是纯中文（没有假名），直接跳过不翻。
+	if r.Title != "" && (t.SourceLang == "en" || isJapanese(r.Title)) {
 		items = append(items, textItem{"title", 0, r.Title})
+	} else if r.Title != "" {
+		helpers.AppLogger.Infof("[翻译] 标题已是纯中文(或命中字典)，跳过 AI 翻译: %s", r.Title)
 	}
-	if r.Plot != "" {
+
+	// 简介：如果是中文也跳过（虽然概率极低）
+	if r.Plot != "" && (t.SourceLang == "en" || isJapanese(r.Plot)) {
 		items = append(items, textItem{"plot", 0, r.Plot})
+	} else if r.Plot != "" {
+		helpers.AppLogger.Infof("[翻译] 简介已是纯中文，跳过 AI 翻译")
 	}
+
+	// ★ 核心修改 2：判断标签。原代码已有此逻辑，保持不变。
 	for i, g := range r.Genres {
-		// 日文场景下：无日文假名跳过；英文场景不跳过
+		// 日文场景下：无日文假名跳过（说明已经是字典映射好的纯中文）；英文场景不跳过
 		if t.SourceLang != "en" && !isJapanese(g) {
 			continue
 		}
@@ -528,18 +543,30 @@ func (t *Translator) googleCloudTranslate(text string) (string, error) {
 func (t *Translator) translateAllWithGoogle(r *ScrapeResult) []string {
 	var warnings []string
 
-	if s, err := t.googleCloudTranslate(r.Title); err != nil {
-		warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("Google 标题翻译失败: %v", err))
-	} else if s != "" {
-		r.Title = s
-		helpers.AppLogger.Infof("[翻译-Google] 标题 -> %s", truncate(s, 40))
+	// ★ 标题如果已经是中文，跳过 Google 翻译
+	if r.Title != "" {
+		if t.SourceLang == "en" || isJapanese(r.Title) {
+			if s, err := t.googleCloudTranslate(r.Title); err != nil {
+				warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("Google 标题翻译失败: %v", err))
+			} else if s != "" {
+				r.Title = s
+				helpers.AppLogger.Infof("[翻译-Google] 标题 -> %s", truncate(s, 40))
+			}
+		} else {
+			helpers.AppLogger.Infof("[翻译-Google] 标题已是纯中文，跳过")
+		}
 	}
 
-	if s, err := t.googleCloudTranslate(r.Plot); err != nil {
-		warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("Google 简介翻译失败: %v", err))
-	} else if s != "" {
-		r.Plot = s
-		helpers.AppLogger.Infof("[翻译-Google] 简介 -> %s", truncate(s, 40))
+	// ★ 简介如果已经是中文，跳过
+	if r.Plot != "" {
+		if t.SourceLang == "en" || isJapanese(r.Plot) {
+			if s, err := t.googleCloudTranslate(r.Plot); err != nil {
+				warnings = append(warnings, TranslateErrorPrefix+fmt.Sprintf("Google 简介翻译失败: %v", err))
+			} else if s != "" {
+				r.Plot = s
+				helpers.AppLogger.Infof("[翻译-Google] 简介 -> %s", truncate(s, 40))
+			}
+		}
 	}
 
 	var tagTexts []string
@@ -1022,6 +1049,7 @@ func (t *Translator) geminiBatch(texts []string) ([]string, error) {
 	}
 	return result, nil
 }
+
 func (t *Translator) geminiTranslateAll(r *ScrapeResult) error {
 	if t.GeminiKey == "" {
 		return fmt.Errorf("Gemini API Key 未配置")
