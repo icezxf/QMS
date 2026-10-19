@@ -222,16 +222,15 @@ func (c *StashBoxClient) SearchPerformer(ctx context.Context, term string) (*Sta
 		return nil, fmt.Errorf("未找到演员")
 	}
 
-	// ★ 核心修复：校验主名和别名
+	// ★ 核心修复：绝对精确校验
 	first := envelope.Data.SearchPerformer[0]
-	sTerm := strings.ToLower(term)
-	matched := false
-	
+	sTerm := strings.ToLower(strings.TrimSpace(term))
 	tName := strings.ToLower(first.Name)
+	matched := false
+
 	if strings.Contains(tName, sTerm) || strings.Contains(sTerm, tName) {
 		matched = true
-	}
-	if !matched {
+	} else {
 		for _, alias := range first.Aliases {
 			aName := strings.ToLower(alias)
 			if strings.Contains(aName, sTerm) || strings.Contains(sTerm, aName) {
@@ -240,7 +239,7 @@ func (c *StashBoxClient) SearchPerformer(ctx context.Context, term string) (*Sta
 			}
 		}
 	}
-	
+
 	if !matched {
 		return nil, fmt.Errorf("未找到匹配的演员 (JavStash 返回了无关数据: %s)", first.Name)
 	}
@@ -361,16 +360,15 @@ func (c *StashBoxClient) SearchTPDB(ctx context.Context, term string) (*StashBox
 		URL string `json:"url"`
 	}{URL: fmt.Sprintf("https://theporndb.net/performers/%s", p.ID)})
 
-	// ★ 核心修复：校验主名和别名
+	// ★ 绝对精确校验（TPDB）
 	if !isUUID {
-		sTerm := strings.ToLower(term)
+		sTerm := strings.ToLower(strings.TrimSpace(term))
+		tName := strings.ToLower(p.Name)
 		matched := false
 
-		tName := strings.ToLower(p.Name)
 		if strings.Contains(tName, sTerm) || strings.Contains(sTerm, tName) {
 			matched = true
-		}
-		if !matched {
+		} else {
 			for _, alias := range p.Aliases {
 				aName := strings.ToLower(alias)
 				if strings.Contains(aName, sTerm) || strings.Contains(sTerm, aName) {
@@ -457,7 +455,10 @@ func fetchWikiData(ctx context.Context, lang, title string, email string) (strin
 			if lls, ok := p["langlinks"].([]any); ok && len(lls) > 0 {
 				if ll, ok := lls[0].(map[string]any); ok {
 					if jaTitle, ok := ll["title"].(string); ok {
-						jaName = jaTitle
+						// ★ 核心修改：现在 key 是 "title" 而不是 "*"
+						re := regexp.MustCompile(`\s*\(.*?\)`)
+						jaName = re.ReplaceAllString(jaTitle, "")
+						jaName = strings.TrimSpace(jaName)
 					}
 				}
 			}
@@ -746,17 +747,23 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 	} else {
 		// ================= 中文/日文名演员 =================
 		searchCandidates := []string{originalName}
-		if lang == "zh" {
-			jaName, pageTitle, zhBio := fetchWikiData(ctx, "zh", originalName, exec.WikiEmail)
-			if zhBio != "" {
-				result["Bio"] = zhBio
-			}
-			if jaName != "" && jaName != originalName {
-				searchCandidates = append([]string{jaName}, searchCandidates...)
-			}
-			if pageTitle != "" && pageTitle != originalName && pageTitle != jaName {
-				searchCandidates = append(searchCandidates, pageTitle)
-			}
+		
+		// ★ 核心修改：不管是中文还是日文，都去查维基百科（日文查ja，其他查zh）
+		wikiLang := "zh"
+		if lang == "ja" { wikiLang = "ja" }
+		
+		jaName, actualTitle, zhBio := fetchWikiData(ctx, wikiLang, originalName, exec.WikiEmail)
+		
+		if zhBio != "" {
+			result["Bio"] = zhBio
+		}
+		// 把维基提取的日文名（去括号）放最前面
+		if jaName != "" && jaName != originalName {
+			searchCandidates = append([]string{jaName}, searchCandidates...)
+		}
+		// 把重定向后的真实标题也加入候选
+		if actualTitle != "" && actualTitle != originalName && actualTitle != jaName {
+			searchCandidates = append(searchCandidates, actualTitle)
 		}
 
 		if exec.JavStash != nil && exec.JavStash.APIKey != "" {
