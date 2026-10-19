@@ -13,8 +13,6 @@ import (
 	"qmediasync/internal/dictdb"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
-
-	"github.com/liuzl/gocc"
 )
 
 const (
@@ -24,28 +22,6 @@ const (
 )
 
 const wikiUserAgent = "QMediaSync/1.0 (https://github.com/icezxf/QMS; bocsx000@hotmail.com)"
-
-// ===== 全局繁简转换器 =====
-var (
-	t2sConverter *gocc.OpenCC
-)
-
-func init() {
-	// s2t 是简转繁，t2s 是繁转简
-	t2sConverter, _ = gocc.New("t2s")
-}
-
-// toSimplified 繁转简
-func toSimplified(s string) string {
-	if s == "" || t2sConverter == nil {
-		return s
-	}
-	res, err := t2sConverter.Convert(s)
-	if err == nil {
-		return res
-	}
-	return s
-}
 
 // ============================================================
 
@@ -68,7 +44,6 @@ func NewWikiClient() *WikiClient {
 	}
 }
 
-// pickChineseFromActor 从 Actor 的 Name 和 Aliases 里找中文名
 func pickChineseFromActor(a Actor) string {
 	if isChineseName(a.Name) {
 		return a.Name
@@ -81,26 +56,21 @@ func pickChineseFromActor(a Actor) string {
 	return ""
 }
 
-// GetChineseName 优先查本地 PG 字典，没命中再去查维基百科
 func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 	if inputName == "" {
 		return "", nil
 	}
 
-	// 1. 把输入的名字统一洗成简体，用于查库
 	searchName := toSimplified(inputName)
 
-	// 2. 优先查本地 PG 字典
 	if dictdb.DictDB != nil {
 		var mapping models.ActorMapping
-		// 用 简体名 或者 原始名 去查（扩大命中率）
 		err := dictdb.DictDB.Where("jp_name = ? OR zh_name = ? OR jp_name = ?", searchName, searchName, inputName).First(&mapping).Error
 		if err == nil && mapping.ZhName != "" {
 			return toSimplified(mapping.ZhName), nil
 		}
 	}
 
-	// 3. 查本地内存缓存
 	w.mu.Lock()
 	if entry, ok := w.cache[inputName]; ok {
 		if time.Since(entry.at) < 24*time.Hour {
@@ -110,18 +80,15 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 	}
 	w.mu.Unlock()
 
-	// 4. ★ 核心：去查维基百科时，用【原始输入】去查！
 	zhName, err := w.fetchZh(inputName)
 	if err != nil {
 		helpers.AppLogger.Warnf("[维基] 查询 %s 失败: %v", inputName, err)
 	}
 
-	// 5. 如果原始输入没查到，再用【简体】试一次（防某些奇葩页面）
 	if zhName == "" && searchName != inputName {
 		zhName, _ = w.fetchZh(searchName)
 	}
 
-	// 6. 尝试加 "(AV女優)" 后缀查
 	if zhName == "" {
 		alt := inputName + " (AV女優)"
 		zh2, err2 := w.fetchZh(alt)
@@ -130,12 +97,10 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 		}
 	}
 
-	// 7. 最终结果统一转简体
 	if zhName != "" {
 		zhName = toSimplified(zhName)
 	}
 
-	// 8. 写缓存
 	w.mu.Lock()
 	w.cache[inputName] = &wikiCache{zh: zhName, at: time.Now()}
 	w.mu.Unlock()
@@ -146,7 +111,6 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 	return zhName, nil
 }
 
-// GetJapaneseName 反向查：中文名 -> 日文名 (方便用中文名去刮削)
 func (w *WikiClient) GetJapaneseName(chineseName string) string {
 	if dictdb.DictDB != nil {
 		var mapping models.ActorMapping
@@ -158,9 +122,7 @@ func (w *WikiClient) GetJapaneseName(chineseName string) string {
 	return ""
 }
 
-// fetchZh 单次查询维基百科
 func (w *WikiClient) fetchZh(japaneseName string) (string, error) {
-	// 限速
 	w.mu.Lock()
 	elapsed := time.Since(w.lastReq)
 	if elapsed < wikiMinInterval {
@@ -260,7 +222,6 @@ func (w *WikiClient) requestOnce(endpoint, japaneseName string) (string, error) 
 	return zhName, nil
 }
 
-// stripDisambiguation 去掉维基消歧义后缀
 func stripDisambiguation(s string) string {
 	s = strings.TrimSpace(s)
 	if idx := strings.LastIndex(s, " ("); idx > 0 {
@@ -275,7 +236,6 @@ func stripDisambiguation(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// TranslateActorNames 演员名翻译：优先 PG字典 -> 维基 -> JavStash 中文兜底
 func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 	var warnings []string
 	for i := range actors {
