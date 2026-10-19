@@ -3,13 +3,12 @@
     <div class="actor-link__header">
       <h2>Emby 演员管理</h2>
       <div class="toolbar">
-        <el-select v-model="selectedLibrary" placeholder="选择媒体库" style="width: 200px" :loading="loadingLibraries" @change="loadPersons">
+        <el-select v-model="selectedLibrary" placeholder="选择媒体库" :style="isMobile ? 'width: 100%' : 'width: 200px'" :loading="loadingLibraries" @change="loadPersons">
           <el-option label="全部媒体库" value="" />
           <el-option v-for="lib in libraries" :key="lib.Id" :label="lib.Name" :value="lib.Id" />
         </el-select>
-        <el-input v-model="search" placeholder="搜索演员名字" clearable style="width: 180px" />
+        <el-input v-model="search" placeholder="搜索演员名字" clearable :style="isMobile ? 'width: 100%' : 'width: 180px'" />
         
-        <!-- ★ 新增：仅显示无头像筛选 -->
         <el-checkbox v-model="onlyNoAvatar">仅显示无头像</el-checkbox>
         
         <el-button @click="showConfig = true">设置</el-button>
@@ -84,7 +83,7 @@
     <div class="actor-link__footer">共 {{ filteredPersons.length }} 位演员</div>
 
     <!-- 批量刮削进度弹窗 -->
-    <el-dialog v-model="showScrapeProgress" title="刮削进度" width="640px" :close-on-click-modal="false" :close-on-press-escape="false" :show-close="!scraping">
+    <el-dialog v-model="showScrapeProgress" title="刮削进度" :width="isMobile ? '90%' : '640px'" :close-on-click-modal="false" :close-on-press-escape="false" :show-close="!scraping">
       <div class="progress-header">
         <el-progress :percentage="scrapeProgress.percent" :status="scrapeProgress.failed > 0 ? 'warning' : undefined" />
         <div class="progress-text">
@@ -94,7 +93,7 @@
         </div>
       </div>
       <el-table :data="scrapeResults" max-height="360" border size="small" :row-class-name="resultRowClass">
-        <el-table-column prop="name" label="演员" min-width="140" show-overflow-tooltip />
+        <el-table-column prop="name" label="演员" min-width="100" show-overflow-tooltip />
         <el-table-column label="结果" width="80" align="center">
           <template #default="{ row }">
             <el-tag v-if="row.status === 'success'" type="success" size="small">成功</el-tag>
@@ -103,7 +102,7 @@
             <el-tag v-else type="info" size="small">等待</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="message" label="详情" min-width="240" show-overflow-tooltip />
+        <el-table-column prop="message" label="详情" min-width="160" show-overflow-tooltip />
       </el-table>
       <template #footer>
         <el-button v-if="!scraping" @click="showScrapeProgress = false">关闭</el-button>
@@ -112,10 +111,10 @@
     </el-dialog>
 
     <!-- 详情抽屉 -->
-    <el-drawer v-model="showDetail" size="520px" :title="detail?.name || '演员详情'">
+    <el-drawer v-model="showDetail" :size="isMobile ? '100%' : '520px'" :title="detail?.name || '演员详情'">
       <div v-if="detail" class="detail">
         <div class="avatar-wrap">
-          <el-avatar :size="120" :src="embyImageUrl(detail.id, avatarVersions[detail.id])">
+          <el-avatar :size="isMobile ? 80 : 120" :src="embyImageUrl(detail.id, avatarVersions[detail.id])">
             {{ detail.name?.charAt(0) || '?' }}
           </el-avatar>
         </div>
@@ -152,8 +151,8 @@
     </el-drawer>
 
     <!-- 编辑抽屉 -->
-    <el-drawer v-model="showEdit" size="560px" :title="`编辑：${editForm.name || ''}`">
-      <el-form :model="editForm" label-width="100px">
+    <el-drawer v-model="showEdit" :size="isMobile ? '100%' : '560px'" :title="`编辑：${editForm.name || ''}`">
+      <el-form :model="editForm" :label-position="isMobile ? 'top' : 'right'" :label-width="isMobile ? undefined : '100px'">
         
         <el-form-item label="外部ID匹配">
           <el-input v-model="forceMatchId" placeholder="粘贴 TPDB 或 JavStash 的 UUID" style="flex: 1">
@@ -181,14 +180,14 @@
         </el-form-item>
         
         <el-form-item label="简介">
-          <el-input v-model="editForm.biography" type="textarea" :rows="8" placeholder="演员简介" />
+          <el-input v-model="editForm.biography" type="textarea" :rows="isMobile ? 5 : 8" placeholder="演员简介" />
         </el-form-item>
         
         <el-form-item label="头像">
-          <div class="avatar-edit">
+          <div class="avatar-edit" :style="isMobile ? 'flex-direction: column; align-items: flex-start;' : ''">
             <el-avatar :size="80" :src="previewAvatarUrl">{{ editForm.name?.charAt(0) || '?' }}</el-avatar>
-            <el-input v-model="avatarUrl" placeholder="粘贴图片 URL" style="flex: 1" />
-            <el-upload :show-file-list="false" :before-upload="onAvatarFileSelected"><el-button>本地图片</el-button></el-upload>
+            <el-input v-model="avatarUrl" placeholder="粘贴图片 URL" :style="isMobile ? 'width: 100%;' : 'flex: 1;'" />
+            <el-upload :show-file-list="false" :before-upload="onAvatarFileSelected"><el-button :style="isMobile ? 'width: 100%;' : ''">本地图片</el-button></el-upload>
           </div>
         </el-form-item>
         
@@ -199,15 +198,17 @@
         </el-form-item>
         
         <el-form-item>
-          <el-button type="primary" :loading="saving" @click="saveEdit">保存到 Emby</el-button>
-          <el-button @click="showEdit = false">取消</el-button>
+          <el-button type="primary" :loading="saving" @click="saveEdit" style="width: 100%">保存到 Emby</el-button>
+        </el-form-item>
+        <el-form-item>
+          <el-button @click="showEdit = false" style="width: 100%">取消</el-button>
         </el-form-item>
       </el-form>
     </el-drawer>
 
     <!-- 设置弹窗 -->
-    <el-dialog v-model="showConfig" title="Emby / 各类数据源设置" width="580px">
-      <el-form :model="config" label-width="150px">
+    <el-dialog v-model="showConfig" title="Emby / 各类数据源设置" :width="isMobile ? '90%' : '580px'">
+      <el-form :model="config" :label-position="isMobile ? 'top' : 'right'" :label-width="isMobile ? undefined : '150px'">
         <el-form-item label="Emby 地址"><el-input v-model="config.emby_url" placeholder="http://192.168.1.10:8096" /></el-form-item>
         <el-form-item label="Emby API Key"><el-input v-model="config.emby_api_key" placeholder="Emby API Key" /></el-form-item>
         <el-form-item label="StashDB API Key"><el-input v-model="config.stashdb_api_key" placeholder="stashdb.org 获取" /></el-form-item>
@@ -215,14 +216,14 @@
         <el-form-item label="TPDB API Key"><el-input v-model="config.tpdb_api_key" placeholder="theporndb.net 获取" /></el-form-item>
         <el-form-item label="维基百科联系邮箱"><el-input v-model="config.wiki_email" placeholder="icezxf555@gmail.com" /></el-form-item>
         <el-form-item>
-          <el-button :loading="testing" @click="doTest">测试 Emby 连接</el-button>
-          <el-button type="primary" @click="saveConfig">保存</el-button>
+          <el-button :loading="testing" @click="doTest" style="width: 100%; margin-bottom: 10px">测试 Emby 连接</el-button>
+          <el-button type="primary" @click="saveConfig" style="width: 100%; margin-left: 0;">保存</el-button>
         </el-form-item>
       </el-form>
     </el-dialog>
 
     <!-- 脚本调试抽屉 -->
-    <el-drawer v-model="showScript" size="760px" title="刮削脚本">
+    <el-drawer v-model="showScript" :size="isMobile ? '100%' : '760px'" title="刮削脚本">
       <div class="script-panel">
         <div class="script-toolbar">
           <el-tag v-if="scriptIsDefault" type="info">默认脚本</el-tag>
@@ -232,13 +233,13 @@
           <el-button size="small" @click="doResetScript">恢复默认</el-button>
           <el-button size="small" type="primary" @click="doSaveScript">保存</el-button>
         </div>
-        <el-input v-model="scriptText" type="textarea" :rows="22" placeholder="YAML 脚本" class="script-editor" />
+        <el-input v-model="scriptText" type="textarea" :rows="isMobile ? 15 : 22" placeholder="YAML 脚本" class="script-editor" />
         <div class="script-test">
           <h4>试运行</h4>
-          <el-form :inline="true">
-            <el-form-item label="Emby 演员 ID"><el-input v-model="testPersonId" style="width: 260px" placeholder="local-xxx" /></el-form-item>
-            <el-form-item label="姓名"><el-input v-model="testPersonName" style="width: 160px" /></el-form-item>
-            <el-form-item><el-button type="warning" :loading="scriptRunning" @click="doRunScript">执行</el-button></el-form-item>
+          <el-form :inline="!isMobile">
+            <el-form-item label="Emby 演员 ID" :style="isMobile ? 'width: 100%' : 'width: 260px'"><el-input v-model="testPersonId" placeholder="local-xxx" /></el-form-item>
+            <el-form-item label="姓名" :style="isMobile ? 'width: 100%' : 'width: 160px'"><el-input v-model="testPersonName" /></el-form-item>
+            <el-form-item><el-button type="warning" :loading="scriptRunning" @click="doRunScript" :style="isMobile ? 'width: 100%' : ''">执行</el-button></el-form-item>
           </el-form>
           
           <div v-if="scriptResults.length > 0" class="script-results">
@@ -672,7 +673,7 @@ onMounted(async () => { await loadConfig(); await loadAll() })
 .actor-link { padding: 20px; }
 .actor-link__header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 12px; flex-wrap: wrap; }
 .actor-link__header h2 { margin: 0; font-size: 18px; font-weight: 600; }
-.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; }
 .actor-link__footer { margin-top: 12px; text-align: right; color: #909399; font-size: 13px; }
 .detail { display: flex; flex-direction: column; gap: 16px; }
 .detail .avatar-wrap { display: flex; justify-content: center; }
@@ -718,7 +719,7 @@ onMounted(async () => { await loadConfig(); await loadAll() })
 .image-list img.active { border-color: #409eff; box-shadow: 0 0 8px rgba(64, 158, 255, 0.5); }
 
 .script-panel { display: flex; flex-direction: column; gap: 16px; }
-.script-toolbar { display: flex; align-items: center; gap: 8px; }
+.script-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .script-toolbar .spacer { flex: 1; }
 .script-editor :deep(textarea) { font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; line-height: 1.5; }
 .script-test h4 { margin: 0 0 8px; }
@@ -731,15 +732,29 @@ onMounted(async () => { await loadConfig(); await loadAll() })
 .result-row .action { width: 180px; color: #409eff; font-family: monospace; }
 .result-row .dur { width: 60px; color: #999; }
 .result-row .msg { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ★ 移动端全面适配 */
 @media (max-width: 768px) {
   .actor-link { padding: 12px; }
   .actor-link__header { flex-direction: column; align-items: stretch; gap: 10px; margin-bottom: 12px; }
-  .toolbar { gap: 6px; }
-  .toolbar .el-select, .toolbar .el-input { width: 100% !important; }
+  .toolbar { flex-direction: column; align-items: stretch; }
+  .toolbar .el-select, .toolbar .el-input, .toolbar .el-button { width: 100% !important; margin-left: 0; margin-bottom: 6px; }
+  .toolbar .el-dropdown { width: 100%; }
+  .toolbar .el-dropdown .el-button { width: 100%; }
+  
   :deep(.el-table__header-wrapper), :deep(.el-table__body-wrapper) { font-size: 12px; }
   :deep(.el-table .cell) { padding: 0 4px; }
   :deep(.el-table .el-button + .el-button) { margin-left: 4px; }
   :deep(.el-table .el-button.is-link) { padding: 4px; }
   :deep(.el-table .el-button.is-link .el-icon) { font-size: 16px; }
+  
+  /* 详情页调整 */
+  .detail .row { flex-direction: column; gap: 4px; }
+  .detail .label { width: 100%; font-weight: 600; font-size: 13px; }
+  
+  /* 编辑页头像调整 */
+  .avatar-edit { flex-direction: column; align-items: flex-start; }
+  .avatar-edit .el-input { width: 100%; }
+  .avatar-edit .el-button { width: 100%; }
 }
 </style>
