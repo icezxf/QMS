@@ -152,7 +152,7 @@
 
     <!-- 编辑抽屉 -->
     <el-drawer v-model="showEdit" :size="isMobile ? '100%' : '560px'" :title="`编辑：${editForm.name || ''}`">
-      <el-form :model="editForm" :label-position="isMobile ? 'top' : 'right'" :label-width="isMobile ? undefined : '100px'">
+      <el-form :model="editForm" :label-position="isMobile ? 'top' : 'right'" :label-width="isMobile ? 'auto' : '100px'">
         
         <el-form-item label="外部ID匹配">
           <el-input v-model="forceMatchId" placeholder="粘贴 TPDB 或 JavStash 的 UUID" style="flex: 1">
@@ -208,7 +208,7 @@
 
     <!-- 设置弹窗 -->
     <el-dialog v-model="showConfig" title="Emby / 各类数据源设置" :width="isMobile ? '90%' : '580px'">
-      <el-form :model="config" :label-position="isMobile ? 'top' : 'right'" :label-width="isMobile ? undefined : '150px'">
+      <el-form :model="config" :label-position="isMobile ? 'top' : 'right'" :label-width="isMobile ? 'auto' : '150px'">
         <el-form-item label="Emby 地址"><el-input v-model="config.emby_url" placeholder="http://192.168.1.10:8096" /></el-form-item>
         <el-form-item label="Emby API Key"><el-input v-model="config.emby_api_key" placeholder="Emby API Key" /></el-form-item>
         <el-form-item label="StashDB API Key"><el-input v-model="config.stashdb_api_key" placeholder="stashdb.org 获取" /></el-form-item>
@@ -756,5 +756,22 @@ onMounted(async () => { await loadConfig(); await loadAll() })
   .avatar-edit { flex-direction: column; align-items: flex-start; }
   .avatar-edit .el-input { width: 100%; }
   .avatar-edit .el-button { width: 100%; }
+
+  /* ★ 核心：强制修复移动端表单 label 导致的横向溢出 */
+  :deep(.el-form-item__label) {
+    float: none !important;
+    display: block !important;
+    text-align: left !important;
+    padding: 0 0 8px 0 !important;
+    width: 100% !important;
+  }
+  :deep(.el-form-item__content) {
+    margin-left: 0 !important;
+    width: 100% !important;
+  }
+  /* 抽屉本身的内边距缩小 */
+  :deep(.el-drawer__body) {
+    padding: 16px 12px !important;
+  }
 }
 </style>
