@@ -744,7 +744,12 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 
 	if js != nil {
 		// 如果 JavStash 命中了，用 JavStash 的数据覆盖（JavStash 在日系这块比 TPDB 准）
-		if lang == "zh" || isUUID { result["Name"] = originalName } else { result["Name"] = js.Name }
+		// ★ 核心修复：如果输入的是纯中文名，保留原名；如果是 UUID 或日文，必须用 JavStash 返回的官方主名，绝不能用 UUID！
+if lang == "zh" && !isUUID { 
+	result["Name"] = originalName 
+} else { 
+	result["Name"] = js.Name 
+}
 		result["BirthDate"] = js.BirthDate
 		result["PlaceOfBirth"] = "日本"
 		result["ProductionLocations"] = []string{"日本"}
