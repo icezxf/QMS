@@ -42,14 +42,31 @@ func InitDictDB() error {
 }
 
 // 每周定时更新任务
+// 每周三早上 3 点自动更新
 func startWeeklyUpdate() {
-	// 设置每周更新（7天 * 24小时）
-	ticker := time.NewTicker(7 * 24 * time.Hour)
-	defer ticker.Stop()
+	for {
+		// 1. 计算距离下一个周三 3 点的时间差
+		now := time.Now()
+		// time.Weekday: Sunday=0, Monday=1, Tuesday=2, Wednesday=3...
+		daysUntilWednesday := (3 - int(now.Weekday()) + 7) % 7
+		
+		nextWed := now.AddDate(0, 0, daysUntilWednesday)
+		nextWed = time.Date(nextWed.Year(), nextWed.Month(), nextWed.Day(), 3, 0, 0, 0, nextWed.Location())
+		
+		// 如果算出来的时间比现在还早（说明这周的周三 3 点已经过了），就加 7 天
+		if nextWed.Before(now) || nextWed.Equal(now) {
+			nextWed = nextWed.AddDate(0, 0, 7)
+		}
 
-	for range ticker.C {
-		helpers.AppLogger.Info("[字典] 触发每周定时更新，开始同步 GitHub 最新数据...")
-		// 传入 false 表示不是启动时，是定时更新
+		// 2. 算出还要等多久
+		duration := nextWed.Sub(now)
+		helpers.AppLogger.Infof("[字典] 下次自动更新将在: %s (等待 %v)", nextWed.Format("2006-01-02 15:04:05"), duration.Round(time.Minute))
+
+		// 3. 休眠等待 (使用 time.After 不会占用 CPU)
+		time.Sleep(duration)
+
+		// 4. 时间到，执行更新
+		helpers.AppLogger.Info("[字典] 触发每周三定时更新，开始同步 GitHub 最新数据...")
 		syncAllDicts(false)
 	}
 }
