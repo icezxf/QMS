@@ -67,7 +67,7 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 	if dictdb.DictDB != nil {
 		var mapping models.ActorMapping
 
-		// 转义 LIKE 通配符，防止演员名里含 % 或 _
+		// 转义 LIKE 通配符
 		escaped := strings.ReplaceAll(inputName, "%", "\\%")
 		escaped = strings.ReplaceAll(escaped, "_", "\\_")
 		kwPattern := fmt.Sprintf("%%,%s,%%", escaped)
