@@ -63,14 +63,26 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 
 	searchName := toSimplified(inputName)
 
+	// ===== 1. 优先查本地 PG 字典 =====
+	// 支持 jp_name / zh_name / 原始名 精确匹配，以及 keyword 别名匹配
 	if dictdb.DictDB != nil {
 		var mapping models.ActorMapping
-		err := dictdb.DictDB.Where("jp_name = ? OR zh_name = ? OR jp_name = ?", searchName, searchName, inputName).First(&mapping).Error
+
+		// 转义 LIKE 通配符，防止演员名里含 % 或 _
+		escaped := strings.ReplaceAll(inputName, "%", "\\%")
+		escaped = strings.ReplaceAll(escaped, "_", "\\_")
+		kwPattern := fmt.Sprintf("%%,%s,%%", escaped)
+
+		err := dictdb.DictDB.Where(
+			"jp_name = ? OR zh_name = ? OR jp_name = ? OR keyword LIKE ? ESCAPE '\\'",
+			searchName, searchName, inputName, kwPattern,
+		).First(&mapping).Error
 		if err == nil && mapping.ZhName != "" {
 			return toSimplified(mapping.ZhName), nil
 		}
 	}
 
+	// ===== 2. 查本地内存缓存 =====
 	w.mu.Lock()
 	if entry, ok := w.cache[inputName]; ok {
 		if time.Since(entry.at) < 24*time.Hour {
@@ -80,6 +92,7 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 	}
 	w.mu.Unlock()
 
+	// ===== 3. 查维基百科 =====
 	zhName, err := w.fetchZh(inputName)
 	if err != nil {
 		helpers.AppLogger.Warnf("[维基] 查询 %s 失败: %v", inputName, err)
@@ -101,6 +114,7 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 		zhName = toSimplified(zhName)
 	}
 
+	// ===== 4. 写缓存 =====
 	w.mu.Lock()
 	w.cache[inputName] = &wikiCache{zh: zhName, at: time.Now()}
 	w.mu.Unlock()
