@@ -24,7 +24,7 @@ func NewService(db *gorm.DB) *Service {
 	return &Service{DB: db}
 }
 
-// ===== 全局繁简转换器（统一放在这里） =====
+// ===== 全局繁简转换器（统一放在 service.go） =====
 var t2sConverter *gocc.OpenCC
 
 func init() {
@@ -44,17 +44,51 @@ func toSimplified(s string) string {
 	return s
 }
 
-// getInfoMapping 查询 info_mappings 获取标签/系列/导演的中文名
-func getInfoMapping(jpName string, category string) string {
+// ===== 片商硬编码映射（mapping_info.xml 不含片商翻译） =====
+var studioOverrides = map[string]string{
+	"エスワン ナンバーワンスタイル": "S1",
+	"エスワン":              "S1",
+	"ムーディーズ":            "Moodyz",
+	"プレステージ":            "Prestige",
+	"アイデアポケット":          "IP社",
+	// 按需补充
+}
+
+func translateStudio(studio string) string {
+	if zh, ok := studioOverrides[studio]; ok {
+		return zh
+	}
+	return studio
+}
+
+// getInfoMapping 基于 keyword 字段做模糊匹配
+// 返回值：
+//   zhName != "" 且 != "删除" -> 命中翻译
+//   zhName == "删除"          -> 命中删除规则
+//   hit == false              -> 未命中
+func getInfoMapping(jpName string) (zhName string, hit bool) {
 	if dictdb.DictDB == nil || jpName == "" {
-		return ""
+		return "", false
 	}
+
+	// 转义 LIKE 通配符，防止标签名本身包含 % 或 _
+	escaped := strings.ReplaceAll(jpName, "%", "\\%")
+	escaped = strings.ReplaceAll(escaped, "_", "\\_")
+	pattern := fmt.Sprintf("%%,%s,%%", escaped)
+
 	var mapping models.InfoMapping
-	err := dictdb.DictDB.Where("jp_name = ? AND category = ?", jpName, category).First(&mapping).Error
-	if err == nil && mapping.ZhName != "" {
-		return mapping.ZhName
+	err := dictdb.DictDB.Where("keyword LIKE ? ESCAPE '\\'", pattern).First(&mapping).Error
+	if err != nil {
+		return "", false
 	}
-	return ""
+
+	if mapping.ZhName == "删除" {
+		return "删除", true
+	}
+	if mapping.ZhName != "" {
+		return mapping.ZhName, true
+	}
+	return "", false
 }
 
 // ===== 全局 WikiClient 单例 =====
@@ -232,44 +266,75 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		}
 	}
 
-	// ===== 3. 标签 / 系列 / 导演 优先查本地 PG 字典 =====
+	// ===== 3. 标签 / 系列 / 导演 / 片商 优先查本地 PG 字典 =====
 	if dictdb.DictDB != nil {
-		// 查标签
+		// ---- 标签：命中删除规则则丢弃，命中翻译则替换，未命中保留原值 ----
 		var newGenres []string
 		for _, g := range best.Genres {
-			zh := getInfoMapping(g, "tag")
-			if zh != "" {
+			zh, hit := getInfoMapping(g)
+			if hit {
+				if zh == "删除" {
+					helpers.AppLogger.Infof("[字典-标签] 丢弃: %s", g)
+					continue
+				}
 				newGenres = append(newGenres, toSimplified(zh))
-			} else {
-				newGenres = append(newGenres, g)
+				helpers.AppLogger.Infof("[字典-标签] %s → %s", g, zh)
+				continue
 			}
+			newGenres = append(newGenres, g)
 		}
 		best.Genres = newGenres
 
-		// 查系列
+		// ---- 系列 ----
 		if best.Series != "" {
-			if zh := getInfoMapping(best.Series, "series"); zh != "" {
-				best.Series = toSimplified(zh)
+			if zh, hit := getInfoMapping(best.Series); hit {
+				if zh == "删除" {
+					helpers.AppLogger.Infof("[字典-系列] 丢弃: %s", best.Series)
+					best.Series = ""
+				} else {
+					helpers.AppLogger.Infof("[字典-系列] %s → %s", best.Series, zh)
+					best.Series = toSimplified(zh)
+				}
 			}
 		}
 
-		// 查导演
+		// ---- 导演 ----
 		if best.Director != "" {
-			if zh := getInfoMapping(best.Director, "director"); zh != "" {
-				best.Director = toSimplified(zh)
+			if zh, hit := getInfoMapping(best.Director); hit {
+				if zh == "删除" {
+					helpers.AppLogger.Infof("[字典-导演] 丢弃: %s", best.Director)
+					best.Director = ""
+				} else {
+					helpers.AppLogger.Infof("[字典-导演] %s → %s", best.Director, zh)
+					best.Director = toSimplified(zh)
+				}
 			}
 		}
 
-		// 查片商
+		// ---- 片商：先走硬编码映射，再尝试字典兜底 ----
 		if best.Studio != "" {
-			if zh := getInfoMapping(best.Studio, "studio"); zh != "" {
+			original := best.Studio
+			best.Studio = translateStudio(best.Studio)
+			if zh, hit := getInfoMapping(best.Studio); hit && zh != "删除" {
 				best.Studio = toSimplified(zh)
 			}
+			if best.Studio != original {
+				helpers.AppLogger.Infof("[片商] %s → %s", original, best.Studio)
+			} else {
+				helpers.AppLogger.Infof("[片商] 最终使用值: %s", best.Studio)
+			}
 		}
-	}
-
-	if best.Studio != "" {
-		helpers.AppLogger.Infof("[片商] 最终使用值: %s", best.Studio)
+	} else {
+		// 无字典时也走硬编码兜底
+		if best.Studio != "" {
+			original := best.Studio
+			best.Studio = translateStudio(best.Studio)
+			if best.Studio != original {
+				helpers.AppLogger.Infof("[片商] %s → %s", original, best.Studio)
+			} else {
+				helpers.AppLogger.Infof("[片商] 最终使用值: %s", best.Studio)
+			}
+		}
 	}
 
 	// ===== JavDB 评分 =====
@@ -430,6 +495,10 @@ func buildJavStashAliasMap(results []*ScrapeResult) map[string]string {
 	}
 	return m
 }
+
+// ============================================================
+// 合并多源
+// ============================================================
 
 func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	sorted := sortByChinese(results, cfg.PreferChineseSource)
