@@ -228,7 +228,7 @@ type actorXML struct {
 }
 
 func fetchActorMappings() ([]models.ActorMapping, error) {
-	body, err := download("https://raw.githubusercontent.com/sqzw-x/mdcx/master/resources/mapping_table/mapping_actor.xml")
+	body, err := download("https://raw.githubusercontent.com/sqzw-x/amane/main/resources/mapping_table/mapping_actor.xml")
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +268,7 @@ type infoXML struct {
 }
 
 func fetchInfoMappings() ([]models.InfoMapping, error) {
-	body, err := download("https://raw.githubusercontent.com/sqzw-x/mdcx/master/resources/mapping_table/mapping_info.xml")
+	body, err := download("https://raw.githubusercontent.com/sqzw-x/amane/main/resources/mapping_table/mapping_info.xml")
 	if err != nil {
 		return nil, err
 	}
