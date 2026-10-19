@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"qmediasync/internal/dictdb"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/models"
 )
 
 type WikiClient struct {
@@ -40,8 +42,6 @@ const (
 
 const wikiUserAgent = "QMediaSync/1.0 (https://github.com/icezxf/QMS; bocsx000@hotmail.com)"
 
-// pickChineseFromActor 从 Actor 的 Name 和 Aliases 里找中文名
-// 优先 Name，其次 Aliases
 func pickChineseFromActor(a Actor) string {
 	if isChineseName(a.Name) {
 		return a.Name
@@ -54,12 +54,22 @@ func pickChineseFromActor(a Actor) string {
 	return ""
 }
 
+// GetChineseName 优先查本地 PG 字典，没命中再去查维基百科
 func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 	if japaneseName == "" {
 		return "", nil
 	}
 
-	// 查缓存
+	// 1. ★ 最高优先级：查本地 PostgreSQL 数据库（毫秒级）
+	if dictdb.DictDB != nil {
+		var mapping models.ActorMapping
+		err := dictdb.DictDB.Where("jp_name = ?", japaneseName).First(&mapping).Error
+		if err == nil && mapping.ZhName != "" {
+			return mapping.ZhName, nil
+		}
+	}
+
+	// 2. 查本地内存缓存
 	w.mu.Lock()
 	if entry, ok := w.cache[japaneseName]; ok {
 		if time.Since(entry.at) < 24*time.Hour {
@@ -69,13 +79,10 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 	}
 	w.mu.Unlock()
 
-	// 尝试 1：原和名
+	// 3. 查维基百科
 	zhName, err := w.fetchZh(japaneseName)
-	if err != nil {
-		return "", err
-	}
 
-	// 尝试 2：加 "(AV女優)" 后缀
+	// 4. 尝试加 "(AV女優)" 后缀查维基百科
 	if zhName == "" {
 		alt := japaneseName + " (AV女優)"
 		zh2, err2 := w.fetchZh(alt)
@@ -85,20 +92,29 @@ func (w *WikiClient) GetChineseName(japaneseName string) (string, error) {
 		}
 	}
 
-	// 写缓存
+	// 5. 写缓存
 	w.mu.Lock()
 	w.cache[japaneseName] = &wikiCache{zh: zhName, at: time.Now()}
 	w.mu.Unlock()
 
 	if zhName != "" {
 		helpers.AppLogger.Infof("[维基] %s → %s", japaneseName, zhName)
-	} else {
-		helpers.AppLogger.Infof("[维基] %s 无中文条目", japaneseName)
 	}
 	return zhName, nil
 }
 
-// fetchZh 单次查询，返回中文名（可能为空），error 表示请求彻底失败
+// GetJapaneseName 反向查：中文名 -> 日文名 (方便用中文名去刮削)
+func (w *WikiClient) GetJapaneseName(chineseName string) string {
+	if dictdb.DictDB != nil {
+		var mapping models.ActorMapping
+		err := dictdb.DictDB.Where("zh_name = ?", chineseName).First(&mapping).Error
+		if err == nil && mapping.JpName != "" {
+			return mapping.JpName
+		}
+	}
+	return ""
+}
+
 func (w *WikiClient) fetchZh(japaneseName string) (string, error) {
 	// 限速
 	w.mu.Lock()
@@ -121,11 +137,8 @@ func (w *WikiClient) fetchZh(japaneseName string) (string, error) {
 
 	for attempt := 1; attempt <= wikiMaxRetries; attempt++ {
 		if attempt > 1 {
-			delay := time.Duration(attempt-1) * wikiRetryDelay
-			helpers.AppLogger.Infof("[维基] %s 第 %d 次重试，等待 %v", japaneseName, attempt, delay)
-			time.Sleep(delay)
+			time.Sleep(time.Duration(attempt-1) * wikiRetryDelay)
 		}
-
 		zh, err := w.requestOnce(endpoint, japaneseName)
 		if err != nil {
 			if strings.Contains(err.Error(), "RATE_LIMIT") {
@@ -142,7 +155,6 @@ func (w *WikiClient) fetchZh(japaneseName string) (string, error) {
 	if lastErr != nil {
 		return "", lastErr
 	}
-
 	if zhName != "" {
 		zhName = stripDisambiguation(zhName)
 	}
@@ -152,51 +164,32 @@ func (w *WikiClient) fetchZh(japaneseName string) (string, error) {
 func (w *WikiClient) requestOnce(endpoint, japaneseName string) (string, error) {
 	req, err := http.NewRequest("GET", endpoint, nil)
 	if err != nil {
-		return "", fmt.Errorf("构造请求失败: %w", err)
+		return "", err
 	}
 	req.Header.Set("User-Agent", wikiUserAgent)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := w.HTTP.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("请求失败: %w", err)
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return "", fmt.Errorf("RATE_LIMIT: HTTP 429")
 	}
-
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("读取响应失败: %w", err)
-	}
-	if len(body) == 0 {
-		return "", fmt.Errorf("响应为空")
-	}
-
-	trimmed := strings.TrimSpace(string(body))
-	if len(trimmed) == 0 {
-		return "", fmt.Errorf("响应为空")
-	}
-	firstChar := trimmed[0]
-	if firstChar != '{' && firstChar != '[' {
-		preview := trimmed
-		if len(preview) > 200 {
-			preview = preview[:200] + "..."
-		}
-		return "", fmt.Errorf("响应不是 JSON（前 200 字符: %s）", preview)
+		return "", err
 	}
 
 	var result struct {
 		Query struct {
 			Pages map[string]struct {
-				Title     string `json:"title"`
 				Langlinks []struct {
 					Lang string `json:"lang"`
 					Name string `json:"*"`
@@ -205,7 +198,7 @@ func (w *WikiClient) requestOnce(endpoint, japaneseName string) (string, error) 
 		} `json:"query"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("解析 JSON 失败: %w", err)
+		return "", err
 	}
 
 	var zhName string
@@ -220,7 +213,6 @@ func (w *WikiClient) requestOnce(endpoint, japaneseName string) (string, error) 
 	return zhName, nil
 }
 
-// stripDisambiguation 去掉维基消歧义后缀
 func stripDisambiguation(s string) string {
 	s = strings.TrimSpace(s)
 	if idx := strings.LastIndex(s, " ("); idx > 0 {
@@ -235,7 +227,6 @@ func stripDisambiguation(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// TranslateActorNames 演员名翻译：优先 wiki → JavStash 中文兜底
 func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 	var warnings []string
 	for i := range actors {
@@ -244,10 +235,8 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 			continue
 		}
 
-		// ===== 第一步：查 wiki（优先） =====
 		zh, err := w.GetChineseName(oldName)
 		if err == nil && zh != "" && zh != oldName {
-			// wiki 命中，替换
 			exists := false
 			for _, a := range actors[i].Aliases {
 				if a == oldName {
@@ -262,10 +251,8 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 			continue
 		}
 
-		// ===== 第二步：wiki 没命中，从 JavStash 的 Name/Aliases 里找中文兜底 =====
 		if fallbackZh := pickChineseFromActor(actors[i]); fallbackZh != "" {
 			if fallbackZh == oldName {
-				// 原名就是中文，跳过
 				continue
 			}
 			exists := false
@@ -283,15 +270,8 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 			continue
 		}
 
-		// ===== 第三步：都没命中，记录警告 =====
 		if err != nil {
-			if strings.Contains(err.Error(), "RATE_LIMIT") {
-				warnings = append(warnings, fmt.Sprintf("演员 %s 维基限流(429)，且 JavStash 无中文", oldName))
-			} else {
-				warnings = append(warnings, fmt.Sprintf("演员 %s 维基请求失败(%v)，且 JavStash 无中文", oldName, err))
-			}
-		} else {
-			warnings = append(warnings, fmt.Sprintf("演员 %s 维基无中文条目，且 JavStash 无中文", oldName))
+			warnings = append(warnings, fmt.Sprintf("演员 %s 翻译失败(%v)", oldName, err))
 		}
 	}
 	return actors, warnings
