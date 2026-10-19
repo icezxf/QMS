@@ -24,15 +24,16 @@ func NewService(db *gorm.DB) *Service {
 	return &Service{DB: db}
 }
 
-// ===== 全局繁简转换器 =====
+// ===== 全局繁简转换器（统一放在这里） =====
 var t2sConverter *gocc.OpenCC
 
 func init() {
+	// s2t 是简转繁，t2s 是繁转简
 	t2sConverter, _ = gocc.New("t2s")
 }
 
-// toSimp 繁转简
-func toSimp(s string) string {
+// toSimplified 繁转简
+func toSimplified(s string) string {
 	if s == "" || t2sConverter == nil {
 		return s
 	}
@@ -222,11 +223,11 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		var cNumMapping models.CNumberMapping
 		if err := dictdb.DictDB.Where("number = ?", best.Code).First(&cNumMapping).Error; err == nil && cNumMapping.Title != "" {
 			helpers.AppLogger.Infof("[AV刮削] 命中标题字典: %s => %s", best.Code, cNumMapping.Title)
-			best.Title = toSimp(cNumMapping.Title)
+			best.Title = toSimplified(cNumMapping.Title)
 		} else if altCode := stripNumberLeadingZeros(best.Code); altCode != best.Code {
 			if err := dictdb.DictDB.Where("number = ?", altCode).First(&cNumMapping).Error; err == nil && cNumMapping.Title != "" {
 				helpers.AppLogger.Infof("[AV刮削] 命中标题字典(备用): %s => %s", altCode, cNumMapping.Title)
-				best.Title = toSimp(cNumMapping.Title)
+				best.Title = toSimplified(cNumMapping.Title)
 			}
 		}
 	}
@@ -238,7 +239,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		for _, g := range best.Genres {
 			zh := getInfoMapping(g, "tag")
 			if zh != "" {
-				newGenres = append(newGenres, toSimp(zh))
+				newGenres = append(newGenres, toSimplified(zh))
 			} else {
 				newGenres = append(newGenres, g)
 			}
@@ -248,21 +249,21 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		// 查系列
 		if best.Series != "" {
 			if zh := getInfoMapping(best.Series, "series"); zh != "" {
-				best.Series = toSimp(zh)
+				best.Series = toSimplified(zh)
 			}
 		}
 
 		// 查导演
 		if best.Director != "" {
 			if zh := getInfoMapping(best.Director, "director"); zh != "" {
-				best.Director = toSimp(zh)
+				best.Director = toSimplified(zh)
 			}
 		}
 
-		// 查片商 (如果有的话)
+		// 查片商
 		if best.Studio != "" {
 			if zh := getInfoMapping(best.Studio, "studio"); zh != "" {
-				best.Studio = toSimp(zh)
+				best.Studio = toSimplified(zh)
 			}
 		}
 	}
@@ -338,7 +339,6 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 // 以下为辅助函数（保持原有逻辑不变）
 // ============================================================
 
-// extractR18ContentID 从 r18.dev 链接提取 content_id
 func extractR18ContentID(url string) string {
 	re := regexp.MustCompile(`(?:id|combined)=([^/?]+)`)
 	m := re.FindStringSubmatch(url)
@@ -348,7 +348,6 @@ func extractR18ContentID(url string) string {
 	return m[1]
 }
 
-// stripLeadingDigits 去掉开头的数字，3DSVR-1766 → DSVR-1766
 func stripLeadingDigits(s string) string {
 	i := 0
 	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
@@ -357,7 +356,6 @@ func stripLeadingDigits(s string) string {
 	return s[i:]
 }
 
-// stripNumberLeadingZeros 去掉番号数字部分的前导零，DSVR-0932 → DSVR-932
 func stripNumberLeadingZeros(s string) string {
 	sep := -1
 	for i := len(s) - 1; i >= 0; i-- {
@@ -387,7 +385,6 @@ func stripNumberLeadingZeros(s string) string {
 	return prefix + numPart[j:]
 }
 
-// javdbCodeCandidates 生成 JavDB 查询候选番号
 func javdbCodeCandidates(code string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -411,7 +408,6 @@ func javdbCodeCandidates(code string) []string {
 	return out
 }
 
-// buildJavStashAliasMap 从 JavStash 结果构建"别名 → 主名"映射
 func buildJavStashAliasMap(results []*ScrapeResult) map[string]string {
 	m := make(map[string]string)
 	for _, r := range results {
@@ -434,10 +430,6 @@ func buildJavStashAliasMap(results []*ScrapeResult) map[string]string {
 	}
 	return m
 }
-
-// ============================================================
-// 合并多源
-// ============================================================
 
 func mergeResults(results []*ScrapeResult, cfg *Config) *ScrapeResult {
 	sorted := sortByChinese(results, cfg.PreferChineseSource)
@@ -753,8 +745,6 @@ func (s *Service) GetMedia(id uint) (*models.AVMedia, error) {
 	return &m, err
 }
 
-// ===== 暂停操作 =====
-
 func (s *Service) ReleaseMedia(id uint) error {
 	media := models.GetAVMediaByID(id)
 	if media == nil {
@@ -811,8 +801,6 @@ func (s *Service) CancelMedia(id uint) error {
 	return nil
 }
 
-// ===== 批量删除媒体 =====
-
 func (s *Service) BatchDeleteMedia(ids []uint) (int, error) {
 	var mediaList []models.AVMedia
 	query := s.DB.Model(&models.AVMedia{})
@@ -854,7 +842,6 @@ func (s *Service) BatchDeleteMedia(ids []uint) (int, error) {
 	return len(mediaIDs), nil
 }
 
-// dedupParenActors 去掉"名字带括号但括号里的名字已在列表里"的重复演员
 func dedupParenActors(actors []Actor) []Actor {
 	if len(actors) <= 1 {
 		return actors
@@ -885,7 +872,6 @@ func dedupParenActors(actors []Actor) []Actor {
 	return out
 }
 
-// extractParenInner 提取中/英文括号内容
 func extractParenInner(s string) string {
 	if i := strings.Index(s, "（"); i >= 0 {
 		if j := strings.LastIndex(s, "）"); j > i {
@@ -900,7 +886,6 @@ func extractParenInner(s string) string {
 	return ""
 }
 
-// normalizeParenActorNames 把 "主名（别名）" 拆成 name=主名, aliases 追加别名
 func normalizeParenActorNames(actors []Actor) []Actor {
 	for i := range actors {
 		name := actors[i].Name
@@ -931,7 +916,6 @@ func normalizeParenActorNames(actors []Actor) []Actor {
 	return actors
 }
 
-// extractParenOuter 提取括号外的内容
 func extractParenOuter(s string) string {
 	if i := strings.Index(s, "（"); i > 0 {
 		return strings.TrimSpace(s[:i])
