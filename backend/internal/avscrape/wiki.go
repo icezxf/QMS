@@ -64,7 +64,6 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 	searchName := toSimplified(inputName)
 
 	// ===== 1. 优先查本地 PG 字典 =====
-	// 支持 jp_name / zh_name / 原始名 精确匹配，以及 keyword 别名匹配
 	if dictdb.DictDB != nil {
 		var mapping models.ActorMapping
 
@@ -78,7 +77,9 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 			searchName, searchName, inputName, kwPattern,
 		).First(&mapping).Error
 		if err == nil && mapping.ZhName != "" {
-			return toSimplified(mapping.ZhName), nil
+			zh := toSimplified(mapping.ZhName)
+			helpers.AppLogger.Infof("[字典] %s → %s", inputName, zh)
+			return zh, nil
 		}
 	}
 
