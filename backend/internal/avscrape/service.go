@@ -8,9 +8,11 @@ import (
 	"sort"
 	"strings"
 
+	"qmediasync/internal/dictdb"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 
+	"github.com/liuzl/gocc"
 	"gorm.io/gorm"
 )
 
@@ -21,6 +23,52 @@ type Service struct {
 func NewService(db *gorm.DB) *Service {
 	return &Service{DB: db}
 }
+
+// ===== 全局繁简转换器 =====
+var t2sConverter *gocc.OpenCC
+
+func init() {
+	t2sConverter, _ = gocc.New("t2s")
+}
+
+// toSimp 繁转简
+func toSimp(s string) string {
+	if s == "" || t2sConverter == nil {
+		return s
+	}
+	res, err := t2sConverter.Convert(s)
+	if err == nil {
+		return res
+	}
+	return s
+}
+
+// getInfoMapping 查询 info_mappings 获取标签/系列/导演的中文名
+func getInfoMapping(jpName string, category string) string {
+	if dictdb.DictDB == nil || jpName == "" {
+		return ""
+	}
+	var mapping models.InfoMapping
+	err := dictdb.DictDB.Where("jp_name = ? AND category = ?", jpName, category).First(&mapping).Error
+	if err == nil && mapping.ZhName != "" {
+		return mapping.ZhName
+	}
+	return ""
+}
+
+// ===== 全局 WikiClient 单例 =====
+var (
+	globalWikiClient *WikiClient
+)
+
+func GetWikiClient() *WikiClient {
+	if globalWikiClient == nil {
+		globalWikiClient = NewWikiClient()
+	}
+	return globalWikiClient
+}
+
+// ============================================================
 
 func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	cfg, err := LoadConfig(s.DB)
@@ -56,7 +104,6 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		mt := NewMetaTubeClient(cfg.MetaTubeServer)
 		hits, err := mt.Search(effectiveCode)
 		if err == nil {
-			// 剧照只保留第一个有内容的源
 			var previewChosen bool
 			var previewSource string
 
@@ -73,7 +120,6 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 					helpers.AppLogger.Infof("[MetaTube] 详情成功: %s => %d 张剧照",
 						providerID, len(detail.PreviewImages))
 
-					// ===== 剧照：只保留第一个有内容的源 =====
 					if previewChosen {
 						if len(detail.PreviewImages) > 0 {
 							helpers.AppLogger.Infof("[MetaTube] 源 %s 也提供 %d 张剧照，已忽略（已选 %s）",
@@ -98,11 +144,10 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		}
 	}
 
-	// ===== JavStash 番号搜索（oshash 命中时跳过） =====
+	// ===== JavStash 番号搜索 =====
 	if cfg.EnableJavStash && !oshashHit {
 		js := NewJavStashClient(cfg.JavStashEndpoint, cfg.JavStashAPIKey)
 
-		// 第一次用原番号
 		hits, err := js.Search(effectiveCode)
 		if err != nil {
 			helpers.AppLogger.Warnf("[JavStash] 搜索失败 %s: %v", effectiveCode, err)
@@ -111,7 +156,6 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 			allResults = append(allResults, hits...)
 		}
 
-		// 没结果，去前导零再试一次
 		if len(hits) == 0 {
 			altCode := stripNumberLeadingZeros(effectiveCode)
 			if altCode != "" && altCode != effectiveCode {
@@ -144,7 +188,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		}
 	}
 
-	// ===== 括号清洗（逐个源） =====
+	// ===== 括号清洗 =====
 	for _, r := range allResults {
 		r.Actors = normalizeParenActorNames(r.Actors)
 	}
@@ -152,7 +196,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	// ===== 合并多源 =====
 	best := mergeResults(allResults, cfg)
 
-	// ===== 从 r18.dev 链接提取 content_id（可能多个） =====
+	// ===== 从 r18.dev 链接提取 content_id =====
 	seenCID := map[string]bool{}
 	for _, u := range best.Urls {
 		if strings.Contains(u, "r18.dev") {
@@ -167,14 +211,64 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	// ===== 收集警告 =====
 	var warnings []string
 
-	// 演员维基翻译（不进批量翻译）
-	wikiClient := NewWikiClient()
+	// ===== 1. 演员维基翻译（走 PG 字典 + 维基） =====
+	wikiClient := GetWikiClient()
 	translatedActors, actorWarnings := wikiClient.TranslateActorNames(best.Actors)
 	best.Actors = translatedActors
 	warnings = append(warnings, actorWarnings...)
 
+	// ===== 2. 番号标题优先查本地 PG 字典 =====
+	if dictdb.DictDB != nil {
+		var cNumMapping models.CNumberMapping
+		if err := dictdb.DictDB.Where("number = ?", best.Code).First(&cNumMapping).Error; err == nil && cNumMapping.Title != "" {
+			helpers.AppLogger.Infof("[AV刮削] 命中标题字典: %s => %s", best.Code, cNumMapping.Title)
+			best.Title = toSimp(cNumMapping.Title)
+		} else if altCode := stripNumberLeadingZeros(best.Code); altCode != best.Code {
+			if err := dictdb.DictDB.Where("number = ?", altCode).First(&cNumMapping).Error; err == nil && cNumMapping.Title != "" {
+				helpers.AppLogger.Infof("[AV刮削] 命中标题字典(备用): %s => %s", altCode, cNumMapping.Title)
+				best.Title = toSimp(cNumMapping.Title)
+			}
+		}
+	}
+
+	// ===== 3. 标签 / 系列 / 导演 优先查本地 PG 字典 =====
+	if dictdb.DictDB != nil {
+		// 查标签
+		var newGenres []string
+		for _, g := range best.Genres {
+			zh := getInfoMapping(g, "tag")
+			if zh != "" {
+				newGenres = append(newGenres, toSimp(zh))
+			} else {
+				newGenres = append(newGenres, g)
+			}
+		}
+		best.Genres = newGenres
+
+		// 查系列
+		if best.Series != "" {
+			if zh := getInfoMapping(best.Series, "series"); zh != "" {
+				best.Series = toSimp(zh)
+			}
+		}
+
+		// 查导演
+		if best.Director != "" {
+			if zh := getInfoMapping(best.Director, "director"); zh != "" {
+				best.Director = toSimp(zh)
+			}
+		}
+
+		// 查片商 (如果有的话)
+		if best.Studio != "" {
+			if zh := getInfoMapping(best.Studio, "studio"); zh != "" {
+				best.Studio = toSimp(zh)
+			}
+		}
+	}
+
 	if best.Studio != "" {
-		helpers.AppLogger.Infof("[片商] 使用数据源原始值: %s", best.Studio)
+		helpers.AppLogger.Infof("[片商] 最终使用值: %s", best.Studio)
 	}
 
 	// ===== JavDB 评分 =====
@@ -203,7 +297,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		}
 	}
 
-	// ===== 批量翻译（标题 + 简介 + 标签，演员走 Wiki） =====
+	// ===== 4. 批量翻译（内部会自动过滤掉已经是纯中文的标题/标签） =====
 	if cfg.EnableTranslate {
 		tr := NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.DeepLKey = cfg.TranslateDeepLKey
@@ -239,6 +333,10 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	}
 	return best, nil
 }
+
+// ============================================================
+// 以下为辅助函数（保持原有逻辑不变）
+// ============================================================
 
 // extractR18ContentID 从 r18.dev 链接提取 content_id
 func extractR18ContentID(url string) string {
