@@ -424,11 +424,6 @@ func parseWeight(s string) int {
 
 // ============ 维基百科 ============
 
-// fetchWikiData 查询维基百科
-// lang: 查询的维基语言版本（"zh" 或 "ja"）
-// title: 查询的标题
-// targetLang: 需要获取的跨语言标题语言（"zh" 或 "ja"），空字符串表示不查跨语言链接
-// 返回：(跨语言标题, 实际标题, 简介)
 func fetchWikiData(ctx context.Context, lang, title, targetLang string, email string) (string, string, string) {
 	prop := "extracts"
 	if targetLang != "" {
@@ -472,7 +467,6 @@ func fetchWikiData(ctx context.Context, lang, title, targetLang string, email st
 			if lls, ok := p["langlinks"].([]any); ok && len(lls) > 0 {
 				if ll, ok := lls[0].(map[string]any); ok {
 					if t, ok := ll["title"].(string); ok {
-						// 去掉括号
 						re := regexp.MustCompile(`\s*\(.*?\)`)
 						langTitle = re.ReplaceAllString(t, "")
 						langTitle = strings.TrimSpace(langTitle)
@@ -484,23 +478,149 @@ func fetchWikiData(ctx context.Context, lang, title, targetLang string, email st
 	return langTitle, actualTitle, bio
 }
 
+// ============ Ouxiang 数据源 ============
+
+type OuxiangData struct {
+	JpName string
+	ZhName string
+	Bio    string
+	Weight int
+	Url    string
+}
+
+var ouxiangHTTP = &http.Client{Timeout: 15 * time.Second}
+
+var (
+	ouxiangIdolRe  = regexp.MustCompile(`href="(/idol/[^"]+)"`)
+	ouxiangH1Re    = regexp.MustCompile(`<h1>([^<]+)</h1>`)
+	// (?s) 表示允许跨行匹配，.*? 匹配 </p> 之前的所有内容（包括标签）
+	ouxiangIntroRe = regexp.MustCompile(`(?s)<section id="intro"><p>(.*?)</p>`)
+	htmlTagRe      = regexp.MustCompile(`<[^>]+>`)
+)
+
+func fetchOuxiangData(ctx context.Context, keyword string) (*OuxiangData, error) {
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		return nil, fmt.Errorf("空关键词")
+	}
+
+	// 1. 搜索
+	searchURL := "https://www.ouxiangdanganku.com/search/" + url.QueryEscape(keyword)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	resp, err := ouxiangHTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	
+	matches := ouxiangIdolRe.FindAllStringSubmatch(string(body), 5)
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("未搜到结果")
+	}
+
+	// 2. 遍历详情页
+	for _, m := range matches {
+		detailPath := m[1]
+		time.Sleep(150 * time.Millisecond)
+
+		detailURL := "https://www.ouxiangdanganku.com" + detailPath
+		req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, detailURL, nil)
+		req2.Header.Set("User-Agent", "Mozilla/5.0")
+		resp2, err := ouxiangHTTP.Do(req2)
+		if err != nil {
+			continue
+		}
+		body2, _ := io.ReadAll(io.LimitReader(resp2.Body, 4<<20))
+		resp2.Body.Close()
+
+		h1 := ""
+		if hm := ouxiangH1Re.FindStringSubmatch(string(body2)); len(hm) >= 2 {
+			h1 = strings.TrimSpace(hm[1])
+		}
+
+		intro := ""
+		if im := ouxiangIntroRe.FindStringSubmatch(string(body2)); len(im) >= 2 {
+			// 清理 HTML 标签，只留纯文本
+			rawIntro := im[1]
+			intro = htmlTagRe.ReplaceAllString(rawIntro, "")
+			intro = strings.TrimSpace(intro)
+		}
+
+		if intro == "" || !strings.Contains(intro, keyword) {
+			continue
+		}
+
+		data := &OuxiangData{
+			JpName: h1,
+			Bio:    intro,
+			Url:    detailURL,
+		}
+
+		// === 解析中文名 ===
+		// 优先看 H1 是不是纯中文（如“新有菜”）
+		if isChineseName(h1) && !strings.ContainsAny(h1, "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ") {
+			data.ZhName = h1
+		} else {
+			// 否则去括号里找 (用标点切分，过滤掉英文/假名/日期)
+			start := strings.Index(intro, "（")
+			end := strings.Index(intro, "）")
+			if start >= 0 && end > start {
+				inner := intro[start+len("（"):end]
+				parts := regexp.MustCompile(`[，,／/、]`).Split(inner, -1)
+				for _, p := range parts {
+					p = strings.TrimSpace(p)
+					if p != "" && !strings.ContainsAny(p, "年月日") && isChineseName(p) {
+						data.ZhName = p
+						break
+					}
+				}
+			}
+		}
+		
+		// === 解析体重 ===
+		cleanHtml := htmlTagRe.ReplaceAllString(string(body2), " ")
+		weightRe := regexp.MustCompile(`体重[^\d]*(\d+)`)
+		if wm := weightRe.FindStringSubmatch(cleanHtml); len(wm) >= 2 {
+			w, _ := strconv.Atoi(wm[1])
+			data.Weight = w
+		}
+
+		return data, nil
+	}
+
+	return nil, fmt.Errorf("未找到匹配的详情页")
+}
+
+func isChineseName(s string) bool {
+	hasChinese := false
+	for _, r := range s {
+		if (r >= 0x3040 && r <= 0x309F) || (r >= 0x30A0 && r <= 0x30FF) {
+			return false
+		}
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+			return false
+		}
+		if r >= 0x4E00 && r <= 0x9FFF {
+			hasChinese = true
+		}
+	}
+	return hasChinese
+}
+
 // ============ 本地字典 ============
 
-// getJpNameFromDict 中文名 → 日文名（先精确查 zh_name，再用 keyword LIKE 兜底）
 func getJpNameFromDict(chineseName string) string {
 	if dictdb.DictDB == nil || chineseName == "" {
 		return ""
 	}
-
 	var mapping models.ActorMapping
-
-	// 1. 精确匹配 zh_name
 	err := dictdb.DictDB.Where("zh_name = ?", chineseName).First(&mapping).Error
 	if err == nil && mapping.JpName != "" {
 		return mapping.JpName
 	}
 
-	// 2. keyword LIKE 兜底（覆盖“旧名在 jp_name、新名在 keyword”的情况）
 	escaped := strings.ReplaceAll(chineseName, "%", "\\%")
 	escaped = strings.ReplaceAll(escaped, "_", "\\_")
 	kwPattern := fmt.Sprintf("%%,%s,%%", escaped)
@@ -508,7 +628,6 @@ func getJpNameFromDict(chineseName string) string {
 	if err == nil && mapping.JpName != "" {
 		return mapping.JpName
 	}
-
 	return ""
 }
 
@@ -697,11 +816,6 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		return nil, fmt.Errorf("缺少 name")
 	}
 
-	forceSource := toString(params["force_source"])
-	if forceSource == "" {
-		forceSource = "auto"
-	}
-
 	lang := detectLanguage(originalName)
 	isUUID := len(originalName) == 36 && strings.Count(originalName, "-") == 4
 
@@ -723,19 +837,45 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 	var tpdbSearchName string
 	var js *StashBoxPerformer
 
-	// 1. 先尝试用原名去查 TPDB（如果是英文或 TPDB的UUID，这里一步到位）
+	// ===== 0. Ouxiang 预查（只用来拿元数据和准确的搜索词，绝对不改 result["Name"]）=====
+	var ouxData *OuxiangData
+	if !isUUID && lang != "en" {
+		if data, err := fetchOuxiangData(ctx, originalName); err == nil {
+			ouxData = data
+			helpers.AppLogger.Infof("[Ouxiang] %s 命中: 中文名=%s, 日文名=%s", originalName, data.ZhName, data.JpName)
+			
+			if data.Bio != "" {
+				result["Bio"] = data.Bio
+			}
+			if data.Weight > 0 {
+				result["Weight"] = data.Weight
+			}
+			
+			ids := result["ProviderIds"].(map[string]any)
+			ids["Ouxiang"] = data.Url
+		}
+	}
+
+	// ===== 1. 先尝试查 TPDB =====
 	if exec.Tpdb != nil && exec.Tpdb.APIKey != "" {
 		tp, err := exec.Tpdb.SearchTPDB(ctx, originalName)
 		if err == nil {
-			result["Name"] = tp.Name
+			// 只有当输入是 UUID 的时候，才允许 TPDB 的名字作为回退。正常名字绝不覆盖。
+			if isUUID && toString(result["Name"]) == originalName {
+				result["Name"] = tp.Name
+			}
 			result["BirthDate"] = tp.BirthDate
 			result["Height"] = tp.Height
-			result["Weight"] = tp.Weight
+			if tp.Weight > 0 {
+				result["Weight"] = tp.Weight
+			}
 			result["CupSize"] = tp.Measurements.CupSize
 			result["Waist"] = tp.Measurements.Waist
 			result["Hip"] = tp.Measurements.Hip
-			result["Bio"] = tp.Bio
-			result["AliasesString"] = "" // 英文名无别名
+			
+			if toString(result["Bio"]) == "" {
+				result["Bio"] = tp.Bio
+			}
 
 			if tp.CareerStart > 0 {
 				result["PremiereDate"] = fmt.Sprintf("%d-01-01", tp.CareerStart)
@@ -750,7 +890,12 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 				result["ProductionLocations"] = []string{tp.Country}
 			}
 
-			result["ProviderIds"] = extractProviderIds(tp.Urls)
+			tpIds := extractProviderIds(tp.Urls)
+			currentIds := result["ProviderIds"].(map[string]any)
+			for k, v := range tpIds {
+				currentIds[k] = v
+			}
+
 			tpImgs := []string{}
 			for _, img := range tp.Images {
 				tpImgs = append(tpImgs, img.URL)
@@ -759,37 +904,32 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 				result["ImageURL"] = tpImgs[0]
 			}
 			result["Images"] = tpImgs
-		} else if isUUID && !strings.Contains(err.Error(), "未找到") {
-			return nil, fmt.Errorf("TPDB 接口异常: %v", err)
 		}
 	}
 
-	// 2. 核心：查维基 + JavStash
-	// ★ 中文名先查本地字典拿日文名，再用日文名查日文维基 / JavStash，准确率更高
+	// ===== 2. 核心：查维基 + JavStash =====
 	searchCandidates := []string{originalName}
+	
+	// 把 ouxiang 查到的日文名加入搜索候选（尽量拿日文名去搜）
+	if ouxData != nil && ouxData.JpName != "" {
+		searchCandidates = append([]string{ouxData.JpName}, searchCandidates...)
+	}
 
 	if lang == "zh" {
 		// ★ 中文名：先查本地字典拿日文名
 		jpNameFromDict := getJpNameFromDict(originalName)
 		if jpNameFromDict != "" && jpNameFromDict != originalName {
 			helpers.AppLogger.Infof("[演员字典] %s → %s", originalName, jpNameFromDict)
-			// 日文名放最前，JavStash 优先用它搜
 			searchCandidates = append([]string{jpNameFromDict}, searchCandidates...)
 
-			// 2.1 用日文名查日文维基：拿日文简介 + 精确中文维基标题
 			zhTitleFromJa, _, jaBio := fetchWikiData(ctx, "ja", jpNameFromDict, "zh", exec.WikiEmail)
-			if jaBio != "" && result["Bio"] == "" {
+			if jaBio != "" && toString(result["Bio"]) == "" {
 				result["Bio"] = jaBio
-				helpers.AppLogger.Infof("[维基-日文] %s 命中日文简介", jpNameFromDict)
 			}
-
-			// 2.2 用日文维基返回的精确中文标题查中文维基，拿中文简介（优先中文）
 			if zhTitleFromJa != "" {
-				helpers.AppLogger.Infof("[维基] 日文维基关联中文标题: %s → %s", jpNameFromDict, zhTitleFromJa)
 				_, _, zhBio := fetchWikiData(ctx, "zh", zhTitleFromJa, "", exec.WikiEmail)
-				if zhBio != "" {
+				if zhBio != "" && toString(result["Bio"]) == "" {
 					result["Bio"] = zhBio
-					helpers.AppLogger.Infof("[维基-中文] %s 命中中文简介", zhTitleFromJa)
 				}
 				if zhTitleFromJa != originalName && zhTitleFromJa != jpNameFromDict {
 					searchCandidates = append(searchCandidates, zhTitleFromJa)
@@ -797,33 +937,27 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 			}
 		}
 
-		// 2.3 兜底：原始中文名查中文维基（拿中文简介 + 跨语言日文名）
-		if result["Bio"] == "" || jpNameFromDict == "" {
+		if jpNameFromDict == "" && (ouxData == nil || ouxData.JpName == "") {
 			jaName, actualTitle, zhBio := fetchWikiData(ctx, "zh", originalName, "ja", exec.WikiEmail)
-			if zhBio != "" && result["Bio"] == "" {
+			if zhBio != "" && toString(result["Bio"]) == "" {
 				result["Bio"] = zhBio
 			}
-			if actualTitle != "" && actualTitle != originalName && actualTitle != jpNameFromDict {
+			if actualTitle != "" && actualTitle != originalName {
 				searchCandidates = append(searchCandidates, actualTitle)
 			}
-			if jaName != "" && jaName != originalName && jaName != jpNameFromDict && jaName != actualTitle {
+			if jaName != "" && jaName != originalName && jaName != actualTitle {
 				searchCandidates = append(searchCandidates, jaName)
 			}
 		}
 	} else if lang == "ja" {
-		// 日文名：查日文维基拿日文简介 + 精确中文维基标题
 		zhTitleFromJa, _, jaBio := fetchWikiData(ctx, "ja", originalName, "zh", exec.WikiEmail)
-		if jaBio != "" {
+		if jaBio != "" && toString(result["Bio"]) == "" {
 			result["Bio"] = jaBio
 		}
-
-		// 用日文维基返回的精确中文标题查中文维基，拿中文简介（优先中文）
 		if zhTitleFromJa != "" {
-			helpers.AppLogger.Infof("[维基] 日文维基关联中文标题: %s → %s", originalName, zhTitleFromJa)
 			_, _, zhBio := fetchWikiData(ctx, "zh", zhTitleFromJa, "", exec.WikiEmail)
-			if zhBio != "" {
+			if zhBio != "" && toString(result["Bio"]) == "" {
 				result["Bio"] = zhBio
-				helpers.AppLogger.Infof("[维基-中文] %s 命中中文简介", zhTitleFromJa)
 			}
 			if zhTitleFromJa != originalName {
 				searchCandidates = append(searchCandidates, zhTitleFromJa)
@@ -842,13 +976,11 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 	}
 
 	if js != nil {
-		// 如果 JavStash 命中了，用 JavStash 的数据覆盖（JavStash 在日系这块比 TPDB 准）
-		// ★ 核心修复：如果输入的是纯中文名，保留原名；如果是 UUID 或日文，必须用 JavStash 返回的官方主名，绝不能用 UUID！
-		if lang == "zh" && !isUUID {
-			result["Name"] = originalName
-		} else {
+		// 只有 UUID 才允许 JavStash 改名，正常输入（中/日/英）一律保留原名。
+		if isUUID && toString(result["Name"]) == originalName {
 			result["Name"] = js.Name
 		}
+		
 		result["BirthDate"] = js.BirthDate
 		result["PlaceOfBirth"] = "日本"
 		result["ProductionLocations"] = []string{"日本"}
@@ -862,11 +994,14 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 			result["ProductionYear"] = js.CareerStart
 		}
 
-		mergedIds := extractProviderIds(js.Urls)
+		mergedIds := result["ProviderIds"].(map[string]any)
+		jsIds := extractProviderIds(js.Urls)
 		if js.ID != "" {
-			mergedIds["JavStash"] = js.ID
+			jsIds["JavStash"] = js.ID
 		}
-		result["ProviderIds"] = mergedIds
+		for k, v := range jsIds {
+			mergedIds[k] = v
+		}
 
 		jsImgs := []string{}
 		for _, img := range js.Images {
@@ -877,7 +1012,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		}
 		result["Images"] = jsImgs
 
-		if result["Bio"] == "" {
+		if toString(result["Bio"]) == "" {
 			var jaWikiTitle string
 			for _, u := range js.Urls {
 				if strings.Contains(u.URL, "ja.wikipedia.org/wiki/") {
@@ -885,9 +1020,8 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 				}
 			}
 			if jaWikiTitle != "" {
-				// 用日文维基标题查中文标题，再查中文简介
 				zhTitle, _, jaBio := fetchWikiData(ctx, "ja", jaWikiTitle, "zh", exec.WikiEmail)
-				if jaBio != "" && result["Bio"] == "" {
+				if jaBio != "" {
 					result["Bio"] = jaBio
 				}
 				if zhTitle != "" {
@@ -899,7 +1033,6 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 			}
 		}
 
-		// ★ 提取 JavStash 的英文别名去查 TPDB
 		tpdbSearchName = js.Name
 		for _, alias := range js.Aliases {
 			if detectLanguage(alias) == "en" {
@@ -909,7 +1042,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		}
 	}
 
-	// 3. ★ 核心逻辑：只要三围有任意一项缺失，就拿找到的英文名（或原名）去 TPDB 补充
+	// ===== 3. TPDB 补三围/体重 =====
 	needMeasurements := result["Height"] == 0 || result["Waist"] == 0 || result["Hip"] == 0 || result["CupSize"] == ""
 	if needMeasurements && tpdbSearchName != "" && exec.Tpdb != nil && exec.Tpdb.APIKey != "" {
 		if tp, err := exec.Tpdb.SearchTPDB(ctx, tpdbSearchName); err == nil {
@@ -929,7 +1062,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 				result["Hip"] = tp.Measurements.Hip
 			}
 
-			if result["Bio"] == "" {
+			if toString(result["Bio"]) == "" {
 				result["Bio"] = tp.Bio
 			}
 
@@ -956,6 +1089,11 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		}
 	}
 
+	// ===== 4. 体重最终兜底 =====
+	if result["Weight"] == 0 && ouxData != nil && ouxData.Weight > 0 {
+		result["Weight"] = ouxData.Weight
+	}
+
 	// 动态生成外部链接
 	var links []string
 	ids := result["ProviderIds"].(map[string]any)
@@ -967,6 +1105,9 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 	}
 	if val := ids["JavStash"]; val != nil && val != "" {
 		links = append(links, fmt.Sprintf("JavStash: https://javstash.org/performers/%s", val))
+	}
+	if val := ids["Ouxiang"]; val != nil && val != "" {
+		links = append(links, fmt.Sprintf("Ouxiang: %s", val))
 	}
 	if val := ids["Imdb"]; val != nil && val != "" {
 		links = append(links, fmt.Sprintf("IMDb: https://www.imdb.com/name/%s/", val))
@@ -983,7 +1124,6 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		externalLinks = "【外部链接】\n" + strings.Join(links, "\n")
 	}
 
-	// 强制裁掉原简介首尾的空白和换行符，保证中间绝对只空一行
 	bioText := strings.TrimSpace(toString(result["Bio"]))
 	if externalLinks != "" {
 		if bioText != "" {
@@ -995,7 +1135,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		result["Bio"] = bioText
 	}
 
-	// 动态生成标语。英文名没有别名，所以不会出现别名行
+	// 档案
 	var taglines []string
 	doc := fmt.Sprintf("【档案】身高 %dcm | 体重 %dkg | 三围 %d-%d | %s罩杯", result["Height"], result["Weight"], result["Waist"], result["Hip"], result["CupSize"])
 	taglines = append(taglines, doc)
