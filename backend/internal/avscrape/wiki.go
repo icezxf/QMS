@@ -56,6 +56,7 @@ func pickChineseFromActor(a Actor) string {
 	return ""
 }
 
+// GetChineseName 优先查本地 PG 字典，没命中再去查维基百科
 func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 	if inputName == "" {
 		return "", nil
@@ -67,7 +68,7 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 	if dictdb.DictDB != nil {
 		var mapping models.ActorMapping
 
-		// 转义 LIKE 通配符
+		// 转义 LIKE 通配符，防止演员名里含 % 或 _
 		escaped := strings.ReplaceAll(inputName, "%", "\\%")
 		escaped = strings.ReplaceAll(escaped, "_", "\\_")
 		kwPattern := fmt.Sprintf("%%,%s,%%", escaped)
@@ -126,6 +127,7 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 	return zhName, nil
 }
 
+// GetJapaneseName 反向查：中文名 -> 日文名
 func (w *WikiClient) GetJapaneseName(chineseName string) string {
 	if dictdb.DictDB != nil {
 		var mapping models.ActorMapping
@@ -137,7 +139,9 @@ func (w *WikiClient) GetJapaneseName(chineseName string) string {
 	return ""
 }
 
+// fetchZh 单次查询维基百科
 func (w *WikiClient) fetchZh(japaneseName string) (string, error) {
+	// 限速
 	w.mu.Lock()
 	elapsed := time.Since(w.lastReq)
 	if elapsed < wikiMinInterval {
@@ -237,6 +241,7 @@ func (w *WikiClient) requestOnce(endpoint, japaneseName string) (string, error) 
 	return zhName, nil
 }
 
+// stripDisambiguation 去掉维基消歧义后缀
 func stripDisambiguation(s string) string {
 	s = strings.TrimSpace(s)
 	if idx := strings.LastIndex(s, " ("); idx > 0 {
@@ -251,8 +256,15 @@ func stripDisambiguation(s string) string {
 	return strings.TrimSpace(s)
 }
 
-func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
+// TranslateActorNames 演员名翻译
+// 返回：
+//   actors   处理后的演员列表
+//   warnings 真正的警告（翻译失败、演员名未翻译）
+//   dictLogs 字典/别名命中记录（与 warnings 并列，写入 AVTask.DictLogs）
+func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string, []string) {
 	var warnings []string
+	var dictLogs []string
+
 	for i := range actors {
 		oldName := actors[i].Name
 		if oldName == "" {
@@ -272,6 +284,7 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 				actors[i].Aliases = append(actors[i].Aliases, oldName)
 			}
 			actors[i].Name = zh
+			dictLogs = append(dictLogs, fmt.Sprintf("演员: %s → %s", oldName, zh))
 			continue
 		}
 
@@ -290,7 +303,7 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 				actors[i].Aliases = append(actors[i].Aliases, oldName)
 			}
 			actors[i].Name = fallbackZh
-			helpers.AppLogger.Infof("[演员] %s → %s (JavStash 兜底)", oldName, fallbackZh)
+			dictLogs = append(dictLogs, fmt.Sprintf("演员(别名): %s → %s", oldName, fallbackZh))
 			continue
 		}
 
@@ -298,5 +311,16 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 			warnings = append(warnings, fmt.Sprintf("演员 %s 翻译失败(%v)", oldName, err))
 		}
 	}
-	return actors, warnings
+
+	// ★ 最终检查：还有哪些演员名不是中文
+	for _, a := range actors {
+		if a.Name == "" {
+			continue
+		}
+		if !isChineseName(a.Name) {
+			warnings = append(warnings, fmt.Sprintf("演员名未翻译: %s", a.Name))
+		}
+	}
+
+	return actors, warnings, dictLogs
 }
