@@ -73,7 +73,7 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 		var mapping models.ActorMapping
 
 		escaped := strings.ReplaceAll(inputName, "%", "\\%")
-		escaped = strings.ReplaceAll(escaped, "_", "\\_")
+		escaped := strings.ReplaceAll(escaped, "_", "\\_")
 		kwPattern := fmt.Sprintf("%%,%s,%%", escaped)
 
 		err := dictdb.DictDB.Where(
@@ -407,11 +407,14 @@ func normalizeStr(s string) string {
 
 // ============================================================
 // TranslateActorNames
+// 返回 (actors, warnings, dictLogs)
 // 顺序：字典/缓存/维基 → JavStash 别名（纯中文）→ ouxiang 最后兜底
 // ============================================================
 
-func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
+func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string, []string) {
 	var warnings []string
+	var dictLogs []string
+
 	for i := range actors {
 		oldName := actors[i].Name
 		if oldName == "" {
@@ -432,6 +435,7 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 				actors[i].Aliases = append(actors[i].Aliases, oldName)
 			}
 			actors[i].Name = zh
+			dictLogs = append(dictLogs, fmt.Sprintf("演员: %s → %s", oldName, zh))
 			continue
 		}
 
@@ -451,6 +455,7 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 				actors[i].Aliases = append(actors[i].Aliases, oldName)
 			}
 			actors[i].Name = fallbackZh
+			dictLogs = append(dictLogs, fmt.Sprintf("演员(别名): %s → %s", oldName, fallbackZh))
 			helpers.AppLogger.Infof("[演员] %s → %s (JavStash 别名兜底)", oldName, fallbackZh)
 
 			// 写缓存，避免下次重复走维基/ouxiang
@@ -475,6 +480,7 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 					actors[i].Aliases = append(actors[i].Aliases, oldName)
 				}
 				actors[i].Name = zh
+				warnings = append(warnings, fmt.Sprintf("ouxiang-演员: %s → %s", oldName, zh))
 				helpers.AppLogger.Infof("[ouxiang] %s → %s (日文名: %s)", oldName, zh, jpName)
 
 				// 写缓存，避免下次重复走维基/ouxiang
@@ -490,5 +496,16 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 			warnings = append(warnings, fmt.Sprintf("演员 %s 翻译失败(%v)", oldName, err))
 		}
 	}
-	return actors, warnings
+
+	// 最终检查：还有哪些演员名不是中文
+	for _, a := range actors {
+		if a.Name == "" {
+			continue
+		}
+		if !isChineseName(a.Name) {
+			warnings = append(warnings, fmt.Sprintf("演员名未翻译: %s", a.Name))
+		}
+	}
+
+	return actors, warnings, dictLogs
 }
