@@ -6,17 +6,23 @@
     </div>
 
     <el-table :data="list" border stripe v-loading="loading">
-      <!-- 展开行：移动端用于放置操作按钮和详情 -->
+      <!-- 展开行：移动端专属操作区 -->
       <el-table-column type="expand">
         <template #default="{ row }">
           <div class="expand-content">
-            <!-- 移动端专属操作区 -->
             <div v-if="isMobile" class="mobile-actions">
-              <el-button size="small" type="primary" @click="scan(row.id)">扫描</el-button>
+              <el-button 
+                size="small" 
+                type="primary" 
+                :loading="scanningIds.includes(row.id)" 
+                :disabled="scanningIds.includes(row.id)"
+                @click="scan(row.id)"
+              >
+                {{ scanningIds.includes(row.id) ? '扫描中' : '扫描' }}
+              </el-button>
               <el-button size="small" @click="openEdit(row)">编辑</el-button>
               <el-button size="small" type="danger" @click="del(row.id)">删除</el-button>
             </div>
-            <!-- 移动端隐藏的详细内容 -->
             <div v-if="isMobile" class="detail-block">
               <div><b>来源类型：</b>{{ sourceTypeText(row.source_type) }}</div>
               <div><b>目标路径：</b>{{ row.target_path || '—' }}</div>
@@ -28,14 +34,10 @@
         </template>
       </el-table-column>
 
-      <!-- 桌面端专属列 -->
       <el-table-column prop="id" label="ID" width="60" v-if="!isMobile" />
-      
-      <!-- 核心列保留 -->
       <el-table-column prop="name" label="名称" min-width="120" />
       <el-table-column prop="source_path" label="源路径" min-width="200" show-overflow-tooltip />
       
-      <!-- 移动端隐藏列 -->
       <el-table-column label="来源类型" width="100" v-if="!isMobile">
         <template #default="{ row }">{{ sourceTypeText(row.source_type) }}</template>
       </el-table-column>
@@ -46,8 +48,6 @@
       <el-table-column label="整理方式" width="100" v-if="!isMobile">
         <template #default="{ row }">{{ moveMethodText(row.move_method) }}</template>
       </el-table-column>
-      
-      <!-- 状态列：移动端保留 -->
       <el-table-column label="启用" width="80">
         <template #default="{ row }">
           <el-tag :type="row.enable ? 'success' : 'info'" size="small">{{ row.enable ? '启用' : '禁用' }}</el-tag>
@@ -60,10 +60,18 @@
         </template>
       </el-table-column>
 
-      <!-- 桌面端操作列：去掉 fixed -->
+      <!-- 桌面端操作列 -->
       <el-table-column label="操作" width="200" v-if="!isMobile">
         <template #default="{ row }">
-          <el-button size="small" type="primary" @click="scan(row.id)">扫描</el-button>
+          <el-button 
+            size="small" 
+            type="primary" 
+            :loading="scanningIds.includes(row.id)" 
+            :disabled="scanningIds.includes(row.id)"
+            @click="scan(row.id)"
+          >
+            {{ scanningIds.includes(row.id) ? '扫描中' : '扫描' }}
+          </el-button>
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
           <el-button size="small" type="danger" @click="del(row.id)">删除</el-button>
         </template>
@@ -202,9 +210,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import { useDeviceType } from '@/composables/useDeviceType'
 
 const { isMobile } = useDeviceType()
@@ -214,6 +222,8 @@ const loading = ref(false)
 const dialogVisible = ref(false)
 const editId = ref<number | null>(null)
 const accountList = ref<any[]>([])
+const scanningIds = ref<number[]>([])
+let globalTimer: any = null
 
 const DEFAULT_NAME_TEMPLATE = '{resolution}/{actors}/{code}'
 
@@ -230,7 +240,6 @@ const form = ref({
   is_vr: false,
 })
 
-// 目录选择器状态
 const pickerVisible = ref(false)
 const pickerTarget = ref<'source' | 'target'>('source')
 const pickerList = ref<any[]>([])
@@ -261,8 +270,68 @@ const loadAccounts = async () => {
   try {
     const res = await axios.get('/api/account/list')
     accountList.value = res.data.data || []
-  } catch {
-    // ignore
+  } catch {}
+}
+
+// ★ 轮询逻辑：30 秒查一次 last_scan_at 是否变化
+const startPolling = () => {
+  if (globalTimer) clearInterval(globalTimer)
+  
+  const timeSnapshots: Record<number, string> = {}
+  list.value.forEach((item: any) => {
+    timeSnapshots[item.id] = item.last_scan_at || ''
+  })
+
+  globalTimer = setInterval(async () => {
+    if (document.visibilityState === 'hidden') return // 后台不查
+    try {
+      const listRes = await axios.get('/api/avscrape/paths')
+      const newList = listRes.data.list || []
+      let stillScanning = false
+
+      for (const id of scanningIds.value) {
+        const currentItem = newList.find((item: any) => item.id === id)
+        if (!currentItem) continue
+
+        // 如果发现时间变了，说明扫完了
+        if (currentItem.last_scan_at !== timeSnapshots[id]) {
+          scanningIds.value = scanningIds.value.filter(v => v !== id)
+          const finishTime = new Date(currentItem.last_scan_at).toLocaleString('zh-CN', { hour12: false })
+          
+          ElNotification({
+            title: '扫描完成',
+            dangerouslyUseHTMLString: true,
+            message: `<div style="margin-top: 6px;"><span>目录【${currentItem.name}】扫描已完成。</span><br/><span style="color: #909399; font-size: 12px;">完成时间：${finishTime}</span></div>`,
+            type: 'success',
+            duration: 0,
+            position: 'bottom-right'
+          })
+        } else {
+          stillScanning = true
+        }
+      }
+
+      list.value = newList
+
+      if (!stillScanning && scanningIds.value.length === 0) {
+        clearInterval(globalTimer)
+        globalTimer = null
+      }
+    } catch {}
+  }, 30000)
+}
+
+const scan = async (id: number) => {
+  if (scanningIds.value.includes(id)) return
+  scanningIds.value.push(id)
+  if (!globalTimer) startPolling()
+  
+  try {
+    const res = await axios.post(`/api/avscrape/paths/${id}/scan`)
+    ElMessage.success(res.data.msg || '任务已加入后台队列')
+  } catch (e: any) {
+    scanningIds.value = scanningIds.value.filter(v => v !== id)
+    ElMessage.error(e.response?.data?.error || '添加任务失败')
   }
 }
 
@@ -332,21 +401,8 @@ const del = async (id: number) => {
     await axios.delete(`/api/avscrape/paths/${id}`)
     ElMessage.success('删除成功')
     await loadList()
-  } catch {
-    // cancelled
-  }
+  } catch {}
 }
-
-const scan = async (id: number) => {
-  try {
-    const res = await axios.post(`/api/avscrape/paths/${id}/scan`)
-    ElMessage.success(res.data.msg || '任务已加入队列')
-  } catch (e: any) {
-    ElMessage.error(e.response?.data?.error || '添加任务失败')
-  }
-}
-
-// ========== 目录选择器 ==========
 
 const openPicker = (target: 'source' | 'target') => {
   if (form.value.source_type !== 'local' && !form.value.account_id) {
@@ -401,9 +457,22 @@ const pickerGoRoot = () => {
   loadPickerList()
 }
 
-onMounted(() => {
-  loadList()
+onMounted(async () => {
+  await loadList()
   loadAccounts()
+  
+  // ★ 刷新重进恢复状态：查一下任务表有没有在跑
+  try {
+    const res = await axios.get('/api/avscrape/tasks', { params: { status: 'running', page_size: 1 } })
+    if (res.data.list && res.data.list.length > 0) {
+      scanningIds.value = list.value.map((item: any) => item.id)
+      startPolling()
+    }
+  } catch {}
+})
+
+onUnmounted(() => {
+  if (globalTimer) clearInterval(globalTimer)
 })
 </script>
 
@@ -443,76 +512,23 @@ onMounted(() => {
   color: #999;
   font-size: 12px;
 }
+.expand-content { padding: 12px; background: #fafafa; }
+.mobile-actions { display: flex; gap: 8px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed #dcdfe6; }
+.mobile-actions .el-button { flex: 1; margin-left: 0; }
+.detail-block { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #606266; }
 
-/* 移动端展开行样式 */
-.expand-content {
-  padding: 12px;
-  background: #fafafa;
-}
-.mobile-actions {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px dashed #dcdfe6;
-}
-.mobile-actions .el-button {
-  flex: 1;
-  margin-left: 0;
-}
-.detail-block {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
-  color: #606266;
-}
-
-/* ===== 移动端适配 ===== */
 @media (max-width: 768px) {
-  .av-paths {
-    padding: 12px;
-  }
-  .av-paths__header {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 10px;
-    margin-bottom: 12px;
-  }
-  .av-paths__header h2 {
-    font-size: 18px;
-    margin: 0;
-  }
-  
-  :deep(.el-table__header-wrapper),
-  :deep(.el-table__body-wrapper) {
-    font-size: 12px;
-  }
-  :deep(.el-table .cell) {
-    padding: 0 4px;
-  }
-  
-  .picker-path {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-    font-size: 12px;
-  }
-  .picker-path .el-button {
-    width: 100%;
-  }
-  .template-hint {
-    font-size: 11px;
-  }
+  .av-paths { padding: 12px; }
+  .av-paths__header { flex-direction: column; align-items: stretch; gap: 10px; margin-bottom: 12px; }
+  .av-paths__header h2 { font-size: 18px; margin: 0; }
+  :deep(.el-table__header-wrapper), :deep(.el-table__body-wrapper) { font-size: 12px; }
+  :deep(.el-table .cell) { padding: 0 4px; }
+  .picker-path { flex-direction: column; align-items: stretch; gap: 8px; font-size: 12px; }
+  .picker-path .el-button { width: 100%; }
+  .template-hint { font-size: 11px; }
 }
-
 @media (max-width: 480px) {
-  .av-paths {
-    padding: 8px;
-  }
-  :deep(.el-table__header-wrapper),
-  :deep(.el-table__body-wrapper) {
-    font-size: 11px;
-  }
+  .av-paths { padding: 8px; }
+  :deep(.el-table__header-wrapper), :deep(.el-table__body-wrapper) { font-size: 11px; }
 }
 </style>
