@@ -33,6 +33,16 @@
       <el-table-column type="expand">
         <template #default="{ row }">
           <div class="expand-content">
+            <!-- 字典转换记录 -->
+            <div v-if="parseDictLogs(row.dict_logs).length > 0" class="dict-block">
+              <div class="dict-title">📖 字典转换（{{ parseDictLogs(row.dict_logs).length }} 条）</div>
+              <ul class="dict-list">
+                <li v-for="(d, i) in parseDictLogs(row.dict_logs)" :key="i">{{ d }}</li>
+              </ul>
+            </div>
+            <div v-else class="no-dict">— 无字典转换记录</div>
+
+            <!-- 警告 -->
             <div v-if="parseWarnings(row.warnings).length > 0" class="warnings-block">
               <div class="warnings-title">⚠️ 警告（{{ parseWarnings(row.warnings).length }} 条）</div>
               <ul class="warnings-list">
@@ -40,6 +50,8 @@
               </ul>
             </div>
             <div v-else class="no-warnings">✓ 无警告</div>
+
+            <!-- 详情 -->
             <div class="detail-block">
               <div><b>消息：</b>{{ row.message || '—' }}</div>
               <div><b>文件路径：</b>{{ row.file_path || '—' }}</div>
@@ -63,6 +75,14 @@
           <el-tag :type="statusTag(row.status)" size="small">
             {{ statusText(row.status) }}
           </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="字典" width="80" class-name="hide-mobile">
+        <template #default="{ row }">
+          <el-tag v-if="parseDictLogs(row.dict_logs).length > 0" type="primary" size="small">
+            {{ parseDictLogs(row.dict_logs).length }}
+          </el-tag>
+          <span v-else>—</span>
         </template>
       </el-table-column>
       <el-table-column label="警告" width="90">
@@ -180,6 +200,16 @@ const parseWarnings = (json: string) => {
   }
 }
 
+const parseDictLogs = (json: string) => {
+  if (!json) return []
+  try {
+    const arr = JSON.parse(json)
+    return Array.isArray(arr) ? arr : []
+  } catch {
+    return []
+  }
+}
+
 const formatTime = (t: string) => {
   if (!t) return ''
   return new Date(t).toLocaleString('zh-CN')
@@ -196,7 +226,6 @@ const clearAll = async () => {
   }
 }
 
-// 新增：清空并重置 ID
 const clearAndResetId = async () => {
   try {
     await ElMessageBox.confirm(
@@ -271,6 +300,26 @@ onMounted(load)
   padding: 12px 20px;
   background: #fafafa;
 }
+.dict-block {
+  margin-bottom: 12px;
+}
+.dict-title {
+  font-weight: 600;
+  color: #409eff;
+  margin-bottom: 8px;
+}
+.dict-list {
+  margin: 0;
+  padding-left: 20px;
+  color: #606266;
+  font-size: 13px;
+  line-height: 1.8;
+}
+.no-dict {
+  color: #909399;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
 .warnings-block {
   margin-bottom: 12px;
 }
@@ -335,6 +384,7 @@ onMounted(load)
   .expand-content {
     padding: 10px;
   }
+  .dict-list,
   .warnings-list {
     font-size: 12px;
     padding-left: 16px;
@@ -352,7 +402,8 @@ onMounted(load)
   :deep(.el-table__body-wrapper) {
     font-size: 11px;
   }
-  .warnings-title {
+  .warnings-title,
+  .dict-title {
     font-size: 13px;
   }
 }
