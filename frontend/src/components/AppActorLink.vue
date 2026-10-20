@@ -214,6 +214,12 @@
         <el-form-item label="StashDB API Key"><el-input v-model="config.stashdb_api_key" placeholder="stashdb.org 获取" /></el-form-item>
         <el-form-item label="JavStash API Key"><el-input v-model="config.javstash_api_key" placeholder="javstash.org 获取" /></el-form-item>
         <el-form-item label="TPDB API Key"><el-input v-model="config.tpdb_api_key" placeholder="theporndb.net 获取" /></el-form-item>
+        
+        <!-- ★ 新增的 DeepL Key 输入框 -->
+        <el-form-item label="DeepL API Key">
+          <el-input v-model="config.deepl_api_key" placeholder="用于翻译英文演员简介，留空则不翻译" />
+        </el-form-item>
+
         <el-form-item label="维基百科联系邮箱"><el-input v-model="config.wiki_email" placeholder="icezxf555@gmail.com" /></el-form-item>
         <el-form-item>
           <el-button :loading="testing" @click="doTest" style="width: 100%; margin-bottom: 10px">测试 Emby 连接</el-button>
@@ -315,9 +321,17 @@ const previewAvatarUrl = computed(() => {
 
 const showConfig = ref(false)
 const testing = ref(false)
+// ★ 给 config 初始化加上 deepl_api_key 空值
 const config = ref<EmbyProxyConfig>({
-  emby_url: '', emby_api_key: '', stashdb_endpoint: '', stashdb_api_key: '', 
-  javstash_endpoint: '', javstash_api_key: '', tpdb_api_key: '', wiki_email: '',
+  emby_url: '', 
+  emby_api_key: '', 
+  stashdb_endpoint: '', 
+  stashdb_api_key: '', 
+  javstash_endpoint: '', 
+  javstash_api_key: '', 
+  tpdb_api_key: '', 
+  wiki_email: '',
+  deepl_api_key: '', 
 })
 
 const scrapeStatus = ref<Record<string, string>>({})
