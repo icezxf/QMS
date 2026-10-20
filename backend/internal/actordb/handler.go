@@ -23,7 +23,7 @@ func (h *Handler) RegisterRoutes(g *gin.RouterGroup) {
 	g.POST("/emby-proxy-config/script/test", h.testScript)
 
 	g.POST("/emby-proxy-scrape/person/:id", h.scrapePerson)
-	g.POST("/emby-proxy-scrape/preview", h.previewActor) // ★ 新增：预览抓取数据
+	g.POST("/emby-proxy-scrape/preview", h.previewActor)
 
 	g.Any("/emby-proxy/*path", h.proxy)
 }
@@ -43,8 +43,7 @@ func (h *Handler) getConfig(c *gin.Context) {
 	if len(masked.StashDBApiKey) > 8 { masked.StashDBApiKey = masked.StashDBApiKey[:4] + "****" }
 	if len(masked.JavStashApiKey) > 8 { masked.JavStashApiKey = masked.JavStashApiKey[:4] + "****" }
 	if len(masked.TpdbApiKey) > 8 { masked.TpdbApiKey = masked.TpdbApiKey[:4] + "****" }
-	// ★ 新增：DeepL 的脱敏
-	if len(masked.DeepLApiKey) > 8 { masked.DeepLApiKey = masked.DeepLApiKey[:4] + "****" }
+	if len(masked.DeepLApiKey) > 8 { masked.DeepLApiKey = masked.DeepLApiKey[:4] + "****" } // ★ DeepL 脱敏
 	
 	respondOK(c, masked)
 }
@@ -57,8 +56,7 @@ func (h *Handler) updateConfig(c *gin.Context) {
 	if req.StashDBApiKey == "" || strings.Contains(req.StashDBApiKey, "****") { req.StashDBApiKey = old.StashDBApiKey }
 	if req.JavStashApiKey == "" || strings.Contains(req.JavStashApiKey, "****") { req.JavStashApiKey = old.JavStashApiKey }
 	if req.TpdbApiKey == "" || strings.Contains(req.TpdbApiKey, "****") { req.TpdbApiKey = old.TpdbApiKey }
-	// ★ 新增：DeepL 的空值填充
-	if req.DeepLApiKey == "" || strings.Contains(req.DeepLApiKey, "****") { req.DeepLApiKey = old.DeepLApiKey }
+	if req.DeepLApiKey == "" || strings.Contains(req.DeepLApiKey, "****") { req.DeepLApiKey = old.DeepLApiKey } // ★ DeepL 防丢
 
 	if err := h.Repo.UpdateConfig(&req); err != nil { respondErr(c, err.Error()); return }
 	respondOK(c, gin.H{"ok": true})
@@ -130,7 +128,6 @@ func (h *Handler) scrapePerson(c *gin.Context) {
 	respondOK(c, gin.H{"ok": true, "message": "刮削成功", "results": results})
 }
 
-// ★ 预览抓取数据
 func (h *Handler) previewActor(c *gin.Context) {
 	var req struct{ Name string `json:"name"` }
 	if err := c.ShouldBindJSON(&req); err != nil { respondErr(c, err.Error()); return }
@@ -138,7 +135,6 @@ func (h *Handler) previewActor(c *gin.Context) {
 	exec, err := h.buildScriptExecutor()
 	if err != nil { respondErr(c, err.Error()); return }
 
-	// 直接调用 smartFetch 拿数据，不执行后面的写库
 	res, err := actionSmartFetch(c.Request.Context(), exec, map[string]any{"name": req.Name}, nil)
 	if err != nil { respondErr(c, err.Error()); return }
 
@@ -179,7 +175,7 @@ func (h *Handler) buildScriptExecutor() (*ScriptExecutor, error) {
 
 	tpdb := NewStashBoxClient(DefaultTPDBEndpoint, cfg.TpdbApiKey)
 
-	// ★ 修改这里：把 cfg 传给构造函数
+	// 传入 cfg
 	exec := NewScriptExecutor(cfg, emby, stash, javStash, tpdb)
 	exec.WikiEmail = cfg.WikiEmail
 	return exec, nil
