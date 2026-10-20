@@ -16,6 +16,10 @@ import (
 	"strings"
 	"time"
 
+ "qmediasync/internal/dictdb"
+	"qmediasync/internal/helpers"
+	"qmediasync/internal/models"
+
 	"gopkg.in/yaml.v3"
 )
 
