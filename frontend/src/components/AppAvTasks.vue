@@ -33,6 +33,13 @@
       <el-table-column type="expand">
         <template #default="{ row }">
           <div class="expand-content">
+            <!-- 移动端专属操作按钮 -->
+            <div v-if="isMobile && row.status === 'paused' && row.media_id" class="mobile-actions">
+              <el-button type="success" size="small" @click="release(row)">放行</el-button>
+              <el-button type="primary" size="small" @click="restart(row)">重启</el-button>
+              <el-button type="danger" size="small" @click="cancel(row)">取消</el-button>
+            </div>
+
             <!-- 字典转换记录 -->
             <div v-if="parseDictLogs(row.dict_logs).length > 0" class="dict-block">
               <div class="dict-title">📖 字典转换（{{ parseDictLogs(row.dict_logs).length }} 条）</div>
@@ -61,8 +68,10 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="id" label="ID" width="70" />
-      <el-table-column label="番号" width="140">
+      
+      <el-table-column prop="id" label="ID" width="60" />
+      
+      <el-table-column label="番号" min-width="110">
         <template #default="{ row }">
           <el-link v-if="row.media_id" type="primary" @click="goMedia(row.media_id)">
             {{ row.code }}
@@ -70,14 +79,17 @@
           <span v-else>{{ row.code || '—' }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      
+      <el-table-column label="状态" width="80">
         <template #default="{ row }">
           <el-tag :type="statusTag(row.status)" size="small">
             {{ statusText(row.status) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="字典" width="80" class-name="hide-mobile">
+      
+      <!-- 桌面端显示字典和警告条数 -->
+      <el-table-column v-if="!isMobile" label="字典" width="60" align="center">
         <template #default="{ row }">
           <el-tag v-if="parseDictLogs(row.dict_logs).length > 0" type="primary" size="small">
             {{ parseDictLogs(row.dict_logs).length }}
@@ -85,7 +97,8 @@
           <span v-else>—</span>
         </template>
       </el-table-column>
-      <el-table-column label="警告" width="90">
+      
+      <el-table-column v-if="!isMobile" label="警告" width="60" align="center">
         <template #default="{ row }">
           <el-tag v-if="parseWarnings(row.warnings).length > 0" type="warning" size="small">
             {{ parseWarnings(row.warnings).length }}
@@ -93,12 +106,16 @@
           <span v-else>—</span>
         </template>
       </el-table-column>
-      <el-table-column prop="provider" label="数据源" width="160" class-name="hide-mobile" show-overflow-tooltip />
-      <el-table-column prop="message" label="消息" class-name="hide-mobile" show-overflow-tooltip />
-      <el-table-column label="时间" width="170">
+
+      <el-table-column v-if="!isMobile" prop="provider" label="数据源" width="120" show-overflow-tooltip />
+      <el-table-column v-if="!isMobile" prop="message" label="消息" min-width="160" show-overflow-tooltip />
+      
+      <el-table-column label="时间" width="160" class-name="hide-mobile">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="240" fixed="right">
+
+      <!-- 桌面端保留操作列，去掉 fixed -->
+      <el-table-column v-if="!isMobile" label="操作" width="180" align="center">
         <template #default="{ row }">
           <template v-if="row.status === 'paused' && row.media_id">
             <el-button size="small" type="success" @click="release(row)">放行</el-button>
@@ -115,7 +132,7 @@
         v-model:current-page="page"
         :page-size="pageSize"
         :total="total"
-        layout="prev, pager, next, total"
+        layout="prev, pager, next"
         @current-change="load"
       />
     </div>
@@ -128,8 +145,11 @@ import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
+import { useDeviceType } from '@/composables/useDeviceType'
 
 const router = useRouter()
+const { isMobile } = useDeviceType()
+
 const list = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -212,7 +232,7 @@ const parseDictLogs = (json: string) => {
 
 const formatTime = (t: string) => {
   if (!t) return ''
-  return new Date(t).toLocaleString('zh-CN')
+  return new Date(t).toLocaleString('zh-CN', { hour12: false })
 }
 
 const clearAll = async () => {
@@ -297,8 +317,15 @@ onMounted(load)
   justify-content: center;
 }
 .expand-content {
-  padding: 12px 20px;
+  padding: 12px 16px;
   background: #fafafa;
+}
+.mobile-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed #dcdfe6;
 }
 .dict-block {
   margin-bottom: 12px;
@@ -347,6 +374,7 @@ onMounted(load)
   color: #606266;
   padding-top: 8px;
   border-top: 1px dashed #dcdfe6;
+  word-break: break-all;
 }
 
 @media (max-width: 768px) {
@@ -369,8 +397,14 @@ onMounted(load)
     margin-left: 0 !important;
   }
   .toolbar-right {
-    align-self: flex-end;
+    display: flex;
+    gap: 8px;
   }
+  .toolbar-right .el-button {
+    flex: 1;
+    margin-left: 0;
+  }
+  
   :deep(.el-table__header-wrapper),
   :deep(.el-table__body-wrapper) {
     font-size: 12px;
@@ -381,6 +415,7 @@ onMounted(load)
   :deep(.hide-mobile) {
     display: none !important;
   }
+  
   .expand-content {
     padding: 10px;
   }
@@ -392,19 +427,9 @@ onMounted(load)
   .detail-block {
     font-size: 12px;
   }
-}
-
-@media (max-width: 480px) {
-  .av-tasks {
-    padding: 8px;
-  }
-  :deep(.el-table__header-wrapper),
-  :deep(.el-table__body-wrapper) {
-    font-size: 11px;
-  }
-  .warnings-title,
-  .dict-title {
-    font-size: 13px;
+  .mobile-actions .el-button {
+    flex: 1;
+    margin-left: 0;
   }
 }
 </style>
