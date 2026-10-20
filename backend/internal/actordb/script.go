@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
- "qmediasync/internal/dictdb"
+	"qmediasync/internal/dictdb"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 
@@ -491,10 +491,11 @@ type OuxiangData struct {
 var ouxiangHTTP = &http.Client{Timeout: 15 * time.Second}
 
 var (
-	ouxiangIdolRe  = regexp.MustCompile(`href="(/idol/[^"]+)"`)
-	ouxiangH1Re    = regexp.MustCompile(`<h1>([^<]+)</h1>`)
-	ouxiangIntroRe = regexp.MustCompile(`(?s)<section id="intro"><p>(.*?)</p>`)
-	htmlTagRe      = regexp.MustCompile(`<[^>]+>`)
+	ouxiangIdolRe   = regexp.MustCompile(`href="(/idol/[^"]+)"`)
+	ouxiangH1Re     = regexp.MustCompile(`<h1>([^<]+)</h1>`)
+	ouxiangIntroRe  = regexp.MustCompile(`(?s)<section id="intro"><p>(.*?)</p>`)
+	ouxiangCnNameRe = regexp.MustCompile(`(?s)<tr[^>]*>\s*<td[^>]*>\s*中文名\s*</td>\s*<td[^>]*>\s*([^<]+?)\s*</td>`)
+	htmlTagRe       = regexp.MustCompile(`<[^>]+>`)
 )
 
 func fetchOuxiangData(ctx context.Context, keyword string) (*OuxiangData, error) {
@@ -514,7 +515,7 @@ func fetchOuxiangData(ctx context.Context, keyword string) (*OuxiangData, error)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	
+
 	matches := ouxiangIdolRe.FindAllStringSubmatch(string(body), 5)
 	if len(matches) == 0 {
 		return nil, fmt.Errorf("未搜到结果")
@@ -555,9 +556,9 @@ func fetchOuxiangData(ctx context.Context, keyword string) (*OuxiangData, error)
 		parts := regexp.MustCompile(`[，,\n\r]`).Split(cleanHtml, -1)
 		for _, p := range parts {
 			p = strings.TrimSpace(p)
-			if len(p) >= 2 && len(p) <= 20 && 
-			   !strings.ContainsAny(p, "0123456789年月日") && 
-			   !strings.Contains(p, "：") && !strings.Contains(p, ":") {
+			if len(p) >= 2 && len(p) <= 20 &&
+				!strings.ContainsAny(p, "0123456789年月日") &&
+				!strings.Contains(p, "：") && !strings.Contains(p, ":") {
 				candidates = append(candidates, p)
 			}
 		}
@@ -570,7 +571,7 @@ func fetchOuxiangData(ctx context.Context, keyword string) (*OuxiangData, error)
 				break
 			}
 		}
-		
+
 		if !matched {
 			continue
 		}
@@ -585,27 +586,32 @@ func fetchOuxiangData(ctx context.Context, keyword string) (*OuxiangData, error)
 			data.Bio = strings.TrimSpace(intro)
 		}
 
-				// === 提取中文名 ===
-		for _, c := range candidates {
-			if isChineseName(c) && !strings.ContainsAny(c, "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ") {
-				data.ZhName = c
-				break
+		// === 优先抓页面「中文名」字段：<tr><td>中文名</td><td>小凑四叶</td> ===
+		if m := ouxiangCnNameRe.FindStringSubmatch(htmlStr); len(m) >= 2 {
+			candidate := strings.TrimSpace(m[1])
+			candidate = htmlTagRe.ReplaceAllString(candidate, "")
+			candidate = strings.TrimSpace(candidate)
+			if isChineseName(candidate) {
+				data.ZhName = candidate
 			}
 		}
 
-		// ★ 核心修复：如果候选里没找到，或者找到的还是日文名，去简介开头抓中文名
-		if data.ZhName == "" || data.ZhName == h1 {
-			// 匹配开头连续的汉字，直到遇到括号（中英文括号都行）
-			nameRe := regexp.MustCompile(`^([\p{Han}]{2,10})[（(]`)
-			if m := nameRe.FindStringSubmatch(data.Bio); len(m) >= 2 {
-				data.ZhName = m[1]
+		// === 中文名字段没取到，回退候选池找纯中文 ===
+		if data.ZhName == "" {
+			for _, c := range candidates {
+				if isChineseName(c) &&
+					!strings.ContainsAny(c, "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ") {
+					data.ZhName = c
+					break
+				}
 			}
 		}
 
+		// === 最终兜底 ===
 		if data.ZhName == "" {
 			data.ZhName = h1
 		}
-		
+
 		cleanHtmlForWeight := htmlTagRe.ReplaceAllString(htmlStr, " ")
 		weightRe := regexp.MustCompile(`体重[^\d]*(\d+)`)
 		if wm := weightRe.FindStringSubmatch(cleanHtmlForWeight); len(wm) >= 2 {
@@ -913,6 +919,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 
 	var tpdbSearchName string
 	var js *StashBoxPerformer
+	var tpName string // ★ 保存 TPDB 第一次查到的名字，用于 UUID 场景兜底
 
 	// ===== 0. Ouxiang 预查 =====
 	var ouxData *OuxiangData
@@ -920,14 +927,14 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		if data, err := fetchOuxiangData(ctx, originalName); err == nil {
 			ouxData = data
 			helpers.AppLogger.Infof("[Ouxiang] %s 命中: 中文名=%s, 日文名=%s", originalName, data.ZhName, data.JpName)
-			
+
 			if data.Bio != "" {
 				result["Bio"] = data.Bio
 			}
 			if data.Weight > 0 {
 				result["Weight"] = data.Weight
 			}
-			
+
 			ids := result["ProviderIds"].(map[string]any)
 			ids["Ouxiang"] = data.Url
 		}
@@ -937,10 +944,9 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 	if exec.Tpdb != nil && exec.Tpdb.APIKey != "" {
 		tp, err := exec.Tpdb.SearchTPDB(ctx, originalName)
 		if err == nil {
-			// 只有当输入是 UUID 的时候，才允许 TPDB 的名字作为回退。正常名字绝不覆盖。
-			if isUUID && toString(result["Name"]) == originalName {
-				result["Name"] = tp.Name
-			}
+			tpName = tp.Name // ★ 保存，用于 UUID 场景
+
+			// ★ 不再修改 result["Name"]
 			result["BirthDate"] = tp.BirthDate
 			result["Height"] = tp.Height
 			if tp.Weight > 0 {
@@ -949,7 +955,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 			result["CupSize"] = tp.Measurements.CupSize
 			result["Waist"] = tp.Measurements.Waist
 			result["Hip"] = tp.Measurements.Hip
-			
+
 			if toString(result["Bio"]) == "" {
 				result["Bio"] = tp.Bio
 			}
@@ -986,7 +992,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 
 	// ===== 2. 核心：查维基 + JavStash =====
 	searchCandidates := []string{originalName}
-	
+
 	// 把 ouxiang 查到的日文名加入搜索候选（尽量拿日文名去搜）
 	if ouxData != nil && ouxData.JpName != "" {
 		searchCandidates = append([]string{ouxData.JpName}, searchCandidates...)
@@ -1052,11 +1058,8 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 	}
 
 	if js != nil {
-		// 只有 UUID 才允许 JavStash 改名，正常输入（中/日/英）一律保留原名。
-		if isUUID && toString(result["Name"]) == originalName {
-			result["Name"] = js.Name
-		}
-		
+		// ★ 不再修改 result["Name"]
+
 		result["BirthDate"] = js.BirthDate
 		result["PlaceOfBirth"] = "日本"
 		result["ProductionLocations"] = []string{"日本"}
@@ -1122,6 +1125,9 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 	needMeasurements := result["Height"] == 0 || result["Waist"] == 0 || result["Hip"] == 0 || result["CupSize"] == ""
 	if needMeasurements && tpdbSearchName != "" && exec.Tpdb != nil && exec.Tpdb.APIKey != "" {
 		if tp, err := exec.Tpdb.SearchTPDB(ctx, tpdbSearchName); err == nil {
+			if tpName == "" {
+				tpName = tp.Name // ★ 第二次查询也保存名字，用于 UUID 场景兜底
+			}
 			if tp.Height > 0 {
 				result["Height"] = tp.Height
 			}
@@ -1252,6 +1258,20 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		taglines = append(taglines, "【别名】："+aliases)
 	}
 	result["Taglines"] = taglines
+
+	// ===== ★ 名字最终处理 =====
+	// 正常名字场景：result["Name"] 自始至终就是 originalName，此处不做任何修改
+	// UUID 场景：UUID 只是查元数据的钥匙，不能写进 Emby 名字里，用查到的真实主名替代
+	if isUUID && toString(result["Name"]) == originalName {
+		if js != nil && js.Name != "" {
+			result["Name"] = js.Name
+		} else if tpName != "" {
+			result["Name"] = tpName
+		} else if ouxData != nil && ouxData.JpName != "" {
+			result["Name"] = ouxData.JpName
+		}
+		// 都查不到时保留 originalName（UUID）兜底，因为 Emby 里原本存的就是它
+	}
 
 	return result, nil
 }
