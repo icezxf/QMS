@@ -61,6 +61,10 @@ type ScrapeResult struct {
 	// ===== 新增：刮削过程中的警告 =====
 	Warnings []string `json:"-"`
 	// ===================================
+
+	// ===== 新增：字典转换记录（与 Warnings 并列，写入 AVTask.DictLogs）=====
+	DictLogs []string `json:"dict_logs,omitempty"`
+	// =====================================================================
 }
 
 type Provider interface {
