@@ -283,7 +283,7 @@ const startPolling = () => {
   })
 
   globalTimer = setInterval(async () => {
-    if (document.visibilityState === 'hidden') return // 后台不查
+    if (document.visibilityState === 'hidden') return
     try {
       const listRes = await axios.get('/api/avscrape/paths')
       const newList = listRes.data.list || []
@@ -293,7 +293,6 @@ const startPolling = () => {
         const currentItem = newList.find((item: any) => item.id === id)
         if (!currentItem) continue
 
-        // 如果发现时间变了，说明扫完了
         if (currentItem.last_scan_at !== timeSnapshots[id]) {
           scanningIds.value = scanningIds.value.filter(v => v !== id)
           const finishTime = new Date(currentItem.last_scan_at).toLocaleString('zh-CN', { hour12: false })
