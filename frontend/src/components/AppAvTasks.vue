@@ -2,7 +2,7 @@
   <div class="av-tasks">
     <div class="toolbar">
       <div class="toolbar-left">
-        <el-select v-model="statusFilter" placeholder="全部状态" style="width: 140px" @change="reload">
+        <el-select v-model="statusFilter" placeholder="全部状态" @change="reload">
           <el-option label="全部" value="" />
           <el-option label="完成" value="done" />
           <el-option label="失败" value="failed" />
@@ -14,7 +14,6 @@
         <el-input
           v-model="keyword"
           placeholder="搜索番号"
-          style="width: 240px; margin-left: 12px"
           clearable
           @keyup.enter="reload"
         >
@@ -24,8 +23,8 @@
         </el-input>
       </div>
       <div class="toolbar-right">
-        <el-button type="warning" size="small" @click="clearAndResetId">清空并重置 ID</el-button>
-        <el-button type="danger" size="small" @click="clearAll">清空记录</el-button>
+        <el-button type="warning" @click="clearAndResetId">清空并重置 ID</el-button>
+        <el-button type="danger" @click="clearAll">清空记录</el-button>
       </div>
     </div>
 
@@ -69,7 +68,7 @@
         </template>
       </el-table-column>
       
-      <el-table-column prop="id" label="ID" width="60" />
+      <el-table-column prop="id" label="ID" width="60" v-if="!isMobile" />
       
       <el-table-column label="番号" min-width="110">
         <template #default="{ row }">
@@ -110,7 +109,7 @@
       <el-table-column v-if="!isMobile" prop="provider" label="数据源" width="120" show-overflow-tooltip />
       <el-table-column v-if="!isMobile" prop="message" label="消息" min-width="160" show-overflow-tooltip />
       
-      <el-table-column label="时间" width="160" class-name="hide-mobile">
+      <el-table-column label="时间" width="160" v-if="!isMobile">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
 
@@ -300,6 +299,7 @@ onMounted(load)
 <style scoped>
 .av-tasks {
   padding: 20px;
+  overflow-x: hidden; /* ★ 防止横向滚动 */
 }
 .toolbar {
   display: flex;
@@ -411,9 +411,6 @@ onMounted(load)
   }
   :deep(.el-table .cell) {
     padding: 0 4px;
-  }
-  :deep(.hide-mobile) {
-    display: none !important;
   }
   
   .expand-content {
