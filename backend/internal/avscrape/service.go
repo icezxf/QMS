@@ -348,6 +348,27 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		}
 	}
 
+	// ===== 3.5 jav8 兜底（字典之后、AI 翻译之前） =====
+	// 只取中文标题和中文剧情，仅当对应字段仍是日文时才请求
+	needTitle := best.Title != "" && isJapanese(best.Title)
+	needPlot := best.Plot != "" && isJapanese(best.Plot)
+
+	if needTitle || needPlot {
+		jav8Title, jav8Plot := FetchJav8(best.Code)
+
+		if needTitle && jav8Title != "" {
+			best.Title = toSimplified(jav8Title)
+			warnings = append(warnings, fmt.Sprintf("jav8-标题: %s => %s", best.Code, best.Title))
+			helpers.AppLogger.Infof("[jav8] %s 标题兜底: %s", best.Code, best.Title)
+		}
+
+		if needPlot && jav8Plot != "" {
+			best.Plot = toSimplified(jav8Plot)
+			warnings = append(warnings, fmt.Sprintf("jav8-剧情: %s 命中中文简介（%d 字）", best.Code, len(jav8Plot)))
+			helpers.AppLogger.Infof("[jav8] %s 剧情兜底: %d 字", best.Code, len(jav8Plot))
+		}
+	}
+
 	// ===== JavDB 评分 =====
 	if cfg.EnableJavDBRating {
 		client := NewJavDBClient(cfg.JavDBCookie)
@@ -391,7 +412,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	}
 
 	best.Warnings = warnings
-	best.DictLogs = dictLogs // ★ 字典转换记录，与 Warnings 并列
+	best.DictLogs = dictLogs
 	best.Oshash = oshash
 
 	media := MediaFromResult(best)
