@@ -43,6 +43,9 @@ func (h *Handler) getConfig(c *gin.Context) {
 	if len(masked.StashDBApiKey) > 8 { masked.StashDBApiKey = masked.StashDBApiKey[:4] + "****" }
 	if len(masked.JavStashApiKey) > 8 { masked.JavStashApiKey = masked.JavStashApiKey[:4] + "****" }
 	if len(masked.TpdbApiKey) > 8 { masked.TpdbApiKey = masked.TpdbApiKey[:4] + "****" }
+	// ★ 新增：DeepL 的脱敏
+	if len(masked.DeepLApiKey) > 8 { masked.DeepLApiKey = masked.DeepLApiKey[:4] + "****" }
+	
 	respondOK(c, masked)
 }
 
@@ -54,6 +57,8 @@ func (h *Handler) updateConfig(c *gin.Context) {
 	if req.StashDBApiKey == "" || strings.Contains(req.StashDBApiKey, "****") { req.StashDBApiKey = old.StashDBApiKey }
 	if req.JavStashApiKey == "" || strings.Contains(req.JavStashApiKey, "****") { req.JavStashApiKey = old.JavStashApiKey }
 	if req.TpdbApiKey == "" || strings.Contains(req.TpdbApiKey, "****") { req.TpdbApiKey = old.TpdbApiKey }
+	// ★ 新增：DeepL 的空值填充
+	if req.DeepLApiKey == "" || strings.Contains(req.DeepLApiKey, "****") { req.DeepLApiKey = old.DeepLApiKey }
 
 	if err := h.Repo.UpdateConfig(&req); err != nil { respondErr(c, err.Error()); return }
 	respondOK(c, gin.H{"ok": true})
@@ -129,14 +134,14 @@ func (h *Handler) scrapePerson(c *gin.Context) {
 func (h *Handler) previewActor(c *gin.Context) {
 	var req struct{ Name string `json:"name"` }
 	if err := c.ShouldBindJSON(&req); err != nil { respondErr(c, err.Error()); return }
-	
+
 	exec, err := h.buildScriptExecutor()
 	if err != nil { respondErr(c, err.Error()); return }
-	
+
 	// 直接调用 smartFetch 拿数据，不执行后面的写库
 	res, err := actionSmartFetch(c.Request.Context(), exec, map[string]any{"name": req.Name}, nil)
 	if err != nil { respondErr(c, err.Error()); return }
-	
+
 	respondOK(c, res)
 }
 
@@ -165,16 +170,17 @@ func (h *Handler) buildScriptExecutor() (*ScriptExecutor, error) {
 	if err != nil { return nil, err }
 	if cfg.EmbyURL == "" || cfg.EmbyAPIKey == "" { return nil, errConfigMissing }
 	emby := NewEmbyClient(cfg.EmbyURL, cfg.EmbyAPIKey, "")
-	
+
 	stashEndpoint := cfg.StashDBEndpoint; if stashEndpoint == "" { stashEndpoint = DefaultStashDBEndpoint }
 	stash := NewStashBoxClient(stashEndpoint, cfg.StashDBApiKey)
-	
+
 	jsEndpoint := cfg.JavStashEndpoint; if jsEndpoint == "" { jsEndpoint = DefaultJavStashEndpoint }
 	javStash := NewStashBoxClient(jsEndpoint, cfg.JavStashApiKey)
-	
+
 	tpdb := NewStashBoxClient(DefaultTPDBEndpoint, cfg.TpdbApiKey)
 
-	exec := NewScriptExecutor(emby, stash, javStash, tpdb)
+	// ★ 修改这里：把 cfg 传给构造函数
+	exec := NewScriptExecutor(cfg, emby, stash, javStash, tpdb)
 	exec.WikiEmail = cfg.WikiEmail
 	return exec, nil
 }
