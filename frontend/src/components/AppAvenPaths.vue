@@ -6,7 +6,6 @@
     </div>
 
     <el-table :data="list" border stripe v-loading="loading">
-      <!-- 展开行：移动端专属操作区 -->
       <el-table-column type="expand">
         <template #default="{ row }">
           <div class="expand-content">
@@ -54,7 +53,6 @@
         </template>
       </el-table-column>
 
-      <!-- 桌面端操作列 -->
       <el-table-column label="操作" width="200" v-if="!isMobile">
         <template #default="{ row }">
           <el-button 
@@ -442,7 +440,6 @@ onMounted(async () => {
   await loadList()
   loadAccounts()
   
-  // ★ 页面重进恢复状态
   try {
     const res = await axios.get('/api/aven/tasks', { params: { status: 'running', page_size: 1 } })
     if (res.data.list && res.data.list.length > 0) {
