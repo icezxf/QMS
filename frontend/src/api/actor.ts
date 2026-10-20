@@ -14,6 +14,7 @@ export interface EmbyProxyConfig {
   javstash_api_key: string
   tpdb_api_key: string
   wiki_email: string
+  deepl_api_key: string
 }
 
 export async function fetchEmbyProxyConfig(
