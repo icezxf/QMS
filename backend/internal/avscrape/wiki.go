@@ -81,10 +81,15 @@ func (w *WikiClient) GetChineseName(inputName string) (string, string, error) {
 			"jp_name = ? OR zh_name = ? OR jp_name = ? OR keyword LIKE ? ESCAPE '\\'",
 			searchName, searchName, inputName, kwPattern,
 		).First(&mapping).Error
+				// ★ 核心修复：检查查出来的中文是不是纯正的中文，防止半中半日（如 梦実かなえ）拦截 ouxiang 兜底
 		if err == nil && mapping.ZhName != "" {
 			zh := toSimplified(mapping.ZhName)
-			helpers.AppLogger.Infof("[字典] %s → %s", inputName, zh)
-			return zh, "dict", nil
+			if isChineseName(zh) {
+				helpers.AppLogger.Infof("[字典] %s → %s", inputName, zh)
+				return zh, "dict", nil
+			} else {
+				helpers.AppLogger.Warnf("[字典] %s 命中了异常数据 (%s)，尝试通过其他源查找", inputName, zh)
+			}
 		}
 	}
 
