@@ -2,35 +2,66 @@
   <div class="av-paths">
     <div class="av-paths__header">
       <h2>AV 刮削目录</h2>
-      <el-button type="primary" @click="openAdd">添加目录</el-button>
+      <el-button type="primary" @click="openAdd" :style="isMobile ? 'width: 100%' : ''">添加目录</el-button>
     </div>
 
     <el-table :data="list" border stripe v-loading="loading">
-      <el-table-column prop="id" label="ID" width="60" class-name="hide-mobile" />
-      <el-table-column prop="name" label="名称" min-width="120" />
-      <el-table-column label="来源类型" width="100" class-name="hide-mobile">
-        <template #default="{ row }">{{ sourceTypeText(row.source_type) }}</template>
-      </el-table-column>
-      <el-table-column prop="source_path" label="源路径" min-width="200" show-overflow-tooltip />
-      <el-table-column prop="target_path" label="目标路径" min-width="200" show-overflow-tooltip class-name="hide-mobile" />
-      <el-table-column label="操作方式" width="130" class-name="hide-mobile">
-        <template #default="{ row }">{{ modeText(row.mode) }}</template>
-      </el-table-column>
-      <el-table-column label="整理方式" width="100" class-name="hide-mobile">
-        <template #default="{ row }">{{ moveMethodText(row.move_method) }}</template>
-      </el-table-column>
-      <el-table-column label="启用" width="80" class-name="hide-mobile">
+      <!-- 展开行：移动端用于放置操作按钮和详情 -->
+      <el-table-column type="expand">
         <template #default="{ row }">
-          <el-tag :type="row.enable ? 'success' : 'info'">{{ row.enable ? '启用' : '禁用' }}</el-tag>
+          <div class="expand-content">
+            <!-- 移动端专属操作区 -->
+            <div v-if="isMobile" class="mobile-actions">
+              <el-button size="small" type="primary" @click="scan(row.id)">扫描</el-button>
+              <el-button size="small" @click="openEdit(row)">编辑</el-button>
+              <el-button size="small" type="danger" @click="del(row.id)">删除</el-button>
+            </div>
+            <!-- 移动端隐藏的详细内容 -->
+            <div v-if="isMobile" class="detail-block">
+              <div><b>来源类型：</b>{{ sourceTypeText(row.source_type) }}</div>
+              <div><b>目标路径：</b>{{ row.target_path || '—' }}</div>
+              <div><b>操作方式：</b>{{ modeText(row.mode) }}</div>
+              <div><b>整理方式：</b>{{ moveMethodText(row.move_method) }}</div>
+              <div><b>命名模板：</b>{{ row.name_template || DEFAULT_NAME_TEMPLATE }}</div>
+            </div>
+          </div>
         </template>
       </el-table-column>
-      <el-table-column label="VR" width="70" class-name="hide-mobile">
+
+      <!-- 桌面端专属列 -->
+      <el-table-column prop="id" label="ID" width="60" v-if="!isMobile" />
+      
+      <!-- 核心列保留 -->
+      <el-table-column prop="name" label="名称" min-width="120" />
+      <el-table-column prop="source_path" label="源路径" min-width="200" show-overflow-tooltip />
+      
+      <!-- 移动端隐藏列 -->
+      <el-table-column label="来源类型" width="100" v-if="!isMobile">
+        <template #default="{ row }">{{ sourceTypeText(row.source_type) }}</template>
+      </el-table-column>
+      <el-table-column prop="target_path" label="目标路径" min-width="200" show-overflow-tooltip v-if="!isMobile" />
+      <el-table-column label="操作方式" width="130" v-if="!isMobile">
+        <template #default="{ row }">{{ modeText(row.mode) }}</template>
+      </el-table-column>
+      <el-table-column label="整理方式" width="100" v-if="!isMobile">
+        <template #default="{ row }">{{ moveMethodText(row.move_method) }}</template>
+      </el-table-column>
+      
+      <!-- 状态列：移动端保留 -->
+      <el-table-column label="启用" width="80">
         <template #default="{ row }">
-          <el-tag v-if="row.is_vr" type="warning">VR</el-tag>
+          <el-tag :type="row.enable ? 'success' : 'info'" size="small">{{ row.enable ? '启用' : '禁用' }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="VR" width="70">
+        <template #default="{ row }">
+          <el-tag v-if="row.is_vr" type="warning" size="small">VR</el-tag>
           <span v-else style="color: #ccc;">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="240" fixed="right">
+
+      <!-- 桌面端操作列：去掉 fixed -->
+      <el-table-column label="操作" width="200" v-if="!isMobile">
         <template #default="{ row }">
           <el-button size="small" type="primary" @click="scan(row.id)">扫描</el-button>
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
@@ -43,10 +74,14 @@
     <el-dialog
       v-model="dialogVisible"
       :title="editId ? '编辑 AV 刮削目录' : '添加 AV 刮削目录'"
-      width="700px"
-      class="av-dialog-responsive"
+      :width="isMobile ? '100%' : '700px'"
+      :fullscreen="isMobile"
     >
-      <el-form :model="form" label-width="120px">
+      <el-form 
+        :model="form" 
+        :label-position="isMobile ? 'top' : 'right'" 
+        :label-width="isMobile ? 'auto' : '120px'"
+      >
         <el-form-item label="名称">
           <el-input v-model="form.name" placeholder="给这个刮削目录起个名字" />
         </el-form-item>
@@ -114,9 +149,9 @@
 
         <el-form-item label="VR 专用目录">
           <el-switch v-model="form.is_vr" />
-          <span class="vr-hint">
+          <div class="vr-hint">
             VR 目录使用 JavStash + DMM 高清封面，跳过 MetaTube
-          </span>
+          </div>
         </el-form-item>
 
         <el-form-item label="启用">
@@ -125,8 +160,8 @@
       </el-form>
 
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="save">保存</el-button>
+        <el-button @click="dialogVisible = false" :style="isMobile ? 'width: 100%; margin-bottom: 10px; margin-left: 0;' : ''">取消</el-button>
+        <el-button type="primary" @click="save" :style="isMobile ? 'width: 100%; margin-left: 0;' : ''">保存</el-button>
       </template>
     </el-dialog>
 
@@ -134,8 +169,8 @@
     <el-dialog
       v-model="pickerVisible"
       title="选择目录"
-      width="600px"
-      class="av-dialog-responsive"
+      :width="isMobile ? '100%' : '600px'"
+      :fullscreen="isMobile"
     >
       <div class="picker-path">
         <span>当前路径：{{ pickerParentPath || '根目录' }}</span>
@@ -144,23 +179,23 @@
       <el-table
         :data="pickerList"
         border
-        height="350"
+        :height="isMobile ? '60vh' : '350px'"
         v-loading="pickerLoading"
         @row-click="pickerEnter"
         style="cursor: pointer"
       >
-        <el-table-column label="名称" min-width="200">
+        <el-table-column label="名称" min-width="150">
           <template #default="{ row }">📁 {{ row.name }}</template>
         </el-table-column>
-        <el-table-column label="路径" min-width="200" show-overflow-tooltip class-name="hide-mobile" />
-        <el-table-column label="选择" width="100">
+        <el-table-column label="路径" min-width="150" show-overflow-tooltip v-if="!isMobile" />
+        <el-table-column label="选择" width="100" align="center">
           <template #default="{ row }">
             <el-button size="small" type="primary" @click.stop="pickerConfirm(row)">选此目录</el-button>
           </template>
         </el-table-column>
       </el-table>
       <template #footer>
-        <el-button @click="pickerVisible = false">取消</el-button>
+        <el-button @click="pickerVisible = false" :style="isMobile ? 'width: 100%; margin-left: 0;' : ''">取消</el-button>
       </template>
     </el-dialog>
   </div>
@@ -170,6 +205,9 @@
 import { ref, onMounted } from 'vue'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useDeviceType } from '@/composables/useDeviceType'
+
+const { isMobile } = useDeviceType()
 
 const list = ref<any[]>([])
 const loading = ref(false)
@@ -372,6 +410,7 @@ onMounted(() => {
 <style scoped>
 .av-paths {
   padding: 20px;
+  overflow-x: hidden; /* ★ 彻底防止页面横向滚动 */
 }
 .av-paths__header {
   display: flex;
@@ -400,9 +439,33 @@ onMounted(() => {
   color: #e6a23c;
 }
 .vr-hint {
-  margin-left: 8px;
+  margin-top: 4px;
   color: #999;
   font-size: 12px;
+}
+
+/* 移动端展开行样式 */
+.expand-content {
+  padding: 12px;
+  background: #fafafa;
+}
+.mobile-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed #dcdfe6;
+}
+.mobile-actions .el-button {
+  flex: 1;
+  margin-left: 0;
+}
+.detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #606266;
 }
 
 /* ===== 移动端适配 ===== */
@@ -420,9 +483,7 @@ onMounted(() => {
     font-size: 18px;
     margin: 0;
   }
-  :deep(.hide-mobile) {
-    display: none !important;
-  }
+  
   :deep(.el-table__header-wrapper),
   :deep(.el-table__body-wrapper) {
     font-size: 12px;
@@ -430,6 +491,7 @@ onMounted(() => {
   :deep(.el-table .cell) {
     padding: 0 4px;
   }
+  
   .picker-path {
     flex-direction: column;
     align-items: stretch;
@@ -451,73 +513,6 @@ onMounted(() => {
   :deep(.el-table__header-wrapper),
   :deep(.el-table__body-wrapper) {
     font-size: 11px;
-  }
-}
-</style>
-
-<!-- 非 scoped：作用于 teleport 到 body 的 dialog -->
-<style>
-@media (max-width: 768px) {
-  .av-dialog-responsive {
-    width: 95% !important;
-    max-width: 95vw !important;
-    margin: 5vh auto !important;
-  }
-  .av-dialog-responsive .el-dialog__header {
-    padding: 16px 16px 8px;
-  }
-  .av-dialog-responsive .el-dialog__body {
-    padding: 12px 16px;
-  }
-  .av-dialog-responsive .el-dialog__footer {
-    padding: 8px 16px 16px;
-  }
-  .av-dialog-responsive .el-form-item {
-    margin-bottom: 14px;
-  }
-  .av-dialog-responsive .el-form-item__label {
-    width: 100px !important;
-    font-size: 13px;
-    padding-right: 8px;
-  }
-  .av-dialog-responsive .el-form-item__content {
-    font-size: 13px;
-  }
-  .av-dialog-responsive .el-input,
-  .av-dialog-responsive .el-select {
-    width: 100% !important;
-  }
-  .av-dialog-responsive .el-radio-group {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .av-dialog-responsive .el-radio-button__inner {
-    font-size: 12px;
-    padding: 8px 12px;
-  }
-  .av-dialog-responsive .el-dialog__title {
-    font-size: 16px;
-  }
-}
-
-@media (max-width: 480px) {
-  .av-dialog-responsive {
-    width: 100% !important;
-    max-width: 100vw !important;
-    margin: 0 !important;
-    border-radius: 0;
-  }
-  .av-dialog-responsive .el-form-item__label {
-    width: 80px !important;
-    font-size: 12px;
-  }
-  .av-dialog-responsive .el-form-item__content {
-    font-size: 12px;
-  }
-  .av-dialog-responsive .el-radio-button__inner {
-    font-size: 11px;
-    padding: 6px 10px;
   }
 }
 </style>
