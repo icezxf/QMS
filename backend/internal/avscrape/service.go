@@ -349,9 +349,11 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	}
 
 	// ===== 3.5 jav8 兜底（字典之后、AI 翻译之前） =====
-	// 只取中文标题和中文剧情，仅当对应字段仍是日文时才请求
-	needTitle := best.Title != "" && isJapanese(best.Title)
-	needPlot := best.Plot != "" && isJapanese(best.Plot)
+	// ★ 核心改动：标题/剧情为空时也请求 jav8，不再只限于日文
+	//   原逻辑 needPlot := best.Plot != "" && isJapanese(best.Plot)
+	//   会导致剧情为空时 jav8 根本不会被请求（SSIS-468 拿不到剧情的根因）
+	needTitle := best.Title == "" || isJapanese(best.Title)
+	needPlot := best.Plot == "" || isJapanese(best.Plot)
 
 	if needTitle || needPlot {
 		jav8Title, jav8Plot := FetchJav8(best.Code)
