@@ -13,16 +13,18 @@ type AVSettings struct {
 
 // AVTask AV 刮削任务记录
 type AVTask struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	MediaId   uint      `gorm:"index" json:"media_id"`
-	Code      string    `gorm:"index;size:64" json:"code"`
-	FilePath  string    `gorm:"type:text" json:"file_path"`
-	Status    string    `gorm:"size:32" json:"status"`
-	Provider  string    `gorm:"size:32" json:"provider"`
-	Message   string    `gorm:"type:text" json:"message"`
-	// ===== 新增：警告列表（JSON 数组字符串）=====
-	Warnings  string    `gorm:"type:text" json:"warnings"`
-	// =========================================
+	ID       uint   `gorm:"primaryKey" json:"id"`
+	MediaId  uint   `gorm:"index" json:"media_id"`
+	Code     string `gorm:"index;size:64" json:"code"`
+	FilePath string `gorm:"type:text" json:"file_path"`
+	Status   string `gorm:"size:32" json:"status"`
+	Provider string `gorm:"size:32" json:"provider"`
+	Message  string `gorm:"type:text" json:"message"`
+	// ===== 警告列表（JSON 数组字符串）=====
+	Warnings string `gorm:"type:text" json:"warnings"`
+	// ===== 新增：字典转换记录（JSON 数组字符串，与 Warnings 并列）=====
+	DictLogs string `gorm:"type:text" json:"dict_logs"`
+	// ==============================================================
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -53,7 +55,7 @@ type AVMedia struct {
 	Source        string    `gorm:"size:32" json:"source"`
 	Oshash        string    `gorm:"index;size:64" json:"oshash"`
 
-	Resolution    string    `gorm:"size:16" json:"resolution"`   // ← 加这一行
+	Resolution string `gorm:"size:16" json:"resolution"`
 
 	Status        string    `gorm:"size:32;index;default:'pending'" json:"status"`
 	ProgressStage string    `gorm:"size:64" json:"progress_stage"`
@@ -76,14 +78,14 @@ type AVPath struct {
 	MoveMethod   string    `gorm:"size:32" json:"move_method"`
 	NameTemplate string    `gorm:"size:255" json:"name_template"`
 	Enable       bool      `json:"enable"`
-	
-		// IsVR 该目录是否为 VR 专用
+
+	// IsVR 该目录是否为 VR 专用
 	// VR 目录走 JavStash + DMM 高清封面，不使用 MetaTube
 	IsVR bool `json:"is_vr" gorm:"default:false"`
-	
-	LastScanAt   time.Time `json:"last_scan_at"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+
+	LastScanAt time.Time `json:"last_scan_at"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 func GetAVPathByID(id uint) *AVPath {
