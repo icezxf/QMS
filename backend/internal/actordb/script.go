@@ -16,12 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"qmediasync/internal/dictdb"
-	"qmediasync/internal/helpers"
-	"qmediasync/internal/models"
-
 	"gopkg.in/yaml.v3"
-	"gorm.io/gorm"
 )
 
 // ============ 默认脚本 ============
@@ -698,8 +693,7 @@ func translateWithDeepL(ctx context.Context, text, apiKey string) (string, error
 // ============ 执行器 ============
 
 type ScriptExecutor struct {
-	DB        *gorm.DB
-	Config    *EmbyProxyConfig // ★ 直接带上前端配置
+	Config    *EmbyActorConfig // ★ 带上前端配置（里面有 DeepL Key）
 	Emby      *EmbyClient
 	Stash     *StashBoxClient
 	JavStash  *StashBoxClient
@@ -707,9 +701,9 @@ type ScriptExecutor struct {
 	WikiEmail string
 }
 
-func NewScriptExecutor(db *gorm.DB, config *EmbyProxyConfig, emby *EmbyClient, stash *StashBoxClient, javStash *StashBoxClient, tpdb *StashBoxClient) *ScriptExecutor {
+func NewScriptExecutor(config *EmbyActorConfig, emby *EmbyClient, stash *StashBoxClient, javStash *StashBoxClient, tpdb *StashBoxClient) *ScriptExecutor {
 	return &ScriptExecutor{
-		DB: db, Config: config, Emby: emby, Stash: stash, JavStash: javStash, Tpdb: tpdb,
+		Config: config, Emby: emby, Stash: stash, JavStash: javStash, Tpdb: tpdb,
 	}
 }
 
