@@ -21,6 +21,7 @@ import (
 	"qmediasync/internal/models"
 
 	"gopkg.in/yaml.v3"
+	"gorm.io/gorm"
 )
 
 // ============ 默认脚本 ============
@@ -493,7 +494,6 @@ var ouxiangHTTP = &http.Client{Timeout: 15 * time.Second}
 var (
 	ouxiangIdolRe  = regexp.MustCompile(`href="(/idol/[^"]+)"`)
 	ouxiangH1Re    = regexp.MustCompile(`<h1>([^<]+)</h1>`)
-	// (?s) 表示允许跨行匹配，.*? 匹配 </p> 之前的所有内容（包括标签）
 	ouxiangIntroRe = regexp.MustCompile(`(?s)<section id="intro"><p>(.*?)</p>`)
 	htmlTagRe      = regexp.MustCompile(`<[^>]+>`)
 )
@@ -504,7 +504,8 @@ func fetchOuxiangData(ctx context.Context, keyword string) (*OuxiangData, error)
 		return nil, fmt.Errorf("空关键词")
 	}
 
-	// 1. 搜索
+	normKeyword := normalizeStr(keyword)
+
 	searchURL := "https://www.ouxiangdanganku.com/search/" + url.QueryEscape(keyword)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
@@ -520,7 +521,6 @@ func fetchOuxiangData(ctx context.Context, keyword string) (*OuxiangData, error)
 		return nil, fmt.Errorf("未搜到结果")
 	}
 
-	// 2. 遍历详情页
 	for _, m := range matches {
 		detailPath := m[1]
 		time.Sleep(150 * time.Millisecond)
@@ -535,54 +535,70 @@ func fetchOuxiangData(ctx context.Context, keyword string) (*OuxiangData, error)
 		body2, _ := io.ReadAll(io.LimitReader(resp2.Body, 4<<20))
 		resp2.Body.Close()
 
+		htmlStr := string(body2)
+
 		h1 := ""
-		if hm := ouxiangH1Re.FindStringSubmatch(string(body2)); len(hm) >= 2 {
+		if hm := ouxiangH1Re.FindStringSubmatch(htmlStr); len(hm) >= 2 {
 			h1 = strings.TrimSpace(hm[1])
 		}
-
-		intro := ""
-		if im := ouxiangIntroRe.FindStringSubmatch(string(body2)); len(im) >= 2 {
-			// 清理 HTML 标签，只留纯文本
-			rawIntro := im[1]
-			intro = htmlTagRe.ReplaceAllString(rawIntro, "")
-			intro = strings.TrimSpace(intro)
+		if h1 == "" {
+			continue
 		}
 
-		if intro == "" || !strings.Contains(intro, keyword) {
+		// === 暴力碎块提取法 ===
+		cleanHtml := strings.ReplaceAll(htmlStr, "<br>", ",")
+		cleanHtml = strings.ReplaceAll(cleanHtml, "<br/>", ",")
+		cleanHtml = strings.ReplaceAll(cleanHtml, "<br />", ",")
+		cleanHtml = strings.ReplaceAll(cleanHtml, "</td>", ",")
+		cleanHtml = htmlTagRe.ReplaceAllString(cleanHtml, " ")
+
+		candidates := []string{h1}
+		parts := regexp.MustCompile(`[，,\n\r]`).Split(cleanHtml, -1)
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if len(p) >= 2 && len(p) <= 20 && 
+			   !strings.ContainsAny(p, "0123456789年月日") && 
+			   !strings.Contains(p, "：") && !strings.Contains(p, ":") {
+				candidates = append(candidates, p)
+			}
+		}
+
+		// === 严格完全匹配 ===
+		matched := false
+		for _, c := range candidates {
+			if normalizeStr(c) == normKeyword {
+				matched = true
+				break
+			}
+		}
+		
+		if !matched {
 			continue
 		}
 
 		data := &OuxiangData{
 			JpName: h1,
-			Bio:    intro,
 			Url:    detailURL,
 		}
 
-		// === 解析中文名 ===
-		// 优先看 H1 是不是纯中文（如“新有菜”）
-		if isChineseName(h1) && !strings.ContainsAny(h1, "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ") {
-			data.ZhName = h1
-		} else {
-			// 否则去括号里找 (用标点切分，过滤掉英文/假名/日期)
-			start := strings.Index(intro, "（")
-			end := strings.Index(intro, "）")
-			if start >= 0 && end > start {
-				inner := intro[start+len("（"):end]
-				parts := regexp.MustCompile(`[，,／/、]`).Split(inner, -1)
-				for _, p := range parts {
-					p = strings.TrimSpace(p)
-					if p != "" && !strings.ContainsAny(p, "年月日") && isChineseName(p) {
-						data.ZhName = p
-						break
-					}
-				}
+		if im := ouxiangIntroRe.FindStringSubmatch(htmlStr); len(im) >= 2 {
+			intro := htmlTagRe.ReplaceAllString(im[1], "")
+			data.Bio = strings.TrimSpace(intro)
+		}
+
+		for _, c := range candidates {
+			if isChineseName(c) && !strings.ContainsAny(c, "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ") {
+				data.ZhName = c
+				break
 			}
 		}
+		if data.ZhName == "" {
+			data.ZhName = h1
+		}
 		
-		// === 解析体重 ===
-		cleanHtml := htmlTagRe.ReplaceAllString(string(body2), " ")
+		cleanHtmlForWeight := htmlTagRe.ReplaceAllString(htmlStr, " ")
 		weightRe := regexp.MustCompile(`体重[^\d]*(\d+)`)
-		if wm := weightRe.FindStringSubmatch(cleanHtml); len(wm) >= 2 {
+		if wm := weightRe.FindStringSubmatch(cleanHtmlForWeight); len(wm) >= 2 {
 			w, _ := strconv.Atoi(wm[1])
 			data.Weight = w
 		}
@@ -590,7 +606,13 @@ func fetchOuxiangData(ctx context.Context, keyword string) (*OuxiangData, error)
 		return data, nil
 	}
 
-	return nil, fmt.Errorf("未找到匹配的详情页")
+	return nil, fmt.Errorf("未找到完全匹配的详情页")
+}
+
+func normalizeStr(s string) string {
+	s = strings.ReplaceAll(s, " ", "")
+	s = strings.ReplaceAll(s, "　", "")
+	return strings.ToLower(s)
 }
 
 func isChineseName(s string) bool {
@@ -631,9 +653,53 @@ func getJpNameFromDict(chineseName string) string {
 	return ""
 }
 
+// ============ DeepL 翻译 ============
+
+func translateWithDeepL(ctx context.Context, text, apiKey string) (string, error) {
+	endpoint := "https://api.deepl.com/v2/translate"
+	if strings.HasSuffix(apiKey, ":fx") {
+		endpoint = "https://api-free.deepl.com/v2/translate"
+	}
+
+	form := url.Values{}
+	form.Set("text", text)
+	form.Set("source_lang", "EN")
+	form.Set("target_lang", "ZH")
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "DeepL-Auth-Key "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return text, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return text, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+	}
+
+	var out struct {
+		Translations []struct {
+			Text string `json:"text"`
+		} `json:"translations"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return text, err
+	}
+	if len(out.Translations) > 0 {
+		return out.Translations[0].Text, nil
+	}
+	return text, fmt.Errorf("empty translation")
+}
+
 // ============ 执行器 ============
 
 type ScriptExecutor struct {
+	DB        *gorm.DB
+	Config    *EmbyProxyConfig // ★ 直接带上前端配置
 	Emby      *EmbyClient
 	Stash     *StashBoxClient
 	JavStash  *StashBoxClient
@@ -641,8 +707,10 @@ type ScriptExecutor struct {
 	WikiEmail string
 }
 
-func NewScriptExecutor(emby *EmbyClient, stash *StashBoxClient, javStash *StashBoxClient, tpdb *StashBoxClient) *ScriptExecutor {
-	return &ScriptExecutor{Emby: emby, Stash: stash, JavStash: javStash, Tpdb: tpdb}
+func NewScriptExecutor(db *gorm.DB, config *EmbyProxyConfig, emby *EmbyClient, stash *StashBoxClient, javStash *StashBoxClient, tpdb *StashBoxClient) *ScriptExecutor {
+	return &ScriptExecutor{
+		DB: db, Config: config, Emby: emby, Stash: stash, JavStash: javStash, Tpdb: tpdb,
+	}
 }
 
 func (e *ScriptExecutor) Run(ctx context.Context, scriptText string, input map[string]any) (map[string]any, []StepResult, error) {
@@ -837,9 +905,9 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 	var tpdbSearchName string
 	var js *StashBoxPerformer
 
-	// ===== 0. Ouxiang 预查（只用来拿元数据和准确的搜索词，绝对不改 result["Name"]）=====
+	// ===== 0. Ouxiang 预查 =====
 	var ouxData *OuxiangData
-	if !isUUID && lang != "en" {
+	if !isUUID { // 只要是正常名字，都去碰碰运气
 		if data, err := fetchOuxiangData(ctx, originalName); err == nil {
 			ouxData = data
 			helpers.AppLogger.Infof("[Ouxiang] %s 命中: 中文名=%s, 日文名=%s", originalName, data.ZhName, data.JpName)
@@ -916,7 +984,6 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 	}
 
 	if lang == "zh" {
-		// ★ 中文名：先查本地字典拿日文名
 		jpNameFromDict := getJpNameFromDict(originalName)
 		if jpNameFromDict != "" && jpNameFromDict != originalName {
 			helpers.AppLogger.Infof("[演员字典] %s → %s", originalName, jpNameFromDict)
@@ -1094,6 +1161,38 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		result["Weight"] = ouxData.Weight
 	}
 
+	// ===== 5. 英文简介翻译（强制使用 DeepL） =====
+	bioText := strings.TrimSpace(toString(result["Bio"]))
+	isEnglish := false
+	if bioText != "" {
+		hasJa := false
+		hasEn := false
+		for _, r := range bioText {
+			if (r >= 0x3040 && r <= 0x309F) || (r >= 0x30A0 && r <= 0x30FF) {
+				hasJa = true
+				break
+			}
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				hasEn = true
+			}
+		}
+		if !hasJa && hasEn {
+			isEnglish = true
+		}
+	}
+
+	// 直接读取前端传过来的配置
+	if isEnglish && exec.Config != nil && exec.Config.DeepLApiKey != "" {
+		helpers.AppLogger.Infof("[演员翻译] 准备用 DeepL 翻译英文简介: %s", originalName)
+		translated, err := translateWithDeepL(ctx, bioText, exec.Config.DeepLApiKey)
+		if err == nil && translated != "" {
+			result["Bio"] = translated
+			helpers.AppLogger.Infof("[演员翻译] 翻译成功")
+		} else {
+			helpers.AppLogger.Warnf("[演员翻译] 翻译失败: %v", err)
+		}
+	}
+
 	// 动态生成外部链接
 	var links []string
 	ids := result["ProviderIds"].(map[string]any)
@@ -1124,7 +1223,7 @@ func actionSmartFetch(ctx context.Context, exec *ScriptExecutor, params, vars ma
 		externalLinks = "【外部链接】\n" + strings.Join(links, "\n")
 	}
 
-	bioText := strings.TrimSpace(toString(result["Bio"]))
+	bioText = strings.TrimSpace(toString(result["Bio"]))
 	if externalLinks != "" {
 		if bioText != "" {
 			result["Bio"] = bioText + "\n\n" + externalLinks
