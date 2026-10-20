@@ -190,7 +190,7 @@ func (s *Scanner) Scan(pathID uint) error {
 				code := ExtractCode(filepath.Base(f))
 				if code == "" {
 					helpers.AppLogger.Warnf("[AV扫描] 无法识别番号: %s", f)
-					s.recordTask(0, "", f, "failed", "无法识别番号（oshash 与文件名均失败）", "", nil)
+					s.recordTask(0, "", f, "failed", "无法识别番号（oshash 与文件名均失败）", "", nil, nil)
 					continue
 				}
 				if _, ok := groups[code]; !ok {
@@ -237,7 +237,7 @@ func (s *Scanner) Scan(pathID uint) error {
 				reason := fmt.Sprintf("重复文件：已存在记录 id=%d，原目标路径=%s",
 					existing.ID, existing.TargetPath)
 				for _, f := range g.Files {
-					s.recordTask(existing.ID, code, f, "duplicate", reason, existing.Source, nil)
+					s.recordTask(existing.ID, code, f, "duplicate", reason, existing.Source, nil, nil)
 				}
 				helpers.AppLogger.Warnf("[AV扫描] 番号 %s 重复（已存在 id=%d），共 %d 个文件",
 					code, existing.ID, len(g.Files))
@@ -357,7 +357,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		reason := fmt.Sprintf("元数据刮削失败: %v", err)
 		if skipPause {
 			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
-			s.recordTask(0, code, primaryFile, "done", reason+"（已放行）", "", nil)
+			s.recordTask(0, code, primaryFile, "done", reason+"（已放行）", "", nil, nil)
 			return nil
 		}
 		s.pauseMedia(code, primaryFile, reason, "")
@@ -365,13 +365,14 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 	}
 	result := r
 	scrapeWarnings := result.Warnings
+	scrapeDictLogs := result.DictLogs
 
 	if HasTranslateError(scrapeWarnings) {
 		reason := "翻译错误（详见警告列表）"
 		if skipPause {
 			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
 		} else {
-			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, scrapeWarnings)
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, scrapeWarnings, scrapeDictLogs)
 			return fmt.Errorf("%s", reason)
 		}
 	}
@@ -400,7 +401,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		if skipPause {
 			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
 		} else {
-			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, scrapeWarnings)
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, scrapeWarnings, scrapeDictLogs)
 			return fmt.Errorf("%s", reason)
 		}
 	}
@@ -416,7 +417,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		if skipPause {
 			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
 		} else {
-			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings, scrapeDictLogs)
 			return err
 		}
 	}
@@ -428,7 +429,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		if skipPause {
 			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
 		} else {
-			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings, scrapeDictLogs)
 			return fmt.Errorf("%s", reason)
 		}
 	}
@@ -442,7 +443,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 		if skipPause {
 			helpers.AppLogger.Warnf("[AV扫描] %s %s（已放行，继续）", code, reason)
 		} else {
-			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings, scrapeDictLogs)
 			return err
 		}
 	}
@@ -450,7 +451,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 	if anySkipped {
 		reason := fmt.Sprintf("目标视频已存在：%s", targetDir)
 		for _, f := range g.Files {
-			s.recordTask(0, code, f, "duplicate", reason, result.Source, nil)
+			s.recordTask(0, code, f, "duplicate", reason, result.Source, nil, nil)
 		}
 		helpers.AppLogger.Warnf("[AV扫描] 番号 %s 目标视频已存在，整个跳过", code)
 		return nil
@@ -460,12 +461,12 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 	if len(files) > 0 {
 		if _, err := fs.QueueUploads(files, targetDir, path.AccountID, path.SourceType); err != nil {
 			reason := fmt.Sprintf("排队上传元数据失败: %v", err)
-			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings)
+			s.pauseMediaWithWarnings(code, primaryFile, reason, result.Source, allWarnings, scrapeDictLogs)
 			return err
 		}
 	}
 
-	s.recordTask(0, code, primaryFile, "done", "", result.Source, allWarnings)
+	s.recordTask(0, code, primaryFile, "done", "", result.Source, allWarnings, scrapeDictLogs)
 	helpers.AppLogger.Infof("[AV扫描] 番号 %s 处理完成", code)
 	return nil
 }
@@ -497,10 +498,10 @@ func checkMetadataMissing(r *ScrapeResult) string {
 }
 
 func (s *Scanner) pauseMedia(code, filePath, reason, provider string) {
-	s.pauseMediaWithWarnings(code, filePath, reason, provider, nil)
+	s.pauseMediaWithWarnings(code, filePath, reason, provider, nil, nil)
 }
 
-func (s *Scanner) pauseMediaWithWarnings(code, filePath, reason, provider string, warnings []string) {
+func (s *Scanner) pauseMediaWithWarnings(code, filePath, reason, provider string, warnings []string, dictLogs []string) {
 	helpers.AppLogger.Warnf("[AV暂停] %s: %s", code, reason)
 
 	var existing models.AVMedia
@@ -511,7 +512,7 @@ func (s *Scanner) pauseMediaWithWarnings(code, filePath, reason, provider string
 			"pause_reason": reason,
 			"paused_at":    time.Now(),
 		})
-		s.recordTask(existing.ID, code, filePath, "paused", reason, provider, warnings)
+		s.recordTask(existing.ID, code, filePath, "paused", reason, provider, warnings, dictLogs)
 	} else {
 		m := &models.AVMedia{
 			Code:        code,
@@ -520,7 +521,7 @@ func (s *Scanner) pauseMediaWithWarnings(code, filePath, reason, provider string
 			PausedAt:    time.Now(),
 		}
 		s.DB.Create(m)
-		s.recordTask(m.ID, code, filePath, "paused", reason, provider, warnings)
+		s.recordTask(m.ID, code, filePath, "paused", reason, provider, warnings, dictLogs)
 	}
 }
 
@@ -1208,8 +1209,10 @@ func fetchOfficialCoverData(pageURL string) ([]byte, int, int, string) {
 	return best.data, best.w, best.h, best.src
 }
 
-func (s *Scanner) recordTask(mediaId uint, code, filePath, status, msg, provider string, warnings []string) {
+// recordTask 写任务记录；warnings 和 dictLogs 分别序列化为 JSON 字符串存入
+func (s *Scanner) recordTask(mediaId uint, code, filePath, status, msg, provider string, warnings []string, dictLogs []string) {
 	warningsJSON, _ := json.Marshal(warnings)
+	dictJSON, _ := json.Marshal(dictLogs)
 	s.DB.Create(&models.AVTask{
 		MediaId:  mediaId,
 		Code:     code,
@@ -1218,6 +1221,7 @@ func (s *Scanner) recordTask(mediaId uint, code, filePath, status, msg, provider
 		Message:  msg,
 		Provider: provider,
 		Warnings: string(warningsJSON),
+		DictLogs: string(dictJSON),
 	})
 }
 
