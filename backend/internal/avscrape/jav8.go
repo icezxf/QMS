@@ -2,6 +2,7 @@ package avscrape
 
 import (
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -15,12 +16,13 @@ var jav8HTTP = &http.Client{Timeout: 15 * time.Second}
 var (
 	jav8DetailRe = regexp.MustCompile(`href="(/v/\d+)"`)
 	jav8TitleRe  = regexp.MustCompile(`<title>([^<]+)</title>`)
-	jav8PlotRe   = regexp.MustCompile(`<div class="intro-text">([^<]+)</div>`)
+	jav8PlotRe   = regexp.MustCompile(`(?s)<div[^>]*class="[^"]*text-zh[^"]*"[^>]*>\s*<p[^>]*class="[^"]*intro-text[^"]*"[^>]*>(.*?)</p>`)
+	jav8TagRe    = regexp.MustCompile(`<[^>]+>`)
 )
 
 // FetchJav8 从 jav8.me 抓取中文标题和中文剧情
-// 输入：标准番号（如 SSIS-840）
-// 返回：title（中文标题，已去掉番号前缀和 - JAV8 后缀）、plot（中文剧情）
+// 输入：标准番号（如 SSIS-468）
+// 返回：title（中文标题）、plot（中文剧情）
 // 任何一步失败都返回空字符串，不返回 error（静默兜底）
 func FetchJav8(code string) (title, plot string) {
 	code = strings.TrimSpace(code)
@@ -28,7 +30,7 @@ func FetchJav8(code string) (title, plot string) {
 		return "", ""
 	}
 
-	// 1. 搜索
+	// 1. 搜索页
 	searchURL := "https://jav8.me/search?type=id&q=" + url.QueryEscape(code)
 	body, err := jav8Get(searchURL)
 	if err != nil {
@@ -51,33 +53,52 @@ func FetchJav8(code string) (title, plot string) {
 		return "", ""
 	}
 
-	// 3. 提取中文标题
-	if tm := jav8TitleRe.FindStringSubmatch(body2); len(tm) >= 2 {
-		raw := strings.TrimSpace(tm[1])
-		raw = strings.TrimSuffix(raw, " - JAV8")
-		raw = strings.TrimSpace(raw)
+	// 3. 提取中文标题（<title>SSIS-468 河北彩花的... - JAV8</title>）
+	title = extractJav8Title(body2, code)
 
-		// 校验番号是否在标题里（防止搜错片）
-		if strings.Contains(strings.ToUpper(raw), strings.ToUpper(code)) {
-			// 去掉番号前缀
-			t := raw
-			upperCode := strings.ToUpper(code)
-			upperT := strings.ToUpper(t)
-			if strings.HasPrefix(upperT, upperCode) {
-				t = strings.TrimSpace(t[len(code):])
-			}
-			if t != "" && t != raw {
-				title = t
-			}
-		}
-	}
-
-	// 4. 提取中文剧情（intro-text 不带 text-jp）
-	if pm := jav8PlotRe.FindStringSubmatch(body2); len(pm) >= 2 {
-		plot = strings.TrimSpace(pm[1])
-	}
+	// 4. 提取中文剧情（<div class="text-zh"> 里的 <p class="intro-text">）
+	plot = extractJav8Plot(body2)
 
 	return title, plot
+}
+
+func extractJav8Title(htmlStr, code string) string {
+	tm := jav8TitleRe.FindStringSubmatch(htmlStr)
+	if len(tm) < 2 {
+		return ""
+	}
+	raw := html.UnescapeString(strings.TrimSpace(tm[1]))
+	raw = strings.TrimSuffix(raw, " - JAV8")
+	raw = strings.TrimSpace(raw)
+
+	// 校验番号是否在标题里，防止搜错片
+	if code != "" && !strings.Contains(strings.ToUpper(raw), strings.ToUpper(code)) {
+		return ""
+	}
+
+	// 去掉番号前缀
+	upperCode := strings.ToUpper(code)
+	upperRaw := strings.ToUpper(raw)
+	if strings.HasPrefix(upperRaw, upperCode) {
+		raw = strings.TrimSpace(raw[len(code):])
+	}
+	return raw
+}
+
+func extractJav8Plot(htmlStr string) string {
+	m := jav8PlotRe.FindStringSubmatch(htmlStr)
+	if len(m) < 2 {
+		return ""
+	}
+	text := jav8TagRe.ReplaceAllString(m[1], "")
+	text = html.UnescapeString(text)
+	text = strings.TrimSpace(text)
+
+	// 至少 15 个字符才算有效剧情，过滤空壳
+	if len([]rune(text)) < 15 {
+		return ""
+	}
+	return text
 }
 
 func jav8Get(rawURL string) (string, error) {
