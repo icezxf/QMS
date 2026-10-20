@@ -585,12 +585,23 @@ func fetchOuxiangData(ctx context.Context, keyword string) (*OuxiangData, error)
 			data.Bio = strings.TrimSpace(intro)
 		}
 
+				// === 提取中文名 ===
 		for _, c := range candidates {
 			if isChineseName(c) && !strings.ContainsAny(c, "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ") {
 				data.ZhName = c
 				break
 			}
 		}
+
+		// ★ 核心修复：如果候选里没找到，或者找到的还是日文名，去简介开头抓中文名
+		if data.ZhName == "" || data.ZhName == h1 {
+			// 匹配开头连续的汉字，直到遇到括号（中英文括号都行）
+			nameRe := regexp.MustCompile(`^([\p{Han}]{2,10})[（(]`)
+			if m := nameRe.FindStringSubmatch(data.Bio); len(m) >= 2 {
+				data.ZhName = m[1]
+			}
+		}
+
 		if data.ZhName == "" {
 			data.ZhName = h1
 		}
