@@ -33,6 +33,13 @@
       <el-table-column type="expand">
         <template #default="{ row }">
           <div class="expand-content">
+            <!-- 移动端专属操作按钮 -->
+            <div v-if="isMobile && row.status === 'paused' && row.media_id" class="mobile-actions">
+              <el-button type="success" size="small" @click="release(row)">放行</el-button>
+              <el-button type="primary" size="small" @click="restart(row)">重启</el-button>
+              <el-button type="danger" size="small" @click="cancel(row)">取消</el-button>
+            </div>
+
             <div v-if="parseWarnings(row.warnings).length > 0" class="warnings-block">
               <div class="warnings-title">⚠️ 警告（{{ parseWarnings(row.warnings).length }} 条）</div>
               <ul class="warnings-list">
@@ -40,6 +47,7 @@
               </ul>
             </div>
             <div v-else class="no-warnings">✓ 无警告</div>
+            
             <div class="detail-block">
               <div><b>消息：</b>{{ row.message || '—' }}</div>
               <div><b>文件路径：</b>{{ row.file_path || '—' }}</div>
@@ -48,8 +56,10 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="id" label="ID" width="70" />
-      <el-table-column label="oshash" width="200">
+      
+      <el-table-column prop="id" label="ID" width="60" />
+      
+      <el-table-column label="oshash" min-width="160">
         <template #default="{ row }">
           <el-link v-if="row.media_id" type="primary" @click="goMedia(row.media_id)">
             {{ row.oshash }}
@@ -57,14 +67,17 @@
           <span v-else>{{ row.oshash || '—' }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      
+      <el-table-column label="状态" width="80">
         <template #default="{ row }">
           <el-tag :type="statusTag(row.status)" size="small">
             {{ statusText(row.status) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="警告" width="90">
+      
+      <!-- 移动端隐藏警告数列 -->
+      <el-table-column v-if="!isMobile" label="警告" width="60" align="center">
         <template #default="{ row }">
           <el-tag v-if="parseWarnings(row.warnings).length > 0" type="warning" size="small">
             {{ parseWarnings(row.warnings).length }}
@@ -72,11 +85,16 @@
           <span v-else>—</span>
         </template>
       </el-table-column>
-      <el-table-column prop="message" label="消息" class-name="hide-mobile" show-overflow-tooltip />
-      <el-table-column label="时间" width="170">
+      
+      <!-- 移动端隐藏消息列 -->
+      <el-table-column v-if="!isMobile" prop="message" label="消息" min-width="160" show-overflow-tooltip />
+      
+      <el-table-column label="时间" width="160" class-name="hide-mobile">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="240" fixed="right">
+
+      <!-- 桌面端操作列，去掉 fixed="right" -->
+      <el-table-column v-if="!isMobile" label="操作" width="180" align="center">
         <template #default="{ row }">
           <template v-if="row.status === 'paused' && row.media_id">
             <el-button size="small" type="success" @click="release(row)">放行</el-button>
@@ -106,8 +124,11 @@ import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
+import { useDeviceType } from '@/composables/useDeviceType'
 
 const router = useRouter()
+const { isMobile } = useDeviceType()
+
 const list = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -180,7 +201,7 @@ const parseWarnings = (json: string) => {
 
 const formatTime = (t: string) => {
   if (!t) return ''
-  return new Date(t).toLocaleString('zh-CN')
+  return new Date(t).toLocaleString('zh-CN', { hour12: false })
 }
 
 const release = async (row: any) => {
@@ -266,8 +287,15 @@ onMounted(load)
   justify-content: center;
 }
 .expand-content {
-  padding: 12px 20px;
+  padding: 12px 16px;
   background: #fafafa;
+}
+.mobile-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed #dcdfe6;
 }
 .warnings-block {
   margin-bottom: 12px;
@@ -296,6 +324,7 @@ onMounted(load)
   color: #606266;
   padding-top: 8px;
   border-top: 1px dashed #dcdfe6;
+  word-break: break-all;
 }
 
 @media (max-width: 768px) {
@@ -318,8 +347,14 @@ onMounted(load)
     margin-left: 0 !important;
   }
   .toolbar-right {
-    align-self: flex-end;
+    display: flex;
+    gap: 8px;
   }
+  .toolbar-right .el-button {
+    flex: 1;
+    margin-left: 0;
+  }
+  
   :deep(.el-table__header-wrapper),
   :deep(.el-table__body-wrapper) {
     font-size: 12px;
@@ -330,6 +365,7 @@ onMounted(load)
   :deep(.hide-mobile) {
     display: none !important;
   }
+  
   .expand-content {
     padding: 10px;
   }
@@ -339,6 +375,10 @@ onMounted(load)
   }
   .detail-block {
     font-size: 12px;
+  }
+  .mobile-actions .el-button {
+    flex: 1;
+    margin-left: 0;
   }
 }
 
