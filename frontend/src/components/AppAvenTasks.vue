@@ -1,5 +1,19 @@
 <template>
   <div class="aven-tasks">
+    <!-- ★ 复用状态显示：只要列表里有活跃任务就提示，不加任何多余逻辑 -->
+    <el-alert
+      v-if="hasActiveTask"
+      title="后台正在执行欧美刮削任务..."
+      type="warning"
+      show-icon
+      :closable="false"
+      style="margin-bottom: 16px; border-radius: 8px;"
+    >
+      <template #default>
+        <span>任务队列正在处理中，列表每 30 秒自动刷新。完成后会自动停止。</span>
+      </template>
+    </el-alert>
+
     <div class="toolbar">
       <div class="toolbar-left">
         <el-select v-model="statusFilter" placeholder="全部状态" @change="reload">
@@ -11,12 +25,7 @@
           <el-option label="待处理" value="pending" />
           <el-option label="已取消" value="cancelled" />
         </el-select>
-        <el-input
-          v-model="keyword"
-          placeholder="搜索 oshash"
-          clearable
-          @keyup.enter="reload"
-        >
+        <el-input v-model="keyword" placeholder="搜索 oshash" clearable @keyup.enter="reload">
           <template #append>
             <el-button :icon="Search" @click="reload" />
           </template>
@@ -67,9 +76,14 @@
         </template>
       </el-table-column>
       
-      <el-table-column label="状态" width="80">
+      <!-- ★ 状态列：当任务处于 pending 或 running 时，给它加个深色醒目效果 -->
+      <el-table-column label="状态" width="90">
         <template #default="{ row }">
-          <el-tag :type="statusTag(row.status)" size="small">
+          <el-tag 
+            :type="statusTag(row.status)" 
+            size="small" 
+            :effect="row.status === 'running' ? 'dark' : 'light'"
+          >
             {{ statusText(row.status) }}
           </el-tag>
         </template>
@@ -118,7 +132,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -135,6 +149,13 @@ const pageSize = ref(20)
 const loading = ref(false)
 const statusFilter = ref('')
 const keyword = ref('')
+
+let refreshTimer: any = null
+
+// ★ 自动检测当前页有没有在运行的任务
+const hasActiveTask = computed(() => {
+  return list.value.some(t => t.status === 'pending' || t.status === 'running')
+})
 
 const load = async () => {
   loading.value = true
@@ -154,6 +175,18 @@ const load = async () => {
   } finally {
     loading.value = false
   }
+
+  // ★ 核心逻辑：和目录页保持一致。有任务在跑就开 30 秒定时器，跑完了就停掉
+  if (hasActiveTask.value && !refreshTimer) {
+    refreshTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        load()
+      }
+    }, 30000)
+  } else if (!hasActiveTask.value && refreshTimer) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
+  }
 }
 
 const reload = () => {
@@ -170,9 +203,10 @@ const statusTag = (s: string) => {
     case 'done': return 'success'
     case 'failed': return 'danger'
     case 'paused': return 'warning'
+    case 'running': return 'primary' // ★ 醒目颜色
     case 'duplicate': return 'warning'
     case 'cancelled': return 'info'
-    default: return ''
+    default: return 'info'
   }
 }
 
@@ -181,6 +215,7 @@ const statusText = (s: string) => {
     case 'done': return '完成'
     case 'failed': return '失败'
     case 'paused': return '暂停'
+    case 'running': return '刮削中' // ★ 明确的中文状态
     case 'duplicate': return '重复'
     case 'cancelled': return '取消'
     case 'pending': return '待处理'
@@ -190,12 +225,7 @@ const statusText = (s: string) => {
 
 const parseWarnings = (json: string) => {
   if (!json) return []
-  try {
-    const arr = JSON.parse(json)
-    return Array.isArray(arr) ? arr : []
-  } catch {
-    return []
-  }
+  try { return Array.isArray(JSON.parse(json)) ? JSON.parse(json) : [] } catch { return [] }
 }
 
 const formatTime = (t: string) => {
@@ -209,9 +239,7 @@ const release = async (row: any) => {
     await axios.post(`/api/aven/library/${row.media_id}/release`)
     ElMessage.success('已放行')
     load()
-  } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error('放行失败')
-  }
+  } catch (e: any) { if (e !== 'cancel') ElMessage.error('放行失败') }
 }
 
 const restart = async (row: any) => {
@@ -220,9 +248,7 @@ const restart = async (row: any) => {
     await axios.post(`/api/aven/library/${row.media_id}/restart`)
     ElMessage.success('已重启')
     load()
-  } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error('重启失败')
-  }
+  } catch (e: any) { if (e !== 'cancel') ElMessage.error('重启失败') }
 }
 
 const cancel = async (row: any) => {
@@ -231,9 +257,7 @@ const cancel = async (row: any) => {
     await axios.post(`/api/aven/library/${row.media_id}/cancel`)
     ElMessage.success('已取消')
     load()
-  } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error('取消失败')
-  }
+  } catch (e: any) { if (e !== 'cancel') ElMessage.error('取消失败') }
 }
 
 const clearAll = async () => {
@@ -241,28 +265,25 @@ const clearAll = async () => {
     await ElMessageBox.confirm('确定清空所有任务记录吗？', '确认', { type: 'warning' })
     await axios.delete('/api/aven/tasks')
     ElMessage.success('已清空')
-    load()
-  } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error('清空失败')
-  }
+    reload()
+  } catch (e: any) { if (e !== 'cancel') ElMessage.error('清空失败') }
 }
 
 const clearAndResetId = async () => {
   try {
-    await ElMessageBox.confirm(
-      '将清空所有任务记录，并把任务 ID 从 1 开始。确定？',
-      '警告',
-      { type: 'warning' }
-    )
+    await ElMessageBox.confirm('将清空所有任务记录，并把任务 ID 从 1 开始。确定？', '警告', { type: 'warning' })
     const res = await axios.post('/api/aven/tasks/clear-and-reset')
     ElMessage.success(res.data?.msg || '已清空并重置 ID')
-    load()
-  } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error('操作失败')
-  }
+    reload()
+  } catch (e: any) { if (e !== 'cancel') ElMessage.error('操作失败') }
 }
 
 onMounted(load)
+
+// 页面销毁时记得清理定时器
+onUnmounted(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
 </script>
 
 <style scoped>
