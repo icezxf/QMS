@@ -243,14 +243,16 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		}
 	}
 
-	// ===== 收集警告 =====
+	// ===== 收集警告和字典日志 =====
 	var warnings []string
+	var dictLogs []string
 
 	// ===== 1. 演员维基翻译（走 PG 字典 + 维基） =====
 	wikiClient := GetWikiClient()
-	translatedActors, actorWarnings := wikiClient.TranslateActorNames(best.Actors)
+	translatedActors, actorWarnings, actorDictLogs := wikiClient.TranslateActorNames(best.Actors)
 	best.Actors = translatedActors
 	warnings = append(warnings, actorWarnings...)
+	dictLogs = append(dictLogs, actorDictLogs...)
 
 	// ===== 2. 番号标题优先查本地 PG 字典 =====
 	if dictdb.DictDB != nil {
@@ -258,10 +260,12 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 		if err := dictdb.DictDB.Where("number = ?", best.Code).First(&cNumMapping).Error; err == nil && cNumMapping.Title != "" {
 			helpers.AppLogger.Infof("[AV刮削] 命中标题字典: %s => %s", best.Code, cNumMapping.Title)
 			best.Title = toSimplified(cNumMapping.Title)
+			dictLogs = append(dictLogs, fmt.Sprintf("标题: %s => %s", best.Code, best.Title))
 		} else if altCode := stripNumberLeadingZeros(best.Code); altCode != best.Code {
 			if err := dictdb.DictDB.Where("number = ?", altCode).First(&cNumMapping).Error; err == nil && cNumMapping.Title != "" {
 				helpers.AppLogger.Infof("[AV刮削] 命中标题字典(备用): %s => %s", altCode, cNumMapping.Title)
 				best.Title = toSimplified(cNumMapping.Title)
+				dictLogs = append(dictLogs, fmt.Sprintf("标题: %s => %s", altCode, best.Title))
 			}
 		}
 	}
@@ -275,10 +279,12 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 			if hit {
 				if zh == "删除" {
 					helpers.AppLogger.Infof("[字典-标签] 丢弃: %s", g)
+					dictLogs = append(dictLogs, fmt.Sprintf("标签: 丢弃 %s", g))
 					continue
 				}
 				newGenres = append(newGenres, toSimplified(zh))
 				helpers.AppLogger.Infof("[字典-标签] %s → %s", g, zh)
+				dictLogs = append(dictLogs, fmt.Sprintf("标签: %s → %s", g, zh))
 				continue
 			}
 			newGenres = append(newGenres, g)
@@ -290,9 +296,11 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 			if zh, hit := getInfoMapping(best.Series); hit {
 				if zh == "删除" {
 					helpers.AppLogger.Infof("[字典-系列] 丢弃: %s", best.Series)
+					dictLogs = append(dictLogs, fmt.Sprintf("系列: 丢弃 %s", best.Series))
 					best.Series = ""
 				} else {
 					helpers.AppLogger.Infof("[字典-系列] %s → %s", best.Series, zh)
+					dictLogs = append(dictLogs, fmt.Sprintf("系列: %s → %s", best.Series, zh))
 					best.Series = toSimplified(zh)
 				}
 			}
@@ -303,9 +311,11 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 			if zh, hit := getInfoMapping(best.Director); hit {
 				if zh == "删除" {
 					helpers.AppLogger.Infof("[字典-导演] 丢弃: %s", best.Director)
+					dictLogs = append(dictLogs, fmt.Sprintf("导演: 丢弃 %s", best.Director))
 					best.Director = ""
 				} else {
 					helpers.AppLogger.Infof("[字典-导演] %s → %s", best.Director, zh)
+					dictLogs = append(dictLogs, fmt.Sprintf("导演: %s → %s", best.Director, zh))
 					best.Director = toSimplified(zh)
 				}
 			}
@@ -320,6 +330,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 			}
 			if best.Studio != original {
 				helpers.AppLogger.Infof("[片商] %s → %s", original, best.Studio)
+				dictLogs = append(dictLogs, fmt.Sprintf("片商: %s → %s", original, best.Studio))
 			} else {
 				helpers.AppLogger.Infof("[片商] 最终使用值: %s", best.Studio)
 			}
@@ -380,6 +391,7 @@ func (s *Service) Scrape(code string, oshash string) (*ScrapeResult, error) {
 	}
 
 	best.Warnings = warnings
+	best.DictLogs = dictLogs // ★ 字典转换记录，与 Warnings 并列
 	best.Oshash = oshash
 
 	media := MediaFromResult(best)
