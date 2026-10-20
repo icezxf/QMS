@@ -73,7 +73,7 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 		var mapping models.ActorMapping
 
 		escaped := strings.ReplaceAll(inputName, "%", "\\%")
-		escaped := strings.ReplaceAll(escaped, "_", "\\_")
+		escaped = strings.ReplaceAll(escaped, "_", "\\_")
 		kwPattern := fmt.Sprintf("%%,%s,%%", escaped)
 
 		err := dictdb.DictDB.Where(
