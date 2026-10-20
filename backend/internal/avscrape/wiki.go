@@ -36,9 +36,8 @@ type WikiClient struct {
 }
 
 type wikiCache struct {
-	zh     string
-	source string
-	at     time.Time
+	zh string
+	at time.Time
 }
 
 func NewWikiClient() *WikiClient {
@@ -60,16 +59,16 @@ func pickChineseFromActor(a Actor) string {
 	return ""
 }
 
-// GetChineseName 三级兜底：字典 → 维基 → ouxiang
-// 返回 (中文名, 来源, error)，来源为 "dict" / "wiki" / "ouxiang" / ""
-func (w *WikiClient) GetChineseName(inputName string) (string, string, error) {
+// GetChineseName 只做：字典 → 缓存 → 维基
+// ouxiang 不在这里，放到 TranslateActorNames 最后兜底
+func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 	if inputName == "" {
-		return "", "", nil
+		return "", nil
 	}
 
 	searchName := toSimplified(inputName)
 
-	// ===== 1. 优先查本地 PG 字典 =====
+	// ===== 1. 字典 =====
 	if dictdb.DictDB != nil {
 		var mapping models.ActorMapping
 
@@ -81,29 +80,28 @@ func (w *WikiClient) GetChineseName(inputName string) (string, string, error) {
 			"jp_name = ? OR zh_name = ? OR jp_name = ? OR keyword LIKE ? ESCAPE '\\'",
 			searchName, searchName, inputName, kwPattern,
 		).First(&mapping).Error
-
 		if err == nil && mapping.ZhName != "" {
 			zh := toSimplified(mapping.ZhName)
-			// ★ 核心拦截：只有纯中文才算命中；带假名/英文的脏数据跳过
+			// ★ 只有纯中文才算命中；半中半日脏数据跳过，继续走维基
 			if isChineseName(zh) {
 				helpers.AppLogger.Infof("[字典] %s → %s", inputName, zh)
-				return zh, "dict", nil
+				return zh, nil
 			}
 			helpers.AppLogger.Warnf("[字典] %s 命中了异常数据 (%s)，尝试通过其他源查找", inputName, zh)
 		}
 	}
 
-	// ===== 2. 查本地内存缓存 =====
+	// ===== 2. 缓存 =====
 	w.mu.Lock()
 	if entry, ok := w.cache[inputName]; ok {
 		if time.Since(entry.at) < 24*time.Hour {
 			w.mu.Unlock()
-			return entry.zh, entry.source, nil
+			return entry.zh, nil
 		}
 	}
 	w.mu.Unlock()
 
-	// ===== 3. 查维基百科 =====
+	// ===== 3. 维基 =====
 	zhName, err := w.fetchZh(inputName)
 	if err != nil {
 		helpers.AppLogger.Warnf("[维基] 查询 %s 失败: %v", inputName, err)
@@ -123,31 +121,19 @@ func (w *WikiClient) GetChineseName(inputName string) (string, string, error) {
 
 	if zhName != "" {
 		zhName = toSimplified(zhName)
-		w.mu.Lock()
-		w.cache[inputName] = &wikiCache{zh: zhName, source: "wiki", at: time.Now()}
-		w.mu.Unlock()
-		helpers.AppLogger.Infof("[维基] %s → %s", inputName, zhName)
-		return zhName, "wiki", nil
 	}
 
-	// ===== 4. ouxiangdanganku.com 兜底（维基失败后才走） =====
-	if jpName, zhFromOuxiang, ok := fetchOuxiangChineseName(inputName); ok && zhFromOuxiang != "" {
-		zh := toSimplified(zhFromOuxiang)
-		helpers.AppLogger.Infof("[ouxiang] %s → %s (日文名: %s)", inputName, zh, jpName)
-		w.mu.Lock()
-		w.cache[inputName] = &wikiCache{zh: zh, source: "ouxiang", at: time.Now()}
-		w.mu.Unlock()
-		return zh, "ouxiang", nil
-	}
-
-	// ===== 5. 全部未命中，写空缓存 =====
+	// ===== 4. 写缓存（空结果也写，避免重复请求维基） =====
 	w.mu.Lock()
-	w.cache[inputName] = &wikiCache{zh: "", source: "", at: time.Now()}
+	w.cache[inputName] = &wikiCache{zh: zhName, at: time.Now()}
 	w.mu.Unlock()
-	return "", "", nil
+
+	if zhName != "" {
+		helpers.AppLogger.Infof("[维基] %s → %s", inputName, zhName)
+	}
+	return zhName, nil
 }
 
-// GetJapaneseName 反向查：中文名 -> 日文名
 func (w *WikiClient) GetJapaneseName(chineseName string) string {
 	if dictdb.DictDB != nil {
 		var mapping models.ActorMapping
@@ -278,7 +264,7 @@ func stripDisambiguation(s string) string {
 }
 
 // ============================================================
-// ouxiangdanganku.com 兜底
+// ouxiangdanganku.com（最后兜底）
 // ============================================================
 
 var ouxiangHTTP = &http.Client{Timeout: 15 * time.Second}
@@ -286,14 +272,10 @@ var ouxiangHTTP = &http.Client{Timeout: 15 * time.Second}
 var (
 	ouxiangIdolRe   = regexp.MustCompile(`href="(/idol/[^"]+)"`)
 	ouxiangH1Re     = regexp.MustCompile(`<h1>([^<]+)</h1>`)
-	ouxiangIntroRe  = regexp.MustCompile(`<section id="intro"><p>([^<]+)`)
 	ouxiangCnNameRe = regexp.MustCompile(`(?s)<tr[^>]*>\s*<td[^>]*>\s*中文名\s*</td>\s*<td[^>]*>\s*([^<]+?)\s*</td>`)
 	htmlTagRe       = regexp.MustCompile(`<[^>]+>`)
 )
 
-// fetchOuxiangChineseName 从 ouxiangdanganku.com 搜索演员中文名
-// 返回 (日文名, 中文名, 是否命中)
-// 优先抓页面「中文名」字段，取不到再回退候选池，严格完全匹配防串台
 func fetchOuxiangChineseName(keyword string) (jpName, zhName string, ok bool) {
 	keyword = strings.TrimSpace(keyword)
 	if keyword == "" {
@@ -302,7 +284,6 @@ func fetchOuxiangChineseName(keyword string) (jpName, zhName string, ok bool) {
 
 	normKeyword := normalizeStr(keyword)
 
-	// 1. 搜索
 	searchURL := "https://www.ouxiangdanganku.com/search/" + url.QueryEscape(keyword)
 	body, err := ouxiangGet(searchURL)
 	if err != nil {
@@ -314,7 +295,6 @@ func fetchOuxiangChineseName(keyword string) (jpName, zhName string, ok bool) {
 		return "", "", false
 	}
 
-	// 2. 遍历详情页
 	for _, m := range matches {
 		detailPath := m[1]
 		time.Sleep(150 * time.Millisecond)
@@ -333,7 +313,7 @@ func fetchOuxiangChineseName(keyword string) (jpName, zhName string, ok bool) {
 			continue
 		}
 
-		// === 暴力切碎全网页，生成候选池 ===
+		// 暴力切碎候选池
 		cleanHtml := strings.ReplaceAll(htmlStr, "<br>", ",")
 		cleanHtml = strings.ReplaceAll(cleanHtml, "<br/>", ",")
 		cleanHtml = strings.ReplaceAll(cleanHtml, "<br />", ",")
@@ -351,7 +331,7 @@ func fetchOuxiangChineseName(keyword string) (jpName, zhName string, ok bool) {
 			}
 		}
 
-		// === 严格完全匹配，防串台 ===
+		// 严格完全匹配，防串台
 		matched := false
 		for _, c := range candidates {
 			if normalizeStr(c) == normKeyword {
@@ -363,7 +343,7 @@ func fetchOuxiangChineseName(keyword string) (jpName, zhName string, ok bool) {
 			continue
 		}
 
-		// === 优先抓「中文名」字段：<tr><td>中文名</td><td>小凑四叶</td> ===
+		// 优先抓「中文名」字段
 		var finalZhName string
 		if m := ouxiangCnNameRe.FindStringSubmatch(htmlStr); len(m) >= 2 {
 			candidate := strings.TrimSpace(m[1])
@@ -374,7 +354,7 @@ func fetchOuxiangChineseName(keyword string) (jpName, zhName string, ok bool) {
 			}
 		}
 
-		// === 中文名字段没取到，回退候选池找纯中文 ===
+		// 回退候选池找纯中文
 		if finalZhName == "" {
 			for _, c := range candidates {
 				if isChineseName(c) && !strings.ContainsAny(c, "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ") {
@@ -384,7 +364,6 @@ func fetchOuxiangChineseName(keyword string) (jpName, zhName string, ok bool) {
 			}
 		}
 
-		// === H1 兜底 ===
 		if finalZhName == "" {
 			finalZhName = h1
 		}
@@ -428,22 +407,19 @@ func normalizeStr(s string) string {
 
 // ============================================================
 // TranslateActorNames
+// 顺序：字典/缓存/维基 → JavStash 别名（纯中文）→ ouxiang 最后兜底
 // ============================================================
 
-// TranslateActorNames 演员名翻译
-// 返回 (actors, warnings, dictLogs)
-// 字典/维基命中 → dictLogs；ouxiang 兜底命中 → warnings；未翻译 → warnings
-func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string, []string) {
+func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string) {
 	var warnings []string
-	var dictLogs []string
-
 	for i := range actors {
 		oldName := actors[i].Name
 		if oldName == "" {
 			continue
 		}
 
-		zh, source, err := w.GetChineseName(oldName)
+		// ===== 1. 字典 → 缓存 → 维基 =====
+		zh, err := w.GetChineseName(oldName)
 		if err == nil && zh != "" && zh != oldName {
 			exists := false
 			for _, a := range actors[i].Aliases {
@@ -456,16 +432,10 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string, []s
 				actors[i].Aliases = append(actors[i].Aliases, oldName)
 			}
 			actors[i].Name = zh
-
-			// ouxiang 兜底命中 → warnings；字典/维基命中 → dictLogs
-			if source == "ouxiang" {
-				warnings = append(warnings, fmt.Sprintf("ouxiang-演员: %s → %s", oldName, zh))
-			} else {
-				dictLogs = append(dictLogs, fmt.Sprintf("演员: %s → %s", oldName, zh))
-			}
 			continue
 		}
 
+		// ===== 2. JavStash 别名兜底（只接受纯中文） =====
 		if fallbackZh := pickChineseFromActor(actors[i]); fallbackZh != "" {
 			if fallbackZh == oldName {
 				continue
@@ -481,24 +451,44 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string, []s
 				actors[i].Aliases = append(actors[i].Aliases, oldName)
 			}
 			actors[i].Name = fallbackZh
-			dictLogs = append(dictLogs, fmt.Sprintf("演员(别名): %s → %s", oldName, fallbackZh))
+			helpers.AppLogger.Infof("[演员] %s → %s (JavStash 别名兜底)", oldName, fallbackZh)
+
+			// 写缓存，避免下次重复走维基/ouxiang
+			w.mu.Lock()
+			w.cache[oldName] = &wikiCache{zh: fallbackZh, at: time.Now()}
+			w.mu.Unlock()
 			continue
 		}
 
+		// ===== 3. ouxiang 最后的最后兜底 =====
+		if jpName, zhFromOuxiang, ok := fetchOuxiangChineseName(oldName); ok && zhFromOuxiang != "" {
+			zh = toSimplified(zhFromOuxiang)
+			if zh != "" && zh != oldName {
+				exists := false
+				for _, a := range actors[i].Aliases {
+					if a == oldName {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					actors[i].Aliases = append(actors[i].Aliases, oldName)
+				}
+				actors[i].Name = zh
+				helpers.AppLogger.Infof("[ouxiang] %s → %s (日文名: %s)", oldName, zh, jpName)
+
+				// 写缓存，避免下次重复走维基/ouxiang
+				w.mu.Lock()
+				w.cache[oldName] = &wikiCache{zh: zh, at: time.Now()}
+				w.mu.Unlock()
+				continue
+			}
+		}
+
+		// ===== 4. 全部失败 =====
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("演员 %s 翻译失败(%v)", oldName, err))
 		}
 	}
-
-	// 最终检查：还有哪些演员名不是中文
-	for _, a := range actors {
-		if a.Name == "" {
-			continue
-		}
-		if !isChineseName(a.Name) {
-			warnings = append(warnings, fmt.Sprintf("演员名未翻译: %s", a.Name))
-		}
-	}
-
-	return actors, warnings, dictLogs
+	return actors, warnings
 }
