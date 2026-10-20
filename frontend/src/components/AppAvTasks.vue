@@ -1,5 +1,19 @@
 <template>
   <div class="av-tasks">
+    <!-- ★ 核心：顶部状态条，和目录页一样，只要后台在跑，这里就提示 -->
+    <el-alert
+      v-if="hasActiveTask"
+      title="后台正在执行刮削任务..."
+      type="warning"
+      show-icon
+      :closable="false"
+      style="margin-bottom: 16px; border-radius: 8px;"
+    >
+      <template #default>
+        <span>任务队列正在处理中，列表每 30 秒自动刷新。完成后会自动停止。</span>
+      </template>
+    </el-alert>
+
     <div class="toolbar">
       <div class="toolbar-left">
         <el-select v-model="statusFilter" placeholder="全部状态" @change="reload">
@@ -11,12 +25,7 @@
           <el-option label="待处理" value="pending" />
           <el-option label="已取消" value="cancelled" />
         </el-select>
-        <el-input
-          v-model="keyword"
-          placeholder="搜索番号"
-          clearable
-          @keyup.enter="reload"
-        >
+        <el-input v-model="keyword" placeholder="搜索番号" clearable @keyup.enter="reload">
           <template #append>
             <el-button :icon="Search" @click="reload" />
           </template>
@@ -32,14 +41,12 @@
       <el-table-column type="expand">
         <template #default="{ row }">
           <div class="expand-content">
-            <!-- 移动端专属操作按钮 -->
             <div v-if="isMobile && row.status === 'paused' && row.media_id" class="mobile-actions">
               <el-button type="success" size="small" @click="release(row)">放行</el-button>
               <el-button type="primary" size="small" @click="restart(row)">重启</el-button>
               <el-button type="danger" size="small" @click="cancel(row)">取消</el-button>
             </div>
 
-            <!-- 字典转换记录 -->
             <div v-if="parseDictLogs(row.dict_logs).length > 0" class="dict-block">
               <div class="dict-title">📖 字典转换（{{ parseDictLogs(row.dict_logs).length }} 条）</div>
               <ul class="dict-list">
@@ -48,7 +55,6 @@
             </div>
             <div v-else class="no-dict">— 无字典转换记录</div>
 
-            <!-- 警告 -->
             <div v-if="parseWarnings(row.warnings).length > 0" class="warnings-block">
               <div class="warnings-title">⚠️ 警告（{{ parseWarnings(row.warnings).length }} 条）</div>
               <ul class="warnings-list">
@@ -57,7 +63,6 @@
             </div>
             <div v-else class="no-warnings">✓ 无警告</div>
 
-            <!-- 详情 -->
             <div class="detail-block">
               <div><b>消息：</b>{{ row.message || '—' }}</div>
               <div><b>文件路径：</b>{{ row.file_path || '—' }}</div>
@@ -69,7 +74,6 @@
       </el-table-column>
       
       <el-table-column prop="id" label="ID" width="60" v-if="!isMobile" />
-      
       <el-table-column label="番号" min-width="110">
         <template #default="{ row }">
           <el-link v-if="row.media_id" type="primary" @click="goMedia(row.media_id)">
@@ -79,15 +83,19 @@
         </template>
       </el-table-column>
       
-      <el-table-column label="状态" width="80">
+      <!-- ★ 状态列：当任务处于 pending 或 running 时，给它加个深色醒目效果 -->
+      <el-table-column label="状态" width="90">
         <template #default="{ row }">
-          <el-tag :type="statusTag(row.status)" size="small">
+          <el-tag 
+            :type="statusTag(row.status)" 
+            size="small" 
+            :effect="row.status === 'running' ? 'dark' : 'light'"
+          >
             {{ statusText(row.status) }}
           </el-tag>
         </template>
       </el-table-column>
       
-      <!-- 桌面端显示字典和警告条数 -->
       <el-table-column v-if="!isMobile" label="字典" width="60" align="center">
         <template #default="{ row }">
           <el-tag v-if="parseDictLogs(row.dict_logs).length > 0" type="primary" size="small">
@@ -113,7 +121,6 @@
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
 
-      <!-- 桌面端保留操作列，去掉 fixed -->
       <el-table-column v-if="!isMobile" label="操作" width="180" align="center">
         <template #default="{ row }">
           <template v-if="row.status === 'paused' && row.media_id">
@@ -139,7 +146,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -156,6 +163,13 @@ const pageSize = ref(20)
 const loading = ref(false)
 const statusFilter = ref('')
 const keyword = ref('')
+
+let refreshTimer: any = null
+
+// ★ 自动检测当前页有没有在运行的任务
+const hasActiveTask = computed(() => {
+  return list.value.some(t => t.status === 'pending' || t.status === 'running')
+})
 
 const load = async () => {
   loading.value = true
@@ -175,6 +189,18 @@ const load = async () => {
   } finally {
     loading.value = false
   }
+
+  // ★ 核心逻辑：和目录页保持一致。有任务在跑就开 30 秒定时器，跑完了就停掉
+  if (hasActiveTask.value && !refreshTimer) {
+    refreshTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        load()
+      }
+    }, 30000)
+  } else if (!hasActiveTask.value && refreshTimer) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
+  }
 }
 
 const reload = () => {
@@ -191,9 +217,10 @@ const statusTag = (s: string) => {
     case 'done': return 'success'
     case 'failed': return 'danger'
     case 'paused': return 'warning'
+    case 'running': return 'primary' // ★ 醒目颜色
     case 'duplicate': return 'warning'
     case 'cancelled': return 'info'
-    default: return ''
+    default: return 'info'
   }
 }
 
@@ -202,6 +229,7 @@ const statusText = (s: string) => {
     case 'done': return '完成'
     case 'failed': return '失败'
     case 'paused': return '暂停'
+    case 'running': return '刮削中' // ★ 明确的中文状态
     case 'duplicate': return '重复'
     case 'cancelled': return '取消'
     case 'pending': return '待处理'
@@ -211,22 +239,12 @@ const statusText = (s: string) => {
 
 const parseWarnings = (json: string) => {
   if (!json) return []
-  try {
-    const arr = JSON.parse(json)
-    return Array.isArray(arr) ? arr : []
-  } catch {
-    return []
-  }
+  try { return Array.isArray(JSON.parse(json)) ? JSON.parse(json) : [] } catch { return [] }
 }
 
 const parseDictLogs = (json: string) => {
   if (!json) return []
-  try {
-    const arr = JSON.parse(json)
-    return Array.isArray(arr) ? arr : []
-  } catch {
-    return []
-  }
+  try { return Array.isArray(JSON.parse(json)) ? JSON.parse(json) : [] } catch { return [] }
 }
 
 const formatTime = (t: string) => {
@@ -239,25 +257,17 @@ const clearAll = async () => {
     await ElMessageBox.confirm('确定清空所有任务记录吗？', '确认', { type: 'warning' })
     await axios.delete('/api/avscrape/tasks')
     ElMessage.success('已清空')
-    load()
-  } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error('清空失败')
-  }
+    reload()
+  } catch (e: any) { if (e !== 'cancel') ElMessage.error('清空失败') }
 }
 
 const clearAndResetId = async () => {
   try {
-    await ElMessageBox.confirm(
-      '将清空所有任务记录，并把任务 ID 从 1 开始。确定？',
-      '警告',
-      { type: 'warning' }
-    )
+    await ElMessageBox.confirm('将清空所有任务记录，并把任务 ID 从 1 开始。确定？', '警告', { type: 'warning' })
     const res = await axios.post('/api/avscrape/tasks/clear-and-reset')
     ElMessage.success(res.data?.msg || '已清空并重置 ID')
-    load()
-  } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error('操作失败')
-  }
+    reload()
+  } catch (e: any) { if (e !== 'cancel') ElMessage.error('操作失败') }
 }
 
 const release = async (row: any) => {
@@ -266,9 +276,7 @@ const release = async (row: any) => {
     await axios.post(`/api/avscrape/library/${row.media_id}/release`)
     ElMessage.success('已放行，正在重新扫描')
     load()
-  } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error('放行失败')
-  }
+  } catch (e: any) { if (e !== 'cancel') ElMessage.error('放行失败') }
 }
 
 const restart = async (row: any) => {
@@ -277,9 +285,7 @@ const restart = async (row: any) => {
     await axios.post(`/api/avscrape/library/${row.media_id}/restart`)
     ElMessage.success('已重启，正在重新扫描')
     load()
-  } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error('重启失败')
-  }
+  } catch (e: any) { if (e !== 'cancel') ElMessage.error('重启失败') }
 }
 
 const cancel = async (row: any) => {
@@ -288,145 +294,47 @@ const cancel = async (row: any) => {
     await axios.post(`/api/avscrape/library/${row.media_id}/cancel`)
     ElMessage.success('已取消')
     load()
-  } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error('取消失败')
-  }
+  } catch (e: any) { if (e !== 'cancel') ElMessage.error('取消失败') }
 }
 
 onMounted(load)
+
+// 页面销毁时记得清理定时器
+onUnmounted(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
 </script>
 
 <style scoped>
-.av-tasks {
-  padding: 20px;
-  overflow-x: hidden; /* ★ 防止横向滚动 */
-}
-.toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
-.toolbar-left {
-  display: flex;
-  align-items: center;
-}
-.pagination {
-  margin-top: 20px;
-  display: flex;
-  justify-content: center;
-}
-.expand-content {
-  padding: 12px 16px;
-  background: #fafafa;
-}
-.mobile-actions {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px dashed #dcdfe6;
-}
-.dict-block {
-  margin-bottom: 12px;
-}
-.dict-title {
-  font-weight: 600;
-  color: #409eff;
-  margin-bottom: 8px;
-}
-.dict-list {
-  margin: 0;
-  padding-left: 20px;
-  color: #606266;
-  font-size: 13px;
-  line-height: 1.8;
-}
-.no-dict {
-  color: #909399;
-  margin-bottom: 12px;
-  font-size: 13px;
-}
-.warnings-block {
-  margin-bottom: 12px;
-}
-.warnings-title {
-  font-weight: 600;
-  color: #e6a23c;
-  margin-bottom: 8px;
-}
-.warnings-list {
-  margin: 0;
-  padding-left: 20px;
-  color: #606266;
-  font-size: 13px;
-  line-height: 1.8;
-}
-.no-warnings {
-  color: #67c23a;
-  margin-bottom: 12px;
-}
-.detail-block {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 13px;
-  color: #606266;
-  padding-top: 8px;
-  border-top: 1px dashed #dcdfe6;
-  word-break: break-all;
-}
+/* 保持你原有的样式不变即可，我补充了一个顶部警告条的圆角 */
+.av-tasks { padding: 20px; overflow-x: hidden; }
+.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.toolbar-left { display: flex; align-items: center; }
+.pagination { margin-top: 20px; display: flex; justify-content: center; }
+.expand-content { padding: 12px 16px; background: #fafafa; }
+.mobile-actions { display: flex; gap: 8px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed #dcdfe6; }
+.dict-block { margin-bottom: 12px; }
+.dict-title { font-weight: 600; color: #409eff; margin-bottom: 8px; }
+.dict-list { margin: 0; padding-left: 20px; color: #606266; font-size: 13px; line-height: 1.8; }
+.no-dict { color: #909399; margin-bottom: 12px; font-size: 13px; }
+.warnings-block { margin-bottom: 12px; }
+.warnings-title { font-weight: 600; color: #e6a23c; margin-bottom: 8px; }
+.warnings-list { margin: 0; padding-left: 20px; color: #606266; font-size: 13px; line-height: 1.8; }
+.no-warnings { color: #67c23a; margin-bottom: 12px; }
+.detail-block { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #606266; padding-top: 8px; border-top: 1px dashed #dcdfe6; word-break: break-all; }
 
 @media (max-width: 768px) {
-  .av-tasks {
-    padding: 12px;
-  }
-  .toolbar {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 10px;
-  }
-  .toolbar-left {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-  }
-  .toolbar-left .el-select,
-  .toolbar-left .el-input {
-    width: 100% !important;
-    margin-left: 0 !important;
-  }
-  .toolbar-right {
-    display: flex;
-    gap: 8px;
-  }
-  .toolbar-right .el-button {
-    flex: 1;
-    margin-left: 0;
-  }
-  
-  :deep(.el-table__header-wrapper),
-  :deep(.el-table__body-wrapper) {
-    font-size: 12px;
-  }
-  :deep(.el-table .cell) {
-    padding: 0 4px;
-  }
-  
-  .expand-content {
-    padding: 10px;
-  }
-  .dict-list,
-  .warnings-list {
-    font-size: 12px;
-    padding-left: 16px;
-  }
-  .detail-block {
-    font-size: 12px;
-  }
-  .mobile-actions .el-button {
-    flex: 1;
-    margin-left: 0;
-  }
+  .av-tasks { padding: 12px; }
+  .toolbar { flex-direction: column; align-items: stretch; gap: 10px; }
+  .toolbar-left { flex-direction: column; align-items: stretch; gap: 8px; }
+  .toolbar-left .el-select, .toolbar-left .el-input { width: 100% !important; margin-left: 0 !important; }
+  .toolbar-right { display: flex; gap: 8px; }
+  .toolbar-right .el-button { flex: 1; margin-left: 0; }
+  :deep(.el-table__header-wrapper), :deep(.el-table__body-wrapper) { font-size: 12px; }
+  :deep(.el-table .cell) { padding: 0 4px; }
+  .expand-content { padding: 10px; }
+  .dict-list, .warnings-list { font-size: 12px; padding-left: 16px; }
+  .detail-block { font-size: 12px; }
+  .mobile-actions .el-button { flex: 1; margin-left: 0; }
 }
 </style>
