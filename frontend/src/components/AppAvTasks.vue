@@ -1,8 +1,8 @@
 <template>
   <div class="av-tasks">
-    <!-- ★ 顶部状态条：移动端自动适配宽度 -->
+    <!-- ★ 顶部状态条：靠读取 localStorage 控制 -->
     <el-alert
-      v-if="hasActiveTask"
+      v-if="isScanning"
       title="后台正在执行刮削任务..."
       type="warning"
       show-icon
@@ -10,7 +10,7 @@
       class="status-alert"
     >
       <template #default>
-        <span>任务处理中，列表每 30 秒自动刷新。</span>
+        <span>任务处理中，列表每 15 秒自动刷新。</span>
       </template>
     </el-alert>
 
@@ -136,7 +136,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -153,27 +153,100 @@ const pageSize = ref(20)
 const loading = ref(false)
 const statusFilter = ref('')
 const keyword = ref('')
-let refreshTimer: any = null
 
-const hasActiveTask = computed(() => list.value.some(t => t.status === 'pending' || t.status === 'running'))
+const isScanning = ref(false) // ★ 控制黄条显示
+let refreshTimer: any = null
 
 const load = async () => {
   loading.value = true
   try {
-    const res = await axios.get('/api/avscrape/tasks', { params: { page: page.value, page_size: pageSize.value, status: statusFilter.value, keyword: keyword.value } })
+    const res = await axios.get('/api/avscrape/tasks', {
+      params: {
+        page: page.value, page_size: pageSize.value,
+        status: statusFilter.value, keyword: keyword.value,
+      },
+    })
     list.value = res.data.list || []
     total.value = res.data.total || 0
-  } catch { ElMessage.error('加载任务失败') } finally { loading.value = false }
-
-  if (hasActiveTask.value && !refreshTimer) {
-    refreshTimer = setInterval(() => { if (document.visibilityState === 'visible') load() }, 30000)
-  } else if (!hasActiveTask.value && refreshTimer) {
-    clearInterval(refreshTimer); refreshTimer = null
+  } catch {
+    ElMessage.error('加载任务失败')
+  } finally {
+    loading.value = false
   }
 }
 
-const reload = () => { page.value = 1; load() }
-const goMedia = (id: number) => router.push(`/avscrape/library/${id}`)
+// ==========================================
+// ★ 任务页：通过 localStorage 检测是否有扫描任务在跑
+// ==========================================
+const checkScanningStatus = async () => {
+  // 1. 看看本地有没有正在扫描的目录记录
+  const keys = Object.keys(localStorage).filter(k => k.startsWith('scan_time_'))
+  if (keys.length === 0) {
+    if (isScanning.value) {
+      isScanning.value = false
+      stopTaskPolling()
+    }
+    return
+  }
+
+  // 2. 如果有记录，去后端拉一下目录状态，比对时间，顺便清理本地脏数据
+  try {
+    const res = await axios.get('/api/avscrape/paths')
+    const paths = res.data.list || []
+    let hasValidTask = false
+
+    for (const key of keys) {
+      const id = parseInt(key.replace('scan_time_', ''))
+      const savedTime = localStorage.getItem(key)
+      const pathInfo = paths.find((p: any) => p.id === id)
+
+      if (pathInfo && pathInfo.last_scan_at === savedTime) {
+        hasValidTask = true // 时间没变，说明还在扫
+      } else {
+        localStorage.removeItem(key) // 时间变了，扫完了，清理掉
+      }
+    }
+
+    if (hasValidTask) {
+      if (!isScanning.value) {
+        isScanning.value = true
+        startTaskPolling()
+      }
+    } else {
+      if (isScanning.value) {
+        isScanning.value = false
+        stopTaskPolling()
+      }
+    }
+  } catch {}
+}
+
+const startTaskPolling = () => {
+  if (refreshTimer) clearInterval(refreshTimer)
+  refreshTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      load()
+      checkScanningStatus() // 每次轮询同时检查黄条是否该消失
+    }
+  }, 15000) // 任务列表刷新得快一点，15秒一次
+}
+
+const stopTaskPolling = () => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
+  }
+}
+// ==========================================
+
+const reload = () => {
+  page.value = 1
+  load()
+}
+
+const goMedia = (id: number) => {
+  router.push(`/avscrape/library/${id}`)
+}
 
 const statusTag = (s: string) => {
   switch (s) {
@@ -186,6 +259,7 @@ const statusTag = (s: string) => {
     default: return 'info'
   }
 }
+
 const statusText = (s: string) => {
   switch (s) {
     case 'done': return '完成'
@@ -204,28 +278,29 @@ const parseDictLogs = (json: string) => { if (!json) return []; try { return Arr
 const formatTime = (t: string) => t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : ''
 
 const clearAll = async () => {
-  try { await ElMessageBox.confirm('确定清空所有任务记录吗？', '确认', { type: 'warning' }); await axios.delete('/api/avscrape/tasks'); ElMessage.success('已清空'); reload() } 
-  catch (e: any) { if (e !== 'cancel') ElMessage.error('清空失败') }
+  try { await ElMessageBox.confirm('确定清空所有任务记录吗？', '确认', { type: 'warning' }); await axios.delete('/api/avscrape/tasks'); ElMessage.success('已清空'); reload() } catch (e: any) { if (e !== 'cancel') ElMessage.error('清空失败') }
 }
 const clearAndResetId = async () => {
-  try { await ElMessageBox.confirm('将清空所有任务记录，并把任务 ID 从 1 开始。确定？', '警告', { type: 'warning' }); const res = await axios.post('/api/avscrape/tasks/clear-and-reset'); ElMessage.success(res.data?.msg || '已清空并重置 ID'); reload() } 
-  catch (e: any) { if (e !== 'cancel') ElMessage.error('操作失败') }
+  try { await ElMessageBox.confirm('将清空所有任务记录，并把任务 ID 从 1 开始。确定？', '警告', { type: 'warning' }); const res = await axios.post('/api/avscrape/tasks/clear-and-reset'); ElMessage.success(res.data?.msg || '已清空并重置 ID'); reload() } catch (e: any) { if (e !== 'cancel') ElMessage.error('操作失败') }
 }
 const release = async (row: any) => {
-  try { await ElMessageBox.confirm(`放行番号 ${row.code}？`, '确认放行', { type: 'warning' }); await axios.post(`/api/avscrape/library/${row.media_id}/release`); ElMessage.success('已放行'); load() } 
-  catch (e: any) { if (e !== 'cancel') ElMessage.error('放行失败') }
+  try { await ElMessageBox.confirm(`放行番号 ${row.code}？`, '确认放行', { type: 'warning' }); await axios.post(`/api/avscrape/library/${row.media_id}/release`); ElMessage.success('已放行'); load() } catch (e: any) { if (e !== 'cancel') ElMessage.error('放行失败') }
 }
 const restart = async (row: any) => {
-  try { await ElMessageBox.confirm(`重启番号 ${row.code}？`, '确认重启', { type: 'warning' }); await axios.post(`/api/avscrape/library/${row.media_id}/restart`); ElMessage.success('已重启'); load() } 
-  catch (e: any) { if (e !== 'cancel') ElMessage.error('重启失败') }
+  try { await ElMessageBox.confirm(`重启番号 ${row.code}？`, '确认重启', { type: 'warning' }); await axios.post(`/api/avscrape/library/${row.media_id}/restart`); ElMessage.success('已重启'); load() } catch (e: any) { if (e !== 'cancel') ElMessage.error('重启失败') }
 }
 const cancel = async (row: any) => {
-  try { await ElMessageBox.confirm(`取消番号 ${row.code}？`, '确认取消', { type: 'warning' }); await axios.post(`/api/avscrape/library/${row.media_id}/cancel`); ElMessage.success('已取消'); load() } 
-  catch (e: any) { if (e !== 'cancel') ElMessage.error('取消失败') }
+  try { await ElMessageBox.confirm(`取消番号 ${row.code}？`, '确认取消', { type: 'warning' }); await axios.post(`/api/avscrape/library/${row.media_id}/cancel`); ElMessage.success('已取消'); load() } catch (e: any) { if (e !== 'cancel') ElMessage.error('取消失败') }
 }
 
-onMounted(load)
-onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
+onMounted(async () => {
+  await load()
+  checkScanningStatus() // 进页面立刻检测黄条状态
+})
+
+onUnmounted(() => {
+  stopTaskPolling()
+})
 </script>
 
 <style scoped>
@@ -245,7 +320,6 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 .no-warnings { color: #67c23a; margin-bottom: 12px; }
 .detail-block { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #606266; padding-top: 8px; border-top: 1px dashed #dcdfe6; word-break: break-all; }
 
-/* ★ 移动端适配 */
 @media (max-width: 768px) {
   .av-tasks { padding: 12px; }
   .status-alert { margin-bottom: 12px; padding: 8px 12px !important; }
