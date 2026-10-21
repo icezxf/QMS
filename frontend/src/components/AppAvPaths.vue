@@ -212,7 +212,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
-import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useDeviceType } from '@/composables/useDeviceType'
 
 const { isMobile } = useDeviceType()
@@ -228,16 +228,8 @@ let globalTimer: any = null
 const DEFAULT_NAME_TEMPLATE = '{resolution}/{actors}/{code}'
 
 const form = ref({
-  name: '',
-  source_type: '115',
-  account_id: 0,
-  source_path: '',
-  target_path: '',
-  mode: 'scrape_and_rename',
-  move_method: 'move',
-  name_template: DEFAULT_NAME_TEMPLATE,
-  enable: true,
-  is_vr: false,
+  name: '', source_type: '115', account_id: 0, source_path: '', target_path: '',
+  mode: 'scrape_and_rename', move_method: 'move', name_template: DEFAULT_NAME_TEMPLATE, enable: true, is_vr: false,
 })
 
 const pickerVisible = ref(false)
@@ -247,23 +239,16 @@ const pickerLoading = ref(false)
 const pickerParentId = ref('')
 const pickerParentPath = ref('')
 
-const sourceTypeText = (t: string) =>
-  ({ '115': '115 网盘', openlist: 'OpenList', local: '本地目录' } as any)[t] || t
-const modeText = (m: string) =>
-  ({ scrape_only: '仅刮削', scrape_and_rename: '刮削和整理', rename_only: '仅整理' } as any)[m] || m
-const moveMethodText = (m: string) =>
-  ({ move: '移动', copy: '复制' } as any)[m] || m
+const sourceTypeText = (t: string) => ({ '115': '115 网盘', openlist: 'OpenList', local: '本地目录' } as any)[t] || t
+const modeText = (m: string) => ({ scrape_only: '仅刮削', scrape_and_rename: '刮削和整理', rename_only: '仅整理' } as any)[m] || m
+const moveMethodText = (m: string) => ({ move: '移动', copy: '复制' } as any)[m] || m
 
 const loadList = async () => {
   loading.value = true
   try {
     const res = await axios.get('/api/avscrape/paths')
     list.value = res.data.list || []
-  } catch {
-    ElMessage.error('加载目录列表失败')
-  } finally {
-    loading.value = false
-  }
+  } catch { ElMessage.error('加载目录列表失败') } finally { loading.value = false }
 }
 
 const loadAccounts = async () => {
@@ -273,15 +258,25 @@ const loadAccounts = async () => {
   } catch {}
 }
 
-// ★ 轮询逻辑：30 秒查一次 last_scan_at 是否变化
+// ==========================================
+// ★ 目录页：极简状态恢复与轮询
+// ==========================================
+const restoreScanningState = () => {
+  list.value.forEach(item => {
+    const savedTime = localStorage.getItem('scan_time_' + item.id)
+    if (savedTime !== null) {
+      if (item.last_scan_at !== savedTime) {
+        localStorage.removeItem('scan_time_' + item.id) // 发现过期了，清理掉
+      } else {
+        scanningIds.value.push(item.id) // 还在扫，按钮转圈
+      }
+    }
+  })
+  if (scanningIds.value.length > 0) startPolling()
+}
+
 const startPolling = () => {
   if (globalTimer) clearInterval(globalTimer)
-  
-  const timeSnapshots: Record<number, string> = {}
-  list.value.forEach((item: any) => {
-    timeSnapshots[item.id] = item.last_scan_at || ''
-  })
-
   globalTimer = setInterval(async () => {
     if (document.visibilityState === 'hidden') return
     try {
@@ -292,29 +287,18 @@ const startPolling = () => {
       for (const id of scanningIds.value) {
         const currentItem = newList.find((item: any) => item.id === id)
         if (!currentItem) continue
-
-        if (currentItem.last_scan_at !== timeSnapshots[id]) {
+        const savedTime = localStorage.getItem('scan_time_' + id)
+        
+        if (currentItem.last_scan_at !== savedTime) {
           scanningIds.value = scanningIds.value.filter(v => v !== id)
-          const finishTime = new Date(currentItem.last_scan_at).toLocaleString('zh-CN', { hour12: false })
-          
-          ElNotification({
-            title: '扫描完成',
-            dangerouslyUseHTMLString: true,
-            message: `<div style="margin-top: 6px;"><span>目录【${currentItem.name}】扫描已完成。</span><br/><span style="color: #909399; font-size: 12px;">完成时间：${finishTime}</span></div>`,
-            type: 'success',
-            duration: 0,
-            position: 'bottom-right'
-          })
+          localStorage.removeItem('scan_time_' + id) // 扫完了清理
         } else {
           stillScanning = true
         }
       }
-
       list.value = newList
-
       if (!stillScanning && scanningIds.value.length === 0) {
-        clearInterval(globalTimer)
-        globalTimer = null
+        clearInterval(globalTimer); globalTimer = null
       }
     } catch {}
   }, 30000)
@@ -322,7 +306,11 @@ const startPolling = () => {
 
 const scan = async (id: number) => {
   if (scanningIds.value.includes(id)) return
+  const item = list.value.find(i => i.id === id)
+  const currentLastScan = item ? (item.last_scan_at || '') : ''
+  
   scanningIds.value.push(id)
+  localStorage.setItem('scan_time_' + id, currentLastScan) // 记入本地
   if (!globalTimer) startPolling()
   
   try {
@@ -330,187 +318,73 @@ const scan = async (id: number) => {
     ElMessage.success(res.data.msg || '任务已加入后台队列')
   } catch (e: any) {
     scanningIds.value = scanningIds.value.filter(v => v !== id)
+    localStorage.removeItem('scan_time_' + id)
     ElMessage.error(e.response?.data?.error || '添加任务失败')
   }
 }
 
-const onSourceTypeChange = () => {
-  form.value.account_id = 0
-  form.value.source_path = ''
-  form.value.target_path = ''
-}
+// ==========================================
 
-const onAccountChange = () => {
-  form.value.source_path = ''
-  form.value.target_path = ''
-}
-
+const onSourceTypeChange = () => { form.value.account_id = 0; form.value.source_path = ''; form.value.target_path = '' }
+const onAccountChange = () => { form.value.source_path = ''; form.value.target_path = '' }
 const openAdd = () => {
   editId.value = null
-  form.value = {
-    name: '',
-    source_type: '115',
-    account_id: 0,
-    source_path: '',
-    target_path: '',
-    mode: 'scrape_and_rename',
-    move_method: 'move',
-    name_template: DEFAULT_NAME_TEMPLATE,
-    enable: true,
-    is_vr: false,
-  }
+  form.value = { name: '', source_type: '115', account_id: 0, source_path: '', target_path: '', mode: 'scrape_and_rename', move_method: 'move', name_template: DEFAULT_NAME_TEMPLATE, enable: true, is_vr: false }
   dialogVisible.value = true
 }
-
 const openEdit = (row: any) => {
   editId.value = row.id
-  form.value = {
-    name: row.name,
-    source_type: row.source_type,
-    account_id: row.account_id,
-    source_path: row.source_path,
-    target_path: row.target_path,
-    mode: row.mode,
-    move_method: row.move_method,
-    name_template: row.name_template || DEFAULT_NAME_TEMPLATE,
-    enable: row.enable,
-    is_vr: !!row.is_vr,
-  }
+  form.value = { ...row, name_template: row.name_template || DEFAULT_NAME_TEMPLATE, is_vr: !!row.is_vr }
   dialogVisible.value = true
 }
-
 const save = async () => {
   try {
-    if (editId.value) {
-      await axios.put(`/api/avscrape/paths/${editId.value}`, form.value)
-    } else {
-      await axios.post('/api/avscrape/paths', form.value)
-    }
-    ElMessage.success('保存成功')
-    dialogVisible.value = false
-    await loadList()
-  } catch (e: any) {
-    ElMessage.error(e.response?.data?.error || '保存失败')
-  }
+    if (editId.value) await axios.put(`/api/avscrape/paths/${editId.value}`, form.value)
+    else await axios.post('/api/avscrape/paths', form.value)
+    ElMessage.success('保存成功'); dialogVisible.value = false; await loadList()
+  } catch (e: any) { ElMessage.error(e.response?.data?.error || '保存失败') }
 }
-
 const del = async (id: number) => {
   try {
     await ElMessageBox.confirm('确定删除这个刮削目录？', '提示', { type: 'warning' })
     await axios.delete(`/api/avscrape/paths/${id}`)
-    ElMessage.success('删除成功')
-    await loadList()
+    ElMessage.success('删除成功'); await loadList()
   } catch {}
 }
-
 const openPicker = (target: 'source' | 'target') => {
-  if (form.value.source_type !== 'local' && !form.value.account_id) {
-    ElMessage.warning('请先选择网盘账号')
-    return
-  }
-  pickerTarget.value = target
-  pickerParentId.value = ''
-  pickerParentPath.value = ''
-  pickerVisible.value = true
-  loadPickerList()
+  if (form.value.source_type !== 'local' && !form.value.account_id) { ElMessage.warning('请先选择网盘账号'); return }
+  pickerTarget.value = target; pickerParentId.value = ''; pickerParentPath.value = ''; pickerVisible.value = true; loadPickerList()
 }
-
 const loadPickerList = async () => {
   pickerLoading.value = true
   try {
-    const res = await axios.get('/api/path/list', {
-      params: {
-        source_type: form.value.source_type,
-        account_id: form.value.account_id,
-        parent_id: pickerParentId.value,
-        parent_path: pickerParentPath.value,
-      },
-    })
+    const res = await axios.get('/api/path/list', { params: { source_type: form.value.source_type, account_id: form.value.account_id, parent_id: pickerParentId.value, parent_path: pickerParentPath.value } })
     pickerList.value = res.data.data || []
-  } catch {
-    ElMessage.error('加载目录失败')
-    pickerList.value = []
-  } finally {
-    pickerLoading.value = false
-  }
+  } catch { ElMessage.error('加载目录失败'); pickerList.value = [] } finally { pickerLoading.value = false }
 }
-
-const pickerEnter = (row: any) => {
-  pickerParentId.value = row.id
-  pickerParentPath.value = row.path
-  loadPickerList()
-}
-
+const pickerEnter = (row: any) => { pickerParentId.value = row.id; pickerParentPath.value = row.path; loadPickerList() }
 const pickerConfirm = (row: any) => {
-  if (pickerTarget.value === 'source') {
-    form.value.source_path = row.path
-  } else {
-    form.value.target_path = row.path
-  }
+  if (pickerTarget.value === 'source') form.value.source_path = row.path
+  else form.value.target_path = row.path
   pickerVisible.value = false
 }
-
-const pickerGoRoot = () => {
-  pickerParentId.value = ''
-  pickerParentPath.value = ''
-  loadPickerList()
-}
+const pickerGoRoot = () => { pickerParentId.value = ''; pickerParentPath.value = ''; loadPickerList() }
 
 onMounted(async () => {
   await loadList()
   loadAccounts()
-  
-  // ★ 刷新重进恢复状态：查一下任务表有没有在跑
-  try {
-    const res = await axios.get('/api/avscrape/tasks', { params: { status: 'running', page_size: 1 } })
-    if (res.data.list && res.data.list.length > 0) {
-      scanningIds.value = list.value.map((item: any) => item.id)
-      startPolling()
-    }
-  } catch {}
+  restoreScanningState() // 从本地恢复
 })
-
-onUnmounted(() => {
-  if (globalTimer) clearInterval(globalTimer)
-})
+onUnmounted(() => { if (globalTimer) clearInterval(globalTimer) })
 </script>
 
 <style scoped>
-.av-paths {
-  padding: 20px;
-  overflow-x: hidden; /* ★ 彻底防止页面横向滚动 */
-}
-.av-paths__header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
-.picker-path {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-  font-size: 14px;
-  color: #666;
-}
-.template-hint {
-  font-size: 12px;
-  color: #999;
-  margin-top: 4px;
-  line-height: 1.6;
-}
-.template-hint code {
-  background: #f5f7fa;
-  padding: 1px 4px;
-  border-radius: 3px;
-  color: #e6a23c;
-}
-.vr-hint {
-  margin-top: 4px;
-  color: #999;
-  font-size: 12px;
-}
+.av-paths { padding: 20px; overflow-x: hidden; }
+.av-paths__header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.picker-path { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 14px; color: #666; }
+.template-hint { font-size: 12px; color: #999; margin-top: 4px; line-height: 1.6; }
+.template-hint code { background: #f5f7fa; padding: 1px 4px; border-radius: 3px; color: #e6a23c; }
+.vr-hint { margin-top: 4px; color: #999; font-size: 12px; }
 .expand-content { padding: 12px; background: #fafafa; }
 .mobile-actions { display: flex; gap: 8px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed #dcdfe6; }
 .mobile-actions .el-button { flex: 1; margin-left: 0; }
