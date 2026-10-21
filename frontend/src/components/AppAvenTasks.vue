@@ -1,8 +1,8 @@
 <template>
   <div class="aven-tasks">
-    <!-- ★ 顶部状态条：移动端自动适配宽度 -->
+    <!-- ★ 顶部状态条：靠读取 localStorage 控制 -->
     <el-alert
-      v-if="hasActiveTask"
+      v-if="isScanning"
       title="后台正在执行欧美刮削任务..."
       type="warning"
       show-icon
@@ -10,7 +10,7 @@
       class="status-alert"
     >
       <template #default>
-        <span>任务处理中，列表每 30 秒自动刷新。</span>
+        <span>任务处理中，列表每 15 秒自动刷新。</span>
       </template>
     </el-alert>
 
@@ -41,6 +41,7 @@
       <el-table-column type="expand">
         <template #default="{ row }">
           <div class="expand-content">
+            <!-- 移动端操作区 -->
             <div v-if="isMobile && row.status === 'paused' && row.media_id" class="mobile-actions">
               <el-button type="success" size="small" @click="release(row)">放行</el-button>
               <el-button type="primary" size="small" @click="restart(row)">重启</el-button>
@@ -67,7 +68,9 @@
       <el-table-column prop="id" label="ID" width="60" v-if="!isMobile" />
       <el-table-column label="oshash" min-width="160">
         <template #default="{ row }">
-          <el-link v-if="row.media_id" type="primary" @click="goMedia(row.media_id)">{{ row.oshash }}</el-link>
+          <el-link v-if="row.media_id" type="primary" @click="goMedia(row.media_id)">
+            {{ row.oshash }}
+          </el-link>
           <span v-else>{{ row.oshash || '—' }}</span>
         </template>
       </el-table-column>
@@ -82,7 +85,9 @@
       
       <el-table-column v-if="!isMobile" label="警告" width="60" align="center">
         <template #default="{ row }">
-          <el-tag v-if="parseWarnings(row.warnings).length > 0" type="warning" size="small">{{ parseWarnings(row.warnings).length }}</el-tag>
+          <el-tag v-if="parseWarnings(row.warnings).length > 0" type="warning" size="small">
+            {{ parseWarnings(row.warnings).length }}
+          </el-tag>
           <span v-else>—</span>
         </template>
       </el-table-column>
@@ -112,7 +117,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -129,27 +134,98 @@ const pageSize = ref(20)
 const loading = ref(false)
 const statusFilter = ref('')
 const keyword = ref('')
-let refreshTimer: any = null
 
-const hasActiveTask = computed(() => list.value.some(t => t.status === 'pending' || t.status === 'running'))
+const isScanning = ref(false)
+let refreshTimer: any = null
 
 const load = async () => {
   loading.value = true
   try {
-    const res = await axios.get('/api/aven/tasks', { params: { page: page.value, page_size: pageSize.value, status: statusFilter.value, keyword: keyword.value } })
+    const res = await axios.get('/api/aven/tasks', {
+      params: {
+        page: page.value, page_size: pageSize.value,
+        status: statusFilter.value, keyword: keyword.value,
+      },
+    })
     list.value = res.data.list || []
     total.value = res.data.total || 0
-  } catch { ElMessage.error('加载任务失败') } finally { loading.value = false }
-
-  if (hasActiveTask.value && !refreshTimer) {
-    refreshTimer = setInterval(() => { if (document.visibilityState === 'visible') load() }, 30000)
-  } else if (!hasActiveTask.value && refreshTimer) {
-    clearInterval(refreshTimer); refreshTimer = null
+  } catch {
+    ElMessage.error('加载任务失败')
+  } finally {
+    loading.value = false
   }
 }
 
-const reload = () => { page.value = 1; load() }
-const goMedia = (id: number) => router.push(`/aven/library/${id}`)
+// ==========================================
+// ★ 任务页：通过 localStorage 检测是否有扫描任务在跑
+// ==========================================
+const checkScanningStatus = async () => {
+  const keys = Object.keys(localStorage).filter(k => k.startsWith('scan_aven_time_'))
+  if (keys.length === 0) {
+    if (isScanning.value) {
+      isScanning.value = false
+      stopTaskPolling()
+    }
+    return
+  }
+
+  try {
+    const res = await axios.get('/api/aven/paths')
+    const paths = res.data.list || []
+    let hasValidTask = false
+
+    for (const key of keys) {
+      const id = parseInt(key.replace('scan_aven_time_', ''))
+      const savedTime = localStorage.getItem(key)
+      const pathInfo = paths.find((p: any) => p.id === id)
+
+      if (pathInfo && pathInfo.last_scan_at === savedTime) {
+        hasValidTask = true
+      } else {
+        localStorage.removeItem(key)
+      }
+    }
+
+    if (hasValidTask) {
+      if (!isScanning.value) {
+        isScanning.value = true
+        startTaskPolling()
+      }
+    } else {
+      if (isScanning.value) {
+        isScanning.value = false
+        stopTaskPolling()
+      }
+    }
+  } catch {}
+}
+
+const startTaskPolling = () => {
+  if (refreshTimer) clearInterval(refreshTimer)
+  refreshTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      load()
+      checkScanningStatus()
+    }
+  }, 15000)
+}
+
+const stopTaskPolling = () => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
+  }
+}
+// ==========================================
+
+const reload = () => {
+  page.value = 1
+  load()
+}
+
+const goMedia = (id: number) => {
+  router.push(`/aven/library/${id}`)
+}
 
 const statusTag = (s: string) => {
   switch (s) {
@@ -162,6 +238,7 @@ const statusTag = (s: string) => {
     default: return 'info'
   }
 }
+
 const statusText = (s: string) => {
   switch (s) {
     case 'done': return '完成'
@@ -178,29 +255,30 @@ const statusText = (s: string) => {
 const parseWarnings = (json: string) => { if (!json) return []; try { return Array.isArray(JSON.parse(json)) ? JSON.parse(json) : [] } catch { return [] } }
 const formatTime = (t: string) => t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : ''
 
-const release = async (row: any) => {
-  try { await ElMessageBox.confirm(`放行？`, '确认放行', { type: 'warning' }); await axios.post(`/api/aven/library/${row.media_id}/release`); ElMessage.success('已放行'); load() } 
-  catch (e: any) { if (e !== 'cancel') ElMessage.error('放行失败') }
-}
-const restart = async (row: any) => {
-  try { await ElMessageBox.confirm('重启会删除临时文件并清空记录。', '确认重启', { type: 'warning' }); await axios.post(`/api/aven/library/${row.media_id}/restart`); ElMessage.success('已重启'); load() } 
-  catch (e: any) { if (e !== 'cancel') ElMessage.error('重启失败') }
-}
-const cancel = async (row: any) => {
-  try { await ElMessageBox.confirm('取消会删除临时文件和记录。', '确认取消', { type: 'warning' }); await axios.post(`/api/aven/library/${row.media_id}/cancel`); ElMessage.success('已取消'); load() } 
-  catch (e: any) { if (e !== 'cancel') ElMessage.error('取消失败') }
-}
 const clearAll = async () => {
-  try { await ElMessageBox.confirm('确定清空所有任务记录吗？', '确认', { type: 'warning' }); await axios.delete('/api/aven/tasks'); ElMessage.success('已清空'); reload() } 
-  catch (e: any) { if (e !== 'cancel') ElMessage.error('清空失败') }
+  try { await ElMessageBox.confirm('确定清空所有任务记录吗？', '确认', { type: 'warning' }); await axios.delete('/api/aven/tasks'); ElMessage.success('已清空'); reload() } catch (e: any) { if (e !== 'cancel') ElMessage.error('清空失败') }
 }
 const clearAndResetId = async () => {
-  try { await ElMessageBox.confirm('将清空所有任务记录，并把任务 ID 从 1 开始。确定？', '警告', { type: 'warning' }); const res = await axios.post('/api/aven/tasks/clear-and-reset'); ElMessage.success(res.data?.msg || '已清空并重置 ID'); reload() } 
-  catch (e: any) { if (e !== 'cancel') ElMessage.error('操作失败') }
+  try { await ElMessageBox.confirm('将清空所有任务记录，并把任务 ID 从 1 开始。确定？', '警告', { type: 'warning' }); const res = await axios.post('/api/aven/tasks/clear-and-reset'); ElMessage.success(res.data?.msg || '已清空并重置 ID'); reload() } catch (e: any) { if (e !== 'cancel') ElMessage.error('操作失败') }
+}
+const release = async (row: any) => {
+  try { await ElMessageBox.confirm(`放行？`, '确认放行', { type: 'warning' }); await axios.post(`/api/aven/library/${row.media_id}/release`); ElMessage.success('已放行'); load() } catch (e: any) { if (e !== 'cancel') ElMessage.error('放行失败') }
+}
+const restart = async (row: any) => {
+  try { await ElMessageBox.confirm('重启会删除临时文件并清空记录。', '确认重启', { type: 'warning' }); await axios.post(`/api/aven/library/${row.media_id}/restart`); ElMessage.success('已重启'); load() } catch (e: any) { if (e !== 'cancel') ElMessage.error('重启失败') }
+}
+const cancel = async (row: any) => {
+  try { await ElMessageBox.confirm('取消会删除临时文件和记录。', '确认取消', { type: 'warning' }); await axios.post(`/api/aven/library/${row.media_id}/cancel`); ElMessage.success('已取消'); load() } catch (e: any) { if (e !== 'cancel') ElMessage.error('取消失败') }
 }
 
-onMounted(load)
-onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
+onMounted(async () => {
+  await load()
+  checkScanningStatus()
+})
+
+onUnmounted(() => {
+  stopTaskPolling()
+})
 </script>
 
 <style scoped>
@@ -216,7 +294,6 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 .no-warnings { color: #67c23a; margin-bottom: 12px; }
 .detail-block { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #606266; padding-top: 8px; border-top: 1px dashed #dcdfe6; word-break: break-all; }
 
-/* ★ 移动端适配 */
 @media (max-width: 768px) {
   .aven-tasks { padding: 12px; }
   .status-alert { margin-bottom: 12px; padding: 8px 12px !important; }
