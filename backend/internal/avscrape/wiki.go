@@ -35,9 +35,11 @@ type WikiClient struct {
 	cache   map[string]*wikiCache
 }
 
+// ★ 缓存结构必须带上 source 来源
 type wikiCache struct {
-	zh string
-	at time.Time
+	zh     string
+	source string 
+	at     time.Time
 }
 
 func NewWikiClient() *WikiClient {
@@ -60,10 +62,10 @@ func pickChineseFromActor(a Actor) string {
 }
 
 // GetChineseName 只做：字典 → 缓存 → 维基
-// ouxiang 不在这里，放到 TranslateActorNames 最后兜底
-func (w *WikiClient) GetChineseName(inputName string) (string, error) {
+// 返回 (中文名, 来源, error)，来源为 "dict" / "cache" / "wiki" / ""
+func (w *WikiClient) GetChineseName(inputName string) (string, string, error) {
 	if inputName == "" {
-		return "", nil
+		return "", "", nil
 	}
 
 	searchName := toSimplified(inputName)
@@ -82,10 +84,10 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 		).First(&mapping).Error
 		if err == nil && mapping.ZhName != "" {
 			zh := toSimplified(mapping.ZhName)
-			// ★ 只有纯中文才算命中；半中半日脏数据跳过，继续走维基
+			// 只有纯中文才算命中
 			if isChineseName(zh) {
 				helpers.AppLogger.Infof("[字典] %s → %s", inputName, zh)
-				return zh, nil
+				return zh, "dict", nil
 			}
 			helpers.AppLogger.Warnf("[字典] %s 命中了异常数据 (%s)，尝试通过其他源查找", inputName, zh)
 		}
@@ -96,7 +98,8 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 	if entry, ok := w.cache[inputName]; ok {
 		if time.Since(entry.at) < 24*time.Hour {
 			w.mu.Unlock()
-			return entry.zh, nil
+			// 返回缓存里的 source (可能是 wiki, ouxiang, 或 dict)
+			return entry.zh, entry.source, nil
 		}
 	}
 	w.mu.Unlock()
@@ -123,15 +126,16 @@ func (w *WikiClient) GetChineseName(inputName string) (string, error) {
 		zhName = toSimplified(zhName)
 	}
 
-	// ===== 4. 写缓存（空结果也写，避免重复请求维基） =====
-	w.mu.Lock()
-	w.cache[inputName] = &wikiCache{zh: zhName, at: time.Now()}
-	w.mu.Unlock()
-
+	// ===== 4. 写缓存 =====
 	if zhName != "" {
+		w.mu.Lock()
+		w.cache[inputName] = &wikiCache{zh: zhName, source: "wiki", at: time.Now()}
+		w.mu.Unlock()
 		helpers.AppLogger.Infof("[维基] %s → %s", inputName, zhName)
+		return zhName, "wiki", nil
 	}
-	return zhName, nil
+
+	return "", "", nil
 }
 
 func (w *WikiClient) GetJapaneseName(chineseName string) string {
@@ -331,7 +335,7 @@ func fetchOuxiangChineseName(keyword string) (jpName, zhName string, ok bool) {
 			}
 		}
 
-		// 严格完全匹配，防串台
+		// 严格完全匹配
 		matched := false
 		for _, c := range candidates {
 			if normalizeStr(c) == normKeyword {
@@ -354,7 +358,7 @@ func fetchOuxiangChineseName(keyword string) (jpName, zhName string, ok bool) {
 			}
 		}
 
-		// 回退候选池找纯中文
+		// 回退候选池
 		if finalZhName == "" {
 			for _, c := range candidates {
 				if isChineseName(c) && !strings.ContainsAny(c, "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ") {
@@ -406,9 +410,7 @@ func normalizeStr(s string) string {
 }
 
 // ============================================================
-// TranslateActorNames
-// 返回 (actors, warnings, dictLogs)
-// 顺序：字典/缓存/维基 → JavStash 别名（纯中文）→ ouxiang 最后兜底
+// TranslateActorNames：字典/缓存/维基 → JavStash 别名 → ouxiang
 // ============================================================
 
 func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string, []string) {
@@ -422,7 +424,7 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string, []s
 		}
 
 		// ===== 1. 字典 → 缓存 → 维基 =====
-		zh, err := w.GetChineseName(oldName)
+		zh, source, err := w.GetChineseName(oldName)
 		if err == nil && zh != "" && zh != oldName {
 			exists := false
 			for _, a := range actors[i].Aliases {
@@ -435,7 +437,18 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string, []s
 				actors[i].Aliases = append(actors[i].Aliases, oldName)
 			}
 			actors[i].Name = zh
-			dictLogs = append(dictLogs, fmt.Sprintf("演员: %s → %s", oldName, zh))
+			
+			// ★ 核心修改：根据 source 明确区分来源日志
+			switch source {
+			case "dict":
+				dictLogs = append(dictLogs, fmt.Sprintf("字典: %s → %s", oldName, zh))
+			case "cache":
+				dictLogs = append(dictLogs, fmt.Sprintf("缓存: %s → %s", oldName, zh))
+			case "wiki":
+				dictLogs = append(dictLogs, fmt.Sprintf("维基: %s → %s", oldName, zh))
+			default:
+				dictLogs = append(dictLogs, fmt.Sprintf("翻译: %s → %s", oldName, zh))
+			}
 			continue
 		}
 
@@ -455,12 +468,14 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string, []s
 				actors[i].Aliases = append(actors[i].Aliases, oldName)
 			}
 			actors[i].Name = fallbackZh
-			dictLogs = append(dictLogs, fmt.Sprintf("演员(别名): %s → %s", oldName, fallbackZh))
+			
+			// ★ 别名兜底也加上明确前缀
+			dictLogs = append(dictLogs, fmt.Sprintf("别名: %s → %s", oldName, fallbackZh))
 			helpers.AppLogger.Infof("[演员] %s → %s (JavStash 别名兜底)", oldName, fallbackZh)
 
-			// 写缓存，避免下次重复走维基/ouxiang
+			// 写缓存
 			w.mu.Lock()
-			w.cache[oldName] = &wikiCache{zh: fallbackZh, at: time.Now()}
+			w.cache[oldName] = &wikiCache{zh: fallbackZh, source: "javstash", at: time.Now()}
 			w.mu.Unlock()
 			continue
 		}
@@ -480,12 +495,14 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string, []s
 					actors[i].Aliases = append(actors[i].Aliases, oldName)
 				}
 				actors[i].Name = zh
+				
+				// ouxiang 属于兜底告警
 				warnings = append(warnings, fmt.Sprintf("ouxiang-演员: %s → %s", oldName, zh))
 				helpers.AppLogger.Infof("[ouxiang] %s → %s (日文名: %s)", oldName, zh, jpName)
 
-				// 写缓存，避免下次重复走维基/ouxiang
+				// 写缓存
 				w.mu.Lock()
-				w.cache[oldName] = &wikiCache{zh: zh, at: time.Now()}
+				w.cache[oldName] = &wikiCache{zh: zh, source: "ouxiang", at: time.Now()}
 				w.mu.Unlock()
 				continue
 			}
@@ -496,16 +513,5 @@ func (w *WikiClient) TranslateActorNames(actors []Actor) ([]Actor, []string, []s
 			warnings = append(warnings, fmt.Sprintf("演员 %s 翻译失败(%v)", oldName, err))
 		}
 	}
-
-	// 最终检查：还有哪些演员名不是中文
-	for _, a := range actors {
-		if a.Name == "" {
-			continue
-		}
-		if !isChineseName(a.Name) {
-			warnings = append(warnings, fmt.Sprintf("演员名未翻译: %s", a.Name))
-		}
-	}
-
 	return actors, warnings, dictLogs
 }
