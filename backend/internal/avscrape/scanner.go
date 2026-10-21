@@ -408,7 +408,11 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 
 	// 步骤 4 元数据文件
 	helpers.AppLogger.Infof("[AV扫描] %s 步骤 3/5: 生成元数据文件", code)
-	nfoBaseName := media.Code + resolutionSuffix(result.Resolution)
+	
+	// ★ 修改点1：NFO 命名加上特殊后缀（无码破解等）
+	suffix := getMediaSuffix(result)
+	nfoBaseName := media.Code + resolutionSuffix(result.Resolution) + suffix
+	
 	files, prepWarnings, err := s.prepareMetaFiles(nfoBaseName, result, cfg, path.IsVR)
 	allWarnings := append([]string{}, scrapeWarnings...)
 	allWarnings = append(allWarnings, prepWarnings...)
@@ -576,10 +580,30 @@ func applyEnsembleTag(r *ScrapeResult) {
 	}
 }
 
+// ★ 修改点2：增加对路径里“流出、破解、无码”的识别，并放入 ExtraTags
 func (s *Scanner) detectVideoMetaOnly(fs FileSystem, fullPath string, r *ScrapeResult, cfg *Config) {
 	r.IsUncensored = detectUncensored(r.Code)
 	r.HasChineseSub = detectChineseSub(fs, fullPath)
-	r.ExtraTags = buildExtraTags(r, cfg)
+	
+	// 根据媒体路径/文件名识别特殊字眼
+	pathLower := strings.ToLower(fullPath)
+	
+	if strings.Contains(pathLower, "流出") {
+		r.ExtraTags = append(r.ExtraTags, "流出")
+	}
+	if strings.Contains(pathLower, "破解") || strings.Contains(pathLower, "无码破解") {
+		r.ExtraTags = append(r.ExtraTags, "破解")
+	}
+	if strings.Contains(pathLower, "无码") || strings.Contains(pathLower, "無碼") {
+		r.ExtraTags = append(r.ExtraTags, "无码")
+		r.IsUncensored = true 
+	}
+
+	// 合并原有的标签（分辨率、中文字幕等）
+	r.ExtraTags = append(r.ExtraTags, buildExtraTags(r, cfg)...)
+	// 去重
+	r.ExtraTags = uniqueStrings(r.ExtraTags)
+
 	if len(r.ExtraTags) > 0 {
 		helpers.AppLogger.Infof("[AV探测] %s 附加标签: %v", r.Code, r.ExtraTags)
 	}
@@ -601,11 +625,19 @@ func resolutionSuffix(res string) string {
 	return ""
 }
 
+// ★ 修改点3：给目标目录名、视频文件名加上特殊后缀
 func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVMedia, videoPaths []string, r *ScrapeResult, cfg *Config) (string, bool, error) {
 	relDir := renderTemplate(path.NameTemplate, media)
 	if relDir == "" {
 		relDir = media.Code
 	}
+
+	// 加上目录后缀
+	suffix := getMediaSuffix(r)
+	if suffix != "" {
+		relDir = relDir + suffix
+	}
+
 	targetDir := strings.TrimRight(path.TargetPath, "/") + "/" + relDir
 	if err := fs.MkdirAll(targetDir); err != nil {
 		return "", false, err
@@ -641,7 +673,8 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 			}
 		}
 
-		newName := media.Code + resSuffix + cdSuffix + ext
+		// 在视频文件名中加上后缀
+		newName := media.Code + resSuffix + suffix + cdSuffix + ext
 		newPath := targetDir + "/" + newName
 
 		if fs.Exists(newPath) {
@@ -1416,6 +1449,55 @@ func pickOfficialURL(urls []string) string {
 		if !isAggregatorHost(u) {
 			return u
 		}
+	}
+	return ""
+}
+
+// ★ 修改点4：新增的去重函数和后缀生成函数
+func uniqueStrings(input []string) []string {
+	keys := make(map[string]bool)
+	list := []string{}
+	for _, entry := range input {
+		if _, value := keys[entry]; !value {
+			keys[entry] = true
+			list = append(list, entry)
+		}
+	}
+	return list
+}
+
+func getMediaSuffix(r *ScrapeResult) string {
+	if r == nil {
+		return ""
+	}
+	
+	hasUncensored := r.IsUncensored
+	hasLeak := false
+	hasCrack := false
+	
+	for _, tag := range r.ExtraTags {
+		if tag == "无码" { hasUncensored = true }
+		if tag == "流出" { hasLeak = true }
+		if tag == "破解" { hasCrack = true }
+	}
+	
+	suffix := ""
+	if hasUncensored {
+		if hasCrack {
+			suffix = "无码破解"
+		} else if hasLeak {
+			suffix = "无码流出"
+		} else {
+			suffix = "无码"
+		}
+	} else if hasLeak {
+		suffix = "流出"
+	} else if hasCrack {
+		suffix = "破解"
+	}
+	
+	if suffix != "" {
+		return "-[" + suffix + "]"
 	}
 	return ""
 }
