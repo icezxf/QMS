@@ -534,7 +534,9 @@ func resolveMediaSourceId(id string) (MsInfo, error) {
 	}
 	res.Empty = false
 
-	if len(id) <= 32 {
+	// Emby 原生 MediaSourceId 不含自定义分隔符, 直接使用
+	// 兼容 32 位 hex 与 36 位带连字符 UUID 等任意长度格式
+	if !strings.Contains(id, MediaSourceIdSegment) {
 		res.OriginId = id
 		return res, nil
 	}
