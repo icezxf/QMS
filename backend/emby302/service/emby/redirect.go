@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"qmediasync/emby302/config"
@@ -23,6 +24,46 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// ========== 新增：直链结果缓存 + 并发合并 ==========
+
+// cachedLink 缓存一条已解析的直链结果
+type cachedLink struct {
+	link      string
+	status    int
+	expiresAt time.Time
+}
+
+var (
+	linkCache sync.Map // cacheKey -> cachedLink
+	linkMu    sync.Mutex
+	linkCalls = make(map[string]*linkCall)
+)
+
+// linkCall 用于合并同一 key 的并发请求
+type linkCall struct {
+	wg    sync.WaitGroup
+	entry cachedLink
+}
+
+func init() {
+	// 每 5 分钟清理一次过期条目，防止 sync.Map 无限增长
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			now := time.Now()
+			linkCache.Range(func(k, v any) bool {
+				if entry, ok := v.(cachedLink); ok && now.After(entry.expiresAt) {
+					linkCache.Delete(k)
+				}
+				return true
+			})
+		}
+	}()
+}
+
+// ========== 原有函数保持不变 ==========
 
 // Redirect2Transcode 将 master 请求重定向到本地 TS 代理
 func Redirect2Transcode(c *gin.Context) {
@@ -74,7 +115,6 @@ func Redirect2OpenlistLink(c *gin.Context) {
 	if checkErr(c, err) {
 		return
 	}
-	// logs.Info("解析到的 itemInfo: %v", itemInfo)
 
 	// 2 如果请求的是转码资源, 重定向到本地的 m3u8 代理服务
 	msInfo := itemInfo.MsInfo
@@ -97,15 +137,12 @@ func Redirect2OpenlistLink(c *gin.Context) {
 		return
 	}
 
-	// logs.Info("检查 %s 是否为 NFS 协议的 STRM 文件", embyPath)
 	strmUrl := ""
 	// NFS 协议开头表示这是一个 NFS 文件路径, 打开该路径读取 STRM 内容, 再跳转到 STRM 内的地址。
 	if strings.HasPrefix(embyPath, "nfs:") && strings.HasSuffix(embyPath, ".strm") {
 		logs.Info("检测到 NFS 协议的 STRM 文件: %s", embyPath)
-		// 打开 NFS 文件
 		f, err := os.Open(embyPath)
 		if err == nil {
-			// 读取 STRM 内容
 			buf := bytes.NewBufferString("")
 			io.Copy(buf, f)
 			strmUrl = buf.String()
@@ -148,87 +185,13 @@ func Redirect2OpenlistLink(c *gin.Context) {
 		c.Redirect(http.StatusTemporaryRedirect, newUri)
 		return
 	}
-	// // 6 请求 OpenList 资源
-	// fi := openlist.FetchInfo{
-	// 	Header:       c.Request.Header.Clone(),
-	// 	UseTranscode: useTranscode,
-	// 	Format:       msInfo.TemplateId,
-	// }
-	// openlistPathRes := path.Emby2Openlist(embyPath)
-
-	// allErrors := strings.Builder{}
-	// // handleOpenlistResource 根据传入的 Path 请求 OpenList 资源
-	// handleOpenlistResource := func(path string) bool {
-	// 	logs.Info("尝试请求 Openlist 资源: %s", path)
-	// 	fi.Path = path
-	// 	res := openlist.FetchResource(fi)
-
-	// 	if res.Code != http.StatusOK {
-	// 		allErrors.WriteString(fmt.Sprintf("请求 OpenList 失败, 状态码: %d, 消息: %s, Path: %s;", res.Code, res.Msg, path))
-	// 		return false
-	// 	}
-
-	// 	// 处理直链
-	// 	if !fi.UseTranscode {
-	// 		res.Data.Url = config.C.Emby.Strm.MapPath(res.Data.Url)
-	// 		logs.Success("请求成功, 重定向到: %s", res.Data.Url)
-	// 		c.Header(cache.HeaderKeyExpired, cache.Duration(time.Minute*10))
-	// 		c.Redirect(http.StatusTemporaryRedirect, res.Data.Url)
-	// 		return true
-	// 	}
-
-	// 	// 代理转码 m3u
-	// 	u, _ := url.Parse(https.ClientRequestHost(c.Request) + "/videos/proxy_playlist")
-	// 	q := u.Query()
-	// 	q.Set("template_id", itemInfo.MsInfo.TemplateId)
-	// 	q.Set(QueryApiKeyName, itemInfo.ApiKey)
-	// 	q.Set("openlist_path", openlist.PathEncode(path))
-	// 	u.RawQuery = q.Encode()
-	// 	c.Redirect(http.StatusTemporaryRedirect, u.String())
-	// 	return true
-	// }
-
-	// if openlistPathRes.Success && handleOpenlistResource(openlistPathRes.Path) {
-	// 	return
-	// }
-	// paths, err := openlistPathRes.Range()
-	// if checkErr(c, err) {
-	// 	return
-	// }
-	// if slices.ContainsFunc(paths, func(path string) bool {
-	// 	return handleOpenlistResource(path)
-	// }) {
-	// 	return
-	// }
 
 	checkErr(c, fmt.Errorf("没有兼容的流"))
 }
 
 // ProxyOriginalResource 拦截 original 接口
 func ProxyOriginalResource(c *gin.Context) {
-	// if strings.Contains(strings.ToLower(c.Request.RequestURI), "subtitles") {
-	// 	ProxyOrigin(c)
-	// 	return
-	// }
-
-	// itemInfo, err := resolveItemInfo(c, RouteOriginal)
-	// if checkErr(c, err) {
-	// 	return
-	// }
-
-	// embyPath, err := getEmbyFileLocalPath(itemInfo)
-	// if checkErr(c, err) {
-	// 	return
-	// }
-
-	// 如果是本地媒体, 代理回源
-	// 2. 以 Windows 盘符开头, 通过正则匹配
-	// pattern := `^[A-Za-z]:`
-	// matchedWin, _ := regexp.MatchString(pattern, embyPath)
-	// if strings.HasPrefix(embyPath, "/") || matchedWin || !strings.Contains(embyPath, "/proxy-115") {
 	ProxyOrigin(c)
-	// }
-	// Redirect2OpenlistLink(c)
 }
 
 // checkErr 检查 err 是否为空
@@ -255,10 +218,70 @@ func checkErr(c *gin.Context, err error) bool {
 	return true
 }
 
+// ========== 修改：外层带缓存与并发合并 ==========
+
 // getFinalRedirectLink 请求 STRM 取链接口，返回跳转地址、取链响应状态和缓存截止时间。
 //
-// 自有 115 接口只读取 Location；其他服务沿用多跳解析。失败回退不缓存，未取得响应时状态为 0。
+// 外层带内存缓存 + 并发合并：同一 originLink + UA 在有效期内直接复用，
+// 未命中时用 singleflight 合并并发请求，只让一个请求真正去解析。
 func getFinalRedirectLink(originLink string, header http.Header) (string, int, time.Time) {
+	cacheKey := originLink + "\x00" + header.Get("User-Agent")
+
+	// 1. 先查缓存
+	now := time.Now()
+	if v, ok := linkCache.Load(cacheKey); ok {
+		entry := v.(cachedLink)
+		if now.Before(entry.expiresAt) {
+			return entry.link, entry.status, entry.expiresAt
+		}
+		linkCache.Delete(cacheKey)
+	}
+
+	// 2. 合并并发请求
+	linkMu.Lock()
+	if call, ok := linkCalls[cacheKey]; ok {
+		linkMu.Unlock()
+		call.wg.Wait()
+		return call.entry.link, call.entry.status, call.entry.expiresAt
+	}
+	call := &linkCall{}
+	call.wg.Add(1)
+	linkCalls[cacheKey] = call
+	linkMu.Unlock()
+
+	defer func() {
+		linkMu.Lock()
+		delete(linkCalls, cacheKey)
+		linkMu.Unlock()
+		call.wg.Done()
+	}()
+
+	// 3. 双重检查：等待期间可能有其他请求已写入缓存
+	now = time.Now()
+	if v, ok := linkCache.Load(cacheKey); ok {
+		entry := v.(cachedLink)
+		if now.Before(entry.expiresAt) {
+			call.entry = entry
+			return entry.link, entry.status, entry.expiresAt
+		}
+		linkCache.Delete(cacheKey)
+	}
+
+	// 4. 真正解析
+	link, status, expiresAt := resolveFinalRedirectLink(originLink, header)
+	entry := cachedLink{link: link, status: status, expiresAt: expiresAt}
+
+	// 只有成功拿到有效过期时间才缓存，失败回退不缓存，下次重试
+	if !expiresAt.IsZero() && expiresAt.After(now) {
+		linkCache.Store(cacheKey, entry)
+	}
+
+	call.entry = entry
+	return entry.link, entry.status, entry.expiresAt
+}
+
+// resolveFinalRedirectLink 原 getFinalRedirectLink 的函数体，逻辑保持不变。
+func resolveFinalRedirectLink(originLink string, header http.Header) (string, int, time.Time) {
 	if origin, err := url.Parse(originLink); err == nil && origin.Host != "" &&
 		(origin.Scheme == "http" || origin.Scheme == "https") &&
 		(origin.Path == "/115/newurl" || strings.HasPrefix(origin.Path, "/115/url/")) {
