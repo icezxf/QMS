@@ -413,7 +413,7 @@ func (s *Scanner) processCode(fs FileSystem, path *models.AVPath, g *groupItem, 
 	suffix := getMediaSuffix(result)
 	nfoBaseName := media.Code + resolutionSuffix(result.Resolution) + suffix
 	
-	files, prepWarnings, err := s.prepareMetaFiles(nfoBaseName, result, cfg, path.IsVR)
+	files, prepWarnings, err := s.prepareMetaFiles(nfoBaseName, result, cfg, path.IsVR, probeResult)
 	allWarnings := append([]string{}, scrapeWarnings...)
 	allWarnings = append(allWarnings, prepWarnings...)
 	if err != nil {
@@ -707,7 +707,7 @@ func (s *Scanner) organize(fs FileSystem, path *models.AVPath, media *models.AVM
 	return targetDir, anySkipped, nil
 }
 
-func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config, isVR bool) ([]LocalFile, []string, error) {
+func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config, isVR bool, pr *probeResult) ([]LocalFile, []string, error) {
 	var warnings []string
 	if r == nil {
 		return nil, warnings, nil
@@ -1038,7 +1038,8 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 			files = append(files, LocalFile{LocalPath: p, RemoteName: "trailers/trailer.strm"})
 		}
 	}
-
+	
+	if pr != nil { writeMediaInfoJSON(tmpDir, baseName, pr.RawJSON) }
 	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
 	if err := os.WriteFile(nfoPath, []byte(GenerateNFO(r)), 0644); err != nil {
 		return nil, warnings, fmt.Errorf("写 NFO 失败: %w", err)
