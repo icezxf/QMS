@@ -415,6 +415,7 @@ func probeVideoLocal(videoURL string) (*probeResult, error) {
 		Resolution: classifyResolution(s.Width, s.Height),
 		IsHDR:      isHDRPixelFormat(s.PixFmt, s.ColorTrc),
 		FileSize:   fileSize,
+		RawJSON:    stdout.Bytes(),
 	}
 
 	tail := <-tailCh
