@@ -155,8 +155,13 @@ func writeMediaInfoJSONAven(tmpDir, baseName string, rawJSON []byte) *avscrape.L
 			if s.CodecType == "video" {
 				depth := 8
 				if strings.Contains(s.PixFmt, "10le") || strings.Contains(s.PixFmt, "12le") { depth = 10 }
+				
+				// 修复：同时看宽和高，统一标准
+				base := s.Width
+				if s.Height > base { base = s.Height }
 				p := "SD"
-				if s.Height >= 2160 { p = "2160p" } else if s.Height >= 1080 { p = "1080p" } else if s.Height >= 720 { p = "720p" }
+				if base >= 2160 { p = "2160p" } else if base >= 1080 { p = "1080p" } else if base >= 720 { p = "720p" }
+
 				m["Type"] = "Video"
 				m["Width"] = s.Width
 				m["Height"] = s.Height
@@ -200,7 +205,6 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config, r
 	files := []avscrape.LocalFile{}
 	var posterData, fanartData []byte
 
-	// 1. poster：TPDB posters.large（JPEG）
 	if r.Poster != "" {
 		data, err := downloadImage(r.Poster)
 		if err != nil {
@@ -222,7 +226,6 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config, r
 		helpers.AppLogger.Infof("[欧美元数据] r.Poster 为空，poster 走兜底")
 	}
 
-	// 2. fanart：StashDB scene.Images 里挑横版
 	candidates := r.ImageCandidates
 	helpers.AppLogger.Infof("[欧美元数据] fanart 候选共 %d 张", len(candidates))
 	for i, url := range candidates {
@@ -246,7 +249,6 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config, r
 		}
 	}
 
-	// 3. poster 兜底
 	if posterData == nil && len(candidates) > 0 {
 		if data, err := downloadImage(candidates[0]); err == nil {
 			if cropped, ok := cropToPoster(data); ok {
@@ -256,7 +258,6 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config, r
 		}
 	}
 
-	// 4. fanart 兜底
 	if fanartData == nil && len(candidates) > 0 {
 		if data, err := downloadImage(candidates[0]); err == nil {
 			fanartData = data
@@ -272,7 +273,6 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config, r
 		}
 	}
 
-	// 打水印
 	wmItems := buildWatermarksN(r, cfg)
 	if len(wmItems) > 0 {
 		helpers.AppLogger.Infof("[欧美水印] 需要打水印 %d 个", len(wmItems))
@@ -292,7 +292,6 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config, r
 		}
 	}
 
-	// 写 poster
 	if posterData != nil {
 		p := filepath.Join(tmpDir, "poster.jpg")
 		if err := os.WriteFile(p, posterData, 0644); err == nil {
@@ -302,7 +301,6 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config, r
 		warnings = append(warnings, "poster 未生成")
 	}
 
-	// 写 fanart + thumb
 	if fanartData != nil {
 		p := filepath.Join(tmpDir, "fanart.jpg")
 		if err := os.WriteFile(p, fanartData, 0644); err == nil {
@@ -316,7 +314,6 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config, r
 		warnings = append(warnings, "fanart 未生成")
 	}
 
-	// 剧照
 	successCount := 0
 	failCount := 0
 	for i, url := range r.PreviewImages {
@@ -333,7 +330,6 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config, r
 		warnings = append(warnings, fmt.Sprintf("剧照部分下载失败: 成功 %d, 失败 %d", successCount, failCount))
 	}
 
-	// 预告片
 	if r.Trailer != "" {
 		p := filepath.Join(tmpDir, "trailer.strm")
 		if err := os.WriteFile(p, []byte(r.Trailer), 0644); err == nil {
@@ -341,7 +337,6 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config, r
 		}
 	}
 	
-	// oshash 文件
 	if r.Oshash != "" {
 		oshashName := fmt.Sprintf("oshash-%s.txt", r.Oshash)
 		oshashPath := filepath.Join(tmpDir, oshashName)
@@ -351,14 +346,12 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config, r
 		}
 	}
 	
-	// NFO
 	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
 	if err := os.WriteFile(nfoPath, []byte(GenerateNFON(r)), 0644); err != nil {
 		return nil, warnings, fmt.Errorf("写 NFO 失败: %w", err)
 	}
 	files = append(files, avscrape.LocalFile{LocalPath: nfoPath, RemoteName: baseName + ".nfo"})
 
-	// 写入 mediainfo.json
 	if lf := writeMediaInfoJSONAven(tmpDir, baseName, rawJSON); lf != nil {
 		files = append(files, *lf)
 	}
@@ -526,21 +519,23 @@ func resolutionSuffix(res string) string {
 func buildWatermarksN(r *avscrape.ScrapeResult, cfg *Config) []avscrape.WatermarkItem {
 	var items []avscrape.WatermarkItem
 
+	// 修复：不再信任来自外部刮削的标签（Tags），只认 ffprobe 探测出的真实分辨率
+	if cfg.Watermark8K && r.Resolution == "8K" {
+		items = append(items, avscrape.WatermarkItem{PngName: "8k.png", Label: "8K"})
+	} else if cfg.Watermark7K && r.Resolution == "7K" {
+		items = append(items, avscrape.WatermarkItem{PngName: "7k.png", Label: "7K"})
+	} else if cfg.Watermark6K && r.Resolution == "6K" {
+		items = append(items, avscrape.WatermarkItem{PngName: "6k.png", Label: "6K"})
+	} else if cfg.Watermark5K && r.Resolution == "5K" {
+		items = append(items, avscrape.WatermarkItem{PngName: "5k.png", Label: "5K"})
+	} else if cfg.Watermark4K && r.Resolution == "4K" {
+		items = append(items, avscrape.WatermarkItem{PngName: "4k.png", Label: "4K"})
+	}
+
+	// 这几个依然可以看标签判定，因为字幕、破解、无码通常不是由分辨率探测决定的
 	allTags := append([]string{}, r.Genres...)
 	allTags = append(allTags, r.ExtraTags...)
 	joined := strings.ToLower(strings.Join(allTags, ","))
-
-	if cfg.Watermark8K && (strings.Contains(joined, "8k") || r.Resolution == "8K") {
-		items = append(items, avscrape.WatermarkItem{PngName: "8k.png", Label: "8K"})
-	} else if cfg.Watermark7K && (strings.Contains(joined, "7k") || r.Resolution == "7K") {
-		items = append(items, avscrape.WatermarkItem{PngName: "7k.png", Label: "7K"})
-	} else if cfg.Watermark6K && (strings.Contains(joined, "6k") || r.Resolution == "6K") {
-		items = append(items, avscrape.WatermarkItem{PngName: "6k.png", Label: "6K"})
-	} else if cfg.Watermark5K && (strings.Contains(joined, "5k") || r.Resolution == "5K") {
-		items = append(items, avscrape.WatermarkItem{PngName: "5k.png", Label: "5K"})
-	} else if cfg.Watermark4K && (strings.Contains(joined, "4k") || r.Resolution == "4K") {
-		items = append(items, avscrape.WatermarkItem{PngName: "4k.png", Label: "4K"})
-	}
 
 	if cfg.WatermarkSubtitle && (r.HasChineseSub || strings.Contains(joined, "字幕") || strings.Contains(joined, "中字")) {
 		items = append(items, avscrape.WatermarkItem{PngName: "字幕.png", Label: "字幕"})
