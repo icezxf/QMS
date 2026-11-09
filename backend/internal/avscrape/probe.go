@@ -71,6 +71,7 @@ type probeResult struct {
 	IsHDR      bool
 	Oshash     string
 	FileSize   int64
+	RawJSON    []byte
 }
 
 // ============================================================
@@ -156,6 +157,7 @@ func probeVideoByURL(videoURL string) (*probeResult, error) {
 	pr := &probeResult{
 		Resolution: classifyResolution(s.Width, s.Height),
 		IsHDR:      isHDRPixelFormat(s.PixFmt, s.ColorTrc),
+		RawJSON:    stdout.Bytes(),
 	}
 	if result.Format.Size != "" {
 		fmt.Sscanf(result.Format.Size, "%d", &pr.FileSize)
