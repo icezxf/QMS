@@ -1038,13 +1038,13 @@ func (s *Scanner) prepareMetaFiles(baseName string, r *ScrapeResult, cfg *Config
 			files = append(files, LocalFile{LocalPath: p, RemoteName: "trailers/trailer.strm"})
 		}
 	}
-	
-	if pr != nil { writeMediaInfoJSON(tmpDir, baseName, pr.RawJSON) }
+
 	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
 	if err := os.WriteFile(nfoPath, []byte(GenerateNFO(r)), 0644); err != nil {
 		return nil, warnings, fmt.Errorf("写 NFO 失败: %w", err)
 	}
 	files = append(files, LocalFile{LocalPath: nfoPath, RemoteName: baseName + ".nfo"})
+	
 	if pr != nil {
 		if lf := writeMediaInfoJSON(tmpDir, baseName, pr.RawJSON); lf != nil {
 			files = append(files, *lf)
