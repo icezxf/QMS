@@ -8,9 +8,9 @@ import (
 	"strings"
 )
 
-func writeMediaInfoJSON(tmpDir, baseName string, rawJSON []byte) {
+func writeMediaInfoJSON(tmpDir, baseName string, rawJSON []byte) *LocalFile {
 	if len(rawJSON) == 0 {
-		return
+		return nil
 	}
 	var ff struct {
 		Format struct {
@@ -60,6 +60,9 @@ func writeMediaInfoJSON(tmpDir, baseName string, rawJSON []byte) {
 		}}
 		b, _ := json.MarshalIndent([]interface{}{out}, "", "  ")
 		jp := filepath.Join(tmpDir, baseName+"-mediainfo.json")
-		os.WriteFile(jp, b, 0644)
+		if err := os.WriteFile(jp, b, 0644); err == nil {
+			return &LocalFile{LocalPath: jp, RemoteName: baseName + "-mediainfo.json"}
+		}
 	}
+	return nil
 }
