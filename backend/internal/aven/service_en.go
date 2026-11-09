@@ -13,7 +13,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// ErrFilteredOut 该 oshash 不在本次扫描的 filter 范围内，调用方应静默跳过
 var ErrFilteredOut = errors.New("filtered out")
 
 type ServiceEN struct {
@@ -24,7 +23,6 @@ func NewServiceEN(db *gorm.DB) *ServiceEN {
 	return &ServiceEN{DB: db}
 }
 
-// ===== 懒加载：db 为 nil 时返回默认配置 =====
 func (s *ServiceEN) GetConfig() *Config {
 	if s.DB == nil {
 		def := defaultConfig
@@ -46,7 +44,6 @@ func (s *ServiceEN) GetStashDB() *StashDBClient {
 	return NewStashDBClient(cfg.StashDBEndpoint, cfg.StashDBAPIKey)
 }
 
-// GetTPDB 获取 TPDB 客户端
 func (s *ServiceEN) GetTPDB() *TPDBClient {
 	cfg := s.GetConfig()
 	if !cfg.EnableTPDB || cfg.TPDBAPIKey == "" {
@@ -55,50 +52,37 @@ func (s *ServiceEN) GetTPDB() *TPDBClient {
 	return NewTPDBClient(cfg.TPDBEndpoint, cfg.TPDBAPIKey)
 }
 
-// ==========================================================
-
-// ScrapeByURL 通过视频 URL 刮削
-//
-// filter 非空时：探测出 oshash 后立即检查，不在 filter 里直接返回 ErrFilteredOut，
-// 不查询 StashDB / TPDB，也不调用翻译（避免白跑网络和烧配额）。
-func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filter map[string]bool) (*avscrape.ScrapeResult, string, error) {
+func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filter map[string]bool) (*avscrape.ScrapeResult, string, []byte, error) {
 	stashDB := s.GetStashDB()
 	if stashDB == nil {
-		return nil, "", fmt.Errorf("StashDB 未配置或 API Key 为空")
+		return nil, "", nil, fmt.Errorf("StashDB 未配置或 API Key 为空")
 	}
 
 	cfg := s.GetConfig()
 
-	// 1. 探测 osHash + 分辨率/HDR
 	pr, err := ProbeVideoByURL(videoURL, headers)
 	if err != nil {
-		return nil, "", fmt.Errorf("探测失败: %w", err)
+		return nil, "", nil, fmt.Errorf("探测失败: %w", err)
 	}
 	if pr.Oshash == "" {
-		return nil, "", fmt.Errorf("osHash 为空（文件可能太小）")
+		return nil, "", nil, fmt.Errorf("osHash 为空（文件可能太小）")
 	}
-
-	// 1.1 分辨率必须由 ffprobe 探测到，否则失败（不猜文件名）
 	if pr.Resolution == "" {
-		return nil, pr.Oshash, fmt.Errorf("ffprobe 未探测到分辨率")
+		return nil, pr.Oshash, nil, fmt.Errorf("ffprobe 未探测到分辨率")
 	}
 
-	// 1.5 提前检查 filter
 	if len(filter) > 0 && !filter[pr.Oshash] {
-		return nil, pr.Oshash, ErrFilteredOut
+		return nil, pr.Oshash, nil, ErrFilteredOut
 	}
-	// ==========================================================
 
-	// 2. 查 StashDB（主匹配源）
 	scene, err := stashDB.FindSceneByOshash(pr.Oshash)
 	if err != nil {
-		return nil, pr.Oshash, fmt.Errorf("查询 StashDB 失败: %w", err)
+		return nil, pr.Oshash, nil, fmt.Errorf("查询 StashDB 失败: %w", err)
 	}
 	if scene == nil {
-		return nil, pr.Oshash, fmt.Errorf("StashDB 未找到匹配场景（oshash=%s）", pr.Oshash)
+		return nil, pr.Oshash, nil, fmt.Errorf("StashDB 未找到匹配场景（oshash=%s）", pr.Oshash)
 	}
 
-	// 3. 转换
 	r := SceneToResult(scene)
 	r.Oshash = pr.Oshash
 	r.FileSize = pr.FileSize
@@ -106,7 +90,6 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filt
 	r.IsHDR = pr.IsHDR
 	r.ExtraTags = buildExtraTagsN(r, cfg)
 
-	// 3.5 强制用 scene.Images 覆盖 fanart 候选
 	r.ImageCandidates = nil
 	for _, img := range scene.Images {
 		if img.URL != "" {
@@ -120,7 +103,6 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filt
 
 	var warnings []string
 
-	// 4. 查 TPDB 补充 poster / rating / plot / studio
 	if tpdb := s.GetTPDB(); tpdb != nil {
 		tpdbScene, tpdbErr := tpdb.FindSceneByOshash(pr.Oshash)
 		if tpdbErr != nil {
@@ -158,7 +140,6 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filt
 		helpers.AppLogger.Infof("[TPDB] 未配置或未启用，跳过补充")
 	}
 
-	// 5. 翻译
 	if cfg.EnableTranslate {
 		tr := avscrape.NewTranslator(cfg.TranslateEngine, cfg.TranslateTarget)
 		tr.SourceLang = "en"
@@ -176,10 +157,9 @@ func (s *ServiceEN) ScrapeByURL(videoURL string, headers map[string]string, filt
 	}
 
 	r.Warnings = warnings
-	return r, pr.Oshash, nil
+	return r, pr.Oshash, pr.RawJSON, nil
 }
 
-// translateResultN 欧美翻译（批量）
 func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.ScrapeResult, cfg *Config) []string {
 	if r == nil {
 		return nil
@@ -191,7 +171,6 @@ func (s *ServiceEN) translateResultN(tr *avscrape.Translator, r *avscrape.Scrape
 	return tr.TranslateResultBatch(r)
 }
 
-// buildExtraTagsN 欧美附加标签
 func buildExtraTagsN(r *avscrape.ScrapeResult, cfg *Config) []string {
 	var tags []string
 	if cfg.ExtraTagResolution && r.Resolution != "" {
@@ -208,8 +187,6 @@ func buildExtraTagsN(r *avscrape.ScrapeResult, cfg *Config) []string {
 	}
 	return tags
 }
-
-// ===== 暂停操作 =====
 
 func (s *ServiceEN) ReleaseMedia(id uint) error {
 	media := models.GetAVENMediaByID(id)
