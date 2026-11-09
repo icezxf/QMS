@@ -15,7 +15,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// ===== 扫描过滤器：只处理指定 oshash =====
 var (
 	scanFilterNMu       sync.Mutex
 	scanFilterNOshashes map[string]bool
@@ -48,14 +47,6 @@ func takeScanFilterN() map[string]bool {
 	return cp
 }
 
-func clearScanFilterN() {
-	scanFilterNMu.Lock()
-	defer scanFilterNMu.Unlock()
-	scanFilterNOshashes = nil
-}
-// ==========================================
-
-// ===== 源目录清理 =====
 const (
 	cleanupBigVideoSizeEN      = int64(1) << 30
 	cleanupDeleteIntervalEN    = 500 * time.Millisecond
@@ -126,8 +117,6 @@ func cleanupDirRecursiveN(fs avscrape.FileSystem, dir string, deleted *int) bool
 	}
 
 	if *deleted >= cleanupMaxDeletesPerScanEN {
-		helpers.AppLogger.Warnf("[欧美清理] 已达到单次删除上限 %d，跳过 %s",
-			cleanupMaxDeletesPerScanEN, dir)
 		return false
 	}
 
@@ -136,7 +125,6 @@ func cleanupDirRecursiveN(fs avscrape.FileSystem, dir string, deleted *int) bool
 	}
 
 	if err := fs.DeleteDir(dir); err != nil {
-		helpers.AppLogger.Warnf("[欧美清理] 删除目录失败 %s: %v", dir, err)
 		return false
 	}
 	*deleted++
@@ -148,7 +136,6 @@ func isVideoNameN(name string) bool {
 	ext := strings.ToLower(filepath.Ext(name))
 	return videoExtsN[ext]
 }
-// ==================================================
 
 type ScannerEN struct {
 	DB  *gorm.DB
@@ -230,7 +217,7 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		}
 	}
 
-	result, oshash, err := s.Svc.ScrapeByURL(videoURL, headers, filterSnapshot)
+	result, oshash, rawJSON, err := s.Svc.ScrapeByURL(videoURL, headers, filterSnapshot)
 
 	if err == ErrFilteredOut {
 		helpers.AppLogger.Infof("[欧美扫描] %s 不在本次过滤范围内，跳过", oshash)
@@ -256,10 +243,8 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 	if baseName == "" {
 		baseName = sanitizePathN(strings.TrimSuffix(fileName, filepath.Ext(fileName)))
 	}
-// NFO 名字跟媒体文件统一，加上分辨率后缀（-4K/-8K 等）
 	baseName = baseName + resolutionSuffix(result.Resolution)
 
-	// 翻译错误 → 暂停
 	if avscrape.HasTranslateError(result.Warnings) {
 		reason := "翻译错误（详见警告列表）"
 		s.pauseMedia(baseName, videoPath, oshash, reason, result.Warnings)
@@ -267,7 +252,6 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		return fmt.Errorf("%s", reason)
 	}
 
-	// 已存在检查
 	var existing models.AVENMedia
 	if err := s.DB.Where("oshash = ?", oshash).First(&existing).Error; err == nil {
 		if existing.Status == "paused" {
@@ -284,8 +268,7 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		}
 	}
 
-	// 生成元数据
-	files, prepWarnings, err := PrepareMetaFilesN(baseName, result, s.Svc.GetConfig())
+	files, prepWarnings, err := PrepareMetaFilesN(baseName, result, s.Svc.GetConfig(), rawJSON)
 	allWarnings := append([]string{}, result.Warnings...)
 	allWarnings = append(allWarnings, prepWarnings...)
 	if err != nil {
@@ -293,14 +276,12 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		return err
 	}
 
-	// 检查完整性
 	if missing := checkMetadataMissingEN(result); missing != "" {
 		reason := fmt.Sprintf("元数据缺失: %s", missing)
 		s.pauseMedia(baseName, videoPath, oshash, reason, allWarnings)
 		return fmt.Errorf("%s", reason)
 	}
 
-	// 整理视频
 	media := MediaFromResultN(result, oshash, result.FileSize)
 	if media == nil {
 		return fmt.Errorf("构造 media 失败")
@@ -311,7 +292,6 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		return err
 	}
 
-	// 视频已存在 → 整个跳过（含 NFO/图 上传 + 入库）
 	if anySkipped {
 		reason := fmt.Sprintf("目标视频已存在：%s", targetDir)
 		s.recordTask(0, oshash, videoPath, "duplicate", reason, nil)
@@ -319,7 +299,6 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		return nil
 	}
 
-	// 上传
 	if len(files) > 0 {
 		if _, err := fs.QueueUploads(files, targetDir, path.AccountID, path.SourceType); err != nil {
 			s.pauseMedia(baseName, videoPath, oshash, fmt.Sprintf("加入上传队列失败: %v", err), allWarnings)
@@ -327,7 +306,6 @@ func (s *ScannerEN) processVideo(fs avscrape.FileSystem, path *models.AVENPath, 
 		}
 	}
 
-	// 保存到数据库
 	s.saveMedia(result, oshash, targetDir, allWarnings)
 
 	helpers.AppLogger.Infof("[欧美扫描] %s 刮削完成", fileName)
