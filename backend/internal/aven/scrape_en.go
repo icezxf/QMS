@@ -23,10 +23,6 @@ import (
 	"qmediasync/internal/models"
 )
 
-// ============================================================
-// 图片下载
-// ============================================================
-
 var httpClientForImage = &http.Client{Timeout: 30 * time.Second}
 
 func downloadImage(url string) ([]byte, error) {
@@ -54,10 +50,6 @@ func redactURL(raw string) string {
 	}
 	return raw
 }
-
-// ============================================================
-// 图片裁剪：从横版图裁出 2:3 竖版（仅作 poster 兜底）
-// ============================================================
 
 func cropToPoster(src []byte) ([]byte, bool) {
 	img, _, err := image.Decode(bytes.NewReader(src))
@@ -129,12 +121,71 @@ func resizeToMin(src []byte, minW, minH int) ([]byte, bool) {
 	return out.Bytes(), true
 }
 
-// ============================================================
-// 生成元数据文件
-// ============================================================
+func writeMediaInfoJSONAven(tmpDir, baseName string, rawJSON []byte) *avscrape.LocalFile {
+	if len(rawJSON) == 0 {
+		return nil
+	}
+	var ff struct {
+		Format struct {
+			Size     string `json:"size"`
+			Duration string `json:"duration"`
+		} `json:"format"`
+		Streams []struct {
+			CodecType     string `json:"codec_type"`
+			CodecName     string `json:"codec_name"`
+			Width         int    `json:"width"`
+			Height        int    `json:"height"`
+			PixFmt        string `json:"pix_fmt"`
+			Channels      int    `json:"channels"`
+			ChannelLayout string `json:"channel_layout"`
+			Tags          struct {
+				Language string `json:"language"`
+			} `json:"tags"`
+		} `json:"streams"`
+	}
+	if json.Unmarshal(rawJSON, &ff) == nil {
+		var size int64
+		fmt.Sscanf(ff.Format.Size, "%d", &size)
+		var secs float64
+		fmt.Sscanf(ff.Format.Duration, "%f", &secs)
+		
+		var streams []map[string]interface{}
+		for i, s := range ff.Streams {
+			m := map[string]interface{}{"Index": i, "Codec": s.CodecName, "Language": s.Tags.Language}
+			if s.CodecType == "video" {
+				depth := 8
+				if strings.Contains(s.PixFmt, "10le") || strings.Contains(s.PixFmt, "12le") { depth = 10 }
+				p := "SD"
+				if s.Height >= 2160 { p = "2160p" } else if s.Height >= 1080 { p = "1080p" } else if s.Height >= 720 { p = "720p" }
+				m["Type"] = "Video"
+				m["Width"] = s.Width
+				m["Height"] = s.Height
+				m["BitDepth"] = depth
+				m["DisplayTitle"] = fmt.Sprintf("%s %s %dbit", p, strings.ToUpper(s.CodecName), depth)
+			} else if s.CodecType == "audio" {
+				m["Type"] = "Audio"
+				m["Channels"] = s.Channels
+				m["ChannelLayout"] = s.ChannelLayout
+				m["DisplayTitle"] = fmt.Sprintf("%s %s", strings.ToUpper(s.CodecName), s.ChannelLayout)
+			} else {
+				continue
+			}
+			streams = append(streams, m)
+		}
+		
+		out := map[string]interface{}{"MediaSourceInfo": map[string]interface{}{
+			"Size": size, "RunTimeTicks": int64(secs * 10000000), "MediaStreams": streams,
+		}}
+		b, _ := json.MarshalIndent([]interface{}{out}, "", "  ")
+		jp := filepath.Join(tmpDir, baseName+"-mediainfo.json")
+		if err := os.WriteFile(jp, b, 0644); err == nil {
+			return &avscrape.LocalFile{LocalPath: jp, RemoteName: baseName + "-mediainfo.json"}
+		}
+	}
+	return nil
+}
 
-// PrepareMetaFilesN 生成欧美元数据文件（NFO + poster + fanart + 剧照）
-func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) ([]avscrape.LocalFile, []string, error) {
+func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config, rawJSON []byte) ([]avscrape.LocalFile, []string, error) {
 	var warnings []string
 	if r == nil {
 		return nil, warnings, nil
@@ -228,7 +279,6 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 		if posterData != nil {
 			if wm, err := avscrape.ApplyWatermark(posterData, wmItems, cfg.WatermarkWidthPercent); err == nil {
 				posterData = wm
-				helpers.AppLogger.Infof("[欧美水印] poster 水印完成")
 			} else {
 				warnings = append(warnings, fmt.Sprintf("poster 水印失败: %v", err))
 			}
@@ -236,7 +286,6 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 		if fanartData != nil {
 			if wm, err := avscrape.ApplyWatermark(fanartData, wmItems, cfg.WatermarkWidthPercent); err == nil {
 				fanartData = wm
-				helpers.AppLogger.Infof("[欧美水印] fanart 水印完成")
 			} else {
 				warnings = append(warnings, fmt.Sprintf("fanart 水印失败: %v", err))
 			}
@@ -291,7 +340,8 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 			files = append(files, avscrape.LocalFile{LocalPath: p, RemoteName: "trailers/trailer.strm"})
 		}
 	}
-	// ===== oshash 文件：随元数据一起上传到目标目录 =====
+	
+	// oshash 文件
 	if r.Oshash != "" {
 		oshashName := fmt.Sprintf("oshash-%s.txt", r.Oshash)
 		oshashPath := filepath.Join(tmpDir, oshashName)
@@ -300,6 +350,7 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 			helpers.AppLogger.Infof("[欧美元数据] 生成 oshash 文件: %s", oshashName)
 		}
 	}
+	
 	// NFO
 	nfoPath := filepath.Join(tmpDir, baseName+".nfo")
 	if err := os.WriteFile(nfoPath, []byte(GenerateNFON(r)), 0644); err != nil {
@@ -307,16 +358,14 @@ func PrepareMetaFilesN(baseName string, r *avscrape.ScrapeResult, cfg *Config) (
 	}
 	files = append(files, avscrape.LocalFile{LocalPath: nfoPath, RemoteName: baseName + ".nfo"})
 
+	// 写入 mediainfo.json
+	if lf := writeMediaInfoJSONAven(tmpDir, baseName, rawJSON); lf != nil {
+		files = append(files, *lf)
+	}
+
 	return files, warnings, nil
 }
 
-// ============================================================
-// 整理（移动视频文件）
-// ============================================================
-
-// OrganizeN 移动视频到目标目录
-// 返回 (targetDir, anySkipped, error)
-//   anySkipped：是否有任何文件因"目标已存在"而被跳过
 func OrganizeN(fs avscrape.FileSystem, path *models.AVENPath, media *models.AVENMedia, videoPaths []string, r *avscrape.ScrapeResult) (string, bool, error) {
 	relDir := renderTemplateN(path.NameTemplate, media)
 	if relDir == "" {
@@ -374,10 +423,6 @@ func OrganizeN(fs avscrape.FileSystem, path *models.AVENPath, media *models.AVEN
 
 	return targetDir, anySkipped, nil
 }
-
-// ============================================================
-// 模板渲染
-// ============================================================
 
 func renderTemplateN(tpl string, media *models.AVENMedia) string {
 	if tpl == "" {
@@ -477,10 +522,6 @@ func resolutionSuffix(res string) string {
 	}
 	return ""
 }
-
-// ============================================================
-// 水印判定
-// ============================================================
 
 func buildWatermarksN(r *avscrape.ScrapeResult, cfg *Config) []avscrape.WatermarkItem {
 	var items []avscrape.WatermarkItem
