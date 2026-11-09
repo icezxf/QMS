@@ -15,13 +15,6 @@ import (
 	"qmediasync/internal/helpers"
 )
 
-// ============================================================
-// osHash 计算 + ffprobe 探测
-// 一次下载头 2MB + 尾 64KB，同时完成：
-//   1. 头尾各 64KB 算 osHash
-//   2. 分辨率探测：优先 ffprobe 直读 URL，失败回退 2MB buffer
-// ============================================================
-
 const (
 	oshashChunkSize = 64 * 1024       // 64KB
 	ffprobeHeadSize = 2 * 1024 * 1024 // 2MB
@@ -33,9 +26,9 @@ type ProbeResult struct {
 	FileSize   int64
 	Resolution string
 	IsHDR      bool
+	RawJSON    []byte // 新增：保存 ffprobe 的原始输出
 }
 
-// ProbeVideoByURL 下载头尾数据，计算 osHash + ffprobe 探测
 func ProbeVideoByURL(videoURL string, headers map[string]string) (*ProbeResult, error) {
 	if videoURL == "" {
 		return nil, fmt.Errorf("空 URL")
@@ -61,9 +54,7 @@ func ProbeVideoByURL(videoURL string, headers map[string]string) (*ProbeResult, 
 	oshash := computeOshash(head, tail, fileSize)
 
 	// ===== 4. 探测分辨率 =====
-	// 优先 ffprobe 直读 URL（可 seek 到 moov，覆盖 VR 尾部 moov 场景）
-	// 失败/未识别再回退 2MB buffer
-	resolution, isHDR := probeResolution(videoURL, head, headers)
+	rawJSON, resolution, isHDR := probeResolution(videoURL, head, headers)
 
 	helpers.AppLogger.Infof("[欧美探测] fileSize=%d oshash=%s resolution=%s hdr=%v",
 		fileSize, oshash, resolution, isHDR)
@@ -73,34 +64,34 @@ func ProbeVideoByURL(videoURL string, headers map[string]string) (*ProbeResult, 
 		FileSize:   fileSize,
 		Resolution: resolution,
 		IsHDR:      isHDR,
+		RawJSON:    rawJSON,
 	}, nil
 }
 
-// probeResolution 优先 ffprobe 直读 URL，失败回退 buffer
-func probeResolution(videoURL string, head []byte, headers map[string]string) (string, bool) {
-	res, hdr, err := probeFromURL(videoURL, headers)
+func probeResolution(videoURL string, head []byte, headers map[string]string) ([]byte, string, bool) {
+	rawJSON, res, hdr, err := probeFromURL(videoURL, headers)
 	if err == nil && res != "" {
 		helpers.AppLogger.Infof("[欧美探测] ffprobe 直读 URL 成功: %s hdr=%v", res, hdr)
-		return res, hdr
+		return rawJSON, res, hdr
 	}
 	if err != nil {
 		helpers.AppLogger.Infof("[欧美探测] ffprobe 直读 URL 失败，回退 buffer: %v", err)
 	} else {
 		helpers.AppLogger.Infof("[欧美探测] ffprobe 直读 URL 未识别分辨率，回退 buffer")
 	}
-	return probeFromBuffer(head)
+	res, hdr = probeFromBuffer(head)
+	return nil, res, hdr
 }
 
-// probeFromURL 让 ffprobe 直接读 URL（带 115/openlist header）
-func probeFromURL(videoURL string, headers map[string]string) (string, bool, error) {
+func probeFromURL(videoURL string, headers map[string]string) ([]byte, string, bool, error) {
 	args := []string{
 		"-v", "error",
 		"-print_format", "json",
+		"-show_format",
 		"-show_streams",
 		"-analyzeduration", "5000000",
 		"-probesize", "2000000",
 	}
-	// 把 headers 拼成 ffprobe 认识的 -headers 参数
 	if len(headers) > 0 {
 		var sb strings.Builder
 		for k, v := range headers {
@@ -124,11 +115,11 @@ func probeFromURL(videoURL string, headers map[string]string) (string, bool, err
 	select {
 	case err := <-done:
 		if err != nil {
-			return "", false, fmt.Errorf("ffprobe 失败: %v, stderr=%s", err, stderr.String())
+			return nil, "", false, fmt.Errorf("ffprobe 失败: %v, stderr=%s", err, stderr.String())
 		}
 	case <-time.After(60 * time.Second):
 		_ = cmd.Process.Kill()
-		return "", false, fmt.Errorf("ffprobe 超时")
+		return nil, "", false, fmt.Errorf("ffprobe 超时")
 	}
 
 	var result struct {
@@ -140,19 +131,15 @@ func probeFromURL(videoURL string, headers map[string]string) (string, bool, err
 		} `json:"streams"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		return "", false, err
+		return nil, "", false, err
 	}
 	if len(result.Streams) == 0 {
-		return "", false, fmt.Errorf("无视频流")
+		return nil, "", false, fmt.Errorf("无视频流")
 	}
 
 	s := result.Streams[0]
-	return classifyResolution(s.Width, s.Height), isHDRPixelFormat(s.PixFmt, s.ColorTrc), nil
+	return stdout.Bytes(), classifyResolution(s.Width, s.Height), isHDRPixelFormat(s.PixFmt, s.ColorTrc), nil
 }
-
-// ============================================================
-// 下载指定字节范围（返回 body / fileSize / error）
-// ============================================================
 
 func downloadRange(videoURL string, start, end int64, headers map[string]string) ([]byte, int64, error) {
 	req, err := http.NewRequest("GET", videoURL, nil)
@@ -196,10 +183,6 @@ func downloadRange(videoURL string, start, end int64, headers map[string]string)
 	return buf.Bytes(), fileSize, nil
 }
 
-// ============================================================
-// osHash 计算
-// ============================================================
-
 func computeOshash(head, tail []byte, fileSize int64) string {
 	if fileSize < 2*oshashChunkSize {
 		return ""
@@ -214,10 +197,6 @@ func computeOshash(head, tail []byte, fileSize int64) string {
 	return fmt.Sprintf("%016x", hash)
 }
 
-// ============================================================
-// ffprobe 探测（buffer 版，回退用）
-// ============================================================
-
 func probeFromBuffer(data []byte) (string, bool) {
 	if len(data) == 0 {
 		return "", false
@@ -225,7 +204,6 @@ func probeFromBuffer(data []byte) (string, bool) {
 
 	tmpFile, err := os.CreateTemp("", "aven-probe-*")
 	if err != nil {
-		helpers.AppLogger.Warnf("[欧美探测] 创建临时文件失败: %v", err)
 		return "", false
 	}
 	tmpPath := tmpFile.Name()
@@ -233,7 +211,6 @@ func probeFromBuffer(data []byte) (string, bool) {
 
 	if _, err := tmpFile.Write(data); err != nil {
 		tmpFile.Close()
-		helpers.AppLogger.Warnf("[欧美探测] 写入临时文件失败: %v", err)
 		return "", false
 	}
 	tmpFile.Close()
@@ -257,12 +234,10 @@ func probeFromBuffer(data []byte) (string, bool) {
 	select {
 	case err := <-done:
 		if err != nil {
-			helpers.AppLogger.Warnf("[欧美探测] ffprobe 失败: %v, stderr=%s", err, stderr.String())
 			return "", false
 		}
 	case <-time.After(30 * time.Second):
 		_ = cmd.Process.Kill()
-		helpers.AppLogger.Warnf("[欧美探测] ffprobe 超时")
 		return "", false
 	}
 
@@ -284,10 +259,6 @@ func probeFromBuffer(data []byte) (string, bool) {
 	s := result.Streams[0]
 	return classifyResolution(s.Width, s.Height), isHDRPixelFormat(s.PixFmt, s.ColorTrc)
 }
-
-// ============================================================
-// 分辨率分级
-// ============================================================
 
 func classifyResolution(w, h int) string {
 	if w == 0 && h == 0 {
