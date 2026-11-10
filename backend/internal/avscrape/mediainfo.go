@@ -25,6 +25,9 @@ func writeMediaInfoJSON(tmpDir, baseName string, rawJSON []byte) *LocalFile {
 			PixFmt        string `json:"pix_fmt"`
 			Channels      int    `json:"channels"`
 			ChannelLayout string `json:"channel_layout"`
+			Tags          struct {
+				Language string `json:"language"`
+			} `json:"tags"`
 		} `json:"streams"`
 	}
 	if json.Unmarshal(rawJSON, &ff) == nil {
@@ -35,15 +38,33 @@ func writeMediaInfoJSON(tmpDir, baseName string, rawJSON []byte) *LocalFile {
 		
 		var streams []map[string]interface{}
 		for i, s := range ff.Streams {
-			m := map[string]interface{}{"Index": i, "Codec": s.CodecName}
+			m := map[string]interface{}{"Index": i, "Codec": s.CodecName, "Language": s.Tags.Language}
 			if s.CodecType == "video" {
+				depth := 8
+				if strings.Contains(s.PixFmt, "10le") || strings.Contains(s.PixFmt, "12le") {
+					depth = 10
+				}
+				
+				// 修复：取宽和高最大的值作为基准，解决 4096x2048 被误判为 1080p 的问题
+				base := s.Width
+				if s.Height > base {
+					base = s.Height
+				}
+				
 				p := "SD"
-				if s.Height >= 2160 { p = "2160p" } else if s.Height >= 1080 { p = "1080p" } else if s.Height >= 720 { p = "720p" }
+				if base >= 2160 {
+					p = "2160p"
+				} else if base >= 1080 {
+					p = "1080p"
+				} else if base >= 720 {
+					p = "720p"
+				}
+
 				m["Type"] = "Video"
 				m["Width"] = s.Width
 				m["Height"] = s.Height
-				m["BitDepth"] = 8
-				m["DisplayTitle"] = fmt.Sprintf("%s %s 8bit", p, strings.ToUpper(s.CodecName))
+				m["BitDepth"] = depth
+				m["DisplayTitle"] = fmt.Sprintf("%s %s %dbit", p, strings.ToUpper(s.CodecName), depth)
 			} else if s.CodecType == "audio" {
 				m["Type"] = "Audio"
 				m["Channels"] = s.Channels
