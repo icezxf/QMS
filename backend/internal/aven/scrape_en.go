@@ -127,8 +127,10 @@ func writeMediaInfoJSONAven(tmpDir, baseName string, rawJSON []byte) *avscrape.L
 	}
 	var ff struct {
 		Format struct {
-			Size     string `json:"size"`
-			Duration string `json:"duration"`
+			Size       string `json:"size"`
+			Duration   string `json:"duration"`
+			BitRate    string `json:"bit_rate"`
+			FormatName string `json:"format_name"`
 		} `json:"format"`
 		Streams []struct {
 			CodecType     string `json:"codec_type"`
@@ -136,8 +138,13 @@ func writeMediaInfoJSONAven(tmpDir, baseName string, rawJSON []byte) *avscrape.L
 			Width         int    `json:"width"`
 			Height        int    `json:"height"`
 			PixFmt        string `json:"pix_fmt"`
+			Profile       string `json:"profile"`
+			Level         int    `json:"level"`
+			BitRate       string `json:"bit_rate"`
+			AvgFrameRate  string `json:"avg_frame_rate"`
 			Channels      int    `json:"channels"`
 			ChannelLayout string `json:"channel_layout"`
+			SampleRate    string `json:"sample_rate"`
 			Tags          struct {
 				Language string `json:"language"`
 			} `json:"tags"`
@@ -148,6 +155,10 @@ func writeMediaInfoJSONAven(tmpDir, baseName string, rawJSON []byte) *avscrape.L
 		fmt.Sscanf(ff.Format.Size, "%d", &size)
 		var secs float64
 		fmt.Sscanf(ff.Format.Duration, "%f", &secs)
+		ticks := int64(secs * 10000000)
+		
+		var bitrate int64
+		fmt.Sscanf(ff.Format.BitRate, "%d", &bitrate)
 		
 		var streams []map[string]interface{}
 		for i, s := range ff.Streams {
@@ -156,7 +167,6 @@ func writeMediaInfoJSONAven(tmpDir, baseName string, rawJSON []byte) *avscrape.L
 				depth := 8
 				if strings.Contains(s.PixFmt, "10le") || strings.Contains(s.PixFmt, "12le") { depth = 10 }
 				
-				// 修复：同时看宽和高，统一标准
 				base := s.Width
 				if s.Height > base { base = s.Height }
 				p := "SD"
@@ -167,11 +177,16 @@ func writeMediaInfoJSONAven(tmpDir, baseName string, rawJSON []byte) *avscrape.L
 				m["Height"] = s.Height
 				m["BitDepth"] = depth
 				m["DisplayTitle"] = fmt.Sprintf("%s %s %dbit", p, strings.ToUpper(s.CodecName), depth)
+				m["Profile"] = s.Profile
+				m["Level"] = s.Level
+				if br, err := strconv.ParseInt(s.BitRate, 10, 64); err == nil { m["BitRate"] = br }
 			} else if s.CodecType == "audio" {
 				m["Type"] = "Audio"
 				m["Channels"] = s.Channels
 				m["ChannelLayout"] = s.ChannelLayout
 				m["DisplayTitle"] = fmt.Sprintf("%s %s", strings.ToUpper(s.CodecName), s.ChannelLayout)
+				if br, err := strconv.ParseInt(s.BitRate, 10, 64); err == nil { m["BitRate"] = br }
+				if sr, err := strconv.ParseInt(s.SampleRate, 10, 64); err == nil { m["SampleRate"] = sr }
 			} else {
 				continue
 			}
@@ -179,7 +194,11 @@ func writeMediaInfoJSONAven(tmpDir, baseName string, rawJSON []byte) *avscrape.L
 		}
 		
 		out := map[string]interface{}{"MediaSourceInfo": map[string]interface{}{
-			"Size": size, "RunTimeTicks": int64(secs * 10000000), "MediaStreams": streams,
+			"Size":         size,
+			"RunTimeTicks": ticks,
+			"Bitrate":      bitrate,
+			"Container":    ff.Format.FormatName,
+			"MediaStreams": streams,
 		}}
 		b, _ := json.MarshalIndent([]interface{}{out}, "", "  ")
 		jp := filepath.Join(tmpDir, baseName+"-mediainfo.json")
