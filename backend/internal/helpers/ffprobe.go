@@ -40,8 +40,27 @@ type FFprobeStream struct {
 	ColorRange         string            `json:"color_range"`         // 色彩范围，如 tv/pc
 	FieldOrder         string            `json:"field_order"`         // 扫描方式，如 progressive
 	SampleAspectRatio  string            `json:"sample_aspect_ratio"` // 像素宽高比，如 1:1
+	Refs               int               `json:"refs"`                // 参考帧数量
 	Disposition        map[string]int    `json:"disposition"`         // 流标记，如 default/forced
+	SideDataList       []FFprobeSideData `json:"side_data_list"`      // 杜比视界/HDR10+ 元数据在这里
 	Tags               map[string]string `json:"tags"`
+}
+
+// FFprobeSideData 对应 ffprobe 的 side_data_list 项。
+//
+// 杜比视界的 profile/level 不体现在 codec/profile 字段里（DV 片源的 profile 同样是
+// "Main 10"），只能从 "DOVI configuration record" 这段 side data 读出来；HDR10+ 同理，
+// 靠 side_data_type 里的 SMPTE2094-40 标识。
+type FFprobeSideData struct {
+	SideDataType              string `json:"side_data_type"`
+	DvVersionMajor            int    `json:"dv_version_major"`
+	DvVersionMinor            int    `json:"dv_version_minor"`
+	DvProfile                 int    `json:"dv_profile"`
+	DvLevel                   int    `json:"dv_level"`
+	RpuPresentFlag            int    `json:"rpu_present_flag"`
+	ElPresentFlag             int    `json:"el_present_flag"`
+	BlPresentFlag             int    `json:"bl_present_flag"`
+	DvBlSignalCompatibilityID int    `json:"dv_bl_signal_compatibility_id"`
 }
 
 type FFprobeFormat struct {

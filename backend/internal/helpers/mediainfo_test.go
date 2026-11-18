@@ -63,3 +63,78 @@ func TestBuildMediaInfoJSON空数据返回错误(t *testing.T) {
 		t.Error("仅有附件流时应返回错误")
 	}
 }
+
+// mediaInfoOfVideo 只喂一条视频流，返回补全后的流信息。
+func mediaInfoOfVideo(t *testing.T, videoJSON string) MediaInfoStream {
+	t.Helper()
+	raw := []byte(`{"format":{"size":"1000","duration":"60","bit_rate":"2000","format_name":"matroska,webm"},` +
+		`"streams":[{"index":0,"codec_type":"video","codec_name":"hevc",` + videoJSON + `}]}`)
+	out, err := BuildMediaInfoJSON(raw)
+	if err != nil {
+		t.Fatalf("生成失败：%v", err)
+	}
+	var result []MediaInfoOutput
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("解析失败：%v", err)
+	}
+	return result[0].MediaSourceInfo.MediaStreams[0]
+}
+
+// 杜比视界的 profile 不在 codec/profile 字段里，只能从 side_data_list 读，
+// 否则 DV 片源会被当成普通 HDR10。
+func TestBuildMediaInfoJSON识别杜比视界(t *testing.T) {
+	const hdrBase = `"width":3840,"height":2160,"pix_fmt":"yuv420p10le","color_space":"bt2020nc","color_transfer":"smpte2084","color_primaries":"bt2020"`
+	cases := []struct {
+		name      string
+		extra     string
+		wantRange string
+		wantType  string
+	}{
+		{"DV8 兼容 HDR10", `"codec_tag_string":"dvhe","side_data_list":[{"side_data_type":"DOVI configuration record","dv_version_major":1,"dv_profile":8,"dv_level":6,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":1}]`, "HDR", "DOVIWithHDR10"},
+		{"DV8 with HDR10+", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":8,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":1},{"side_data_type":"HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}]`, "HDR", "DOVIWithHDR10Plus"},
+		{"DV5 纯杜比视界", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":5,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":0}]`, "HDR", "DOVI"},
+		{"DV7 带增强层", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":7,"rpu_present_flag":1,"el_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":6}]`, "HDR", "DOVIWithEL"},
+		{"仅 HDR10+", `"side_data_list":[{"side_data_type":"HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}]`, "HDR", "HDR10Plus"},
+		{"普通 HDR10", ``, "HDR", "HDR10"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			video := hdrBase
+			if c.extra != "" {
+				video += "," + c.extra
+			}
+			s := mediaInfoOfVideo(t, video)
+			if s.VideoRange != c.wantRange || s.VideoRangeType != c.wantType {
+				t.Errorf("得到 %s/%s，期望 %s/%s", s.VideoRange, s.VideoRangeType, c.wantRange, c.wantType)
+			}
+			if s.IsHDR != (c.wantRange == "HDR") {
+				t.Errorf("IsHDR 与 VideoRange 不一致：%+v", s)
+			}
+		})
+	}
+}
+
+// 色彩边界：HLG、10bit SDR 误判、DV 基流色彩不匹配、12bit 位深。
+func TestBuildMediaInfoJSON色彩边界(t *testing.T) {
+	hlg := mediaInfoOfVideo(t, `"width":3840,"height":2160,"color_space":"bt2020nc","color_transfer":"arib-std-b67","color_primaries":"bt2020"`)
+	if hlg.VideoRangeType != "HLG" || !hlg.IsHDR {
+		t.Errorf("HLG 判定错误：%+v", hlg)
+	}
+
+	// 旧实现按像素格式判 HDR，10bit SDR 会被误标
+	sdr := mediaInfoOfVideo(t, `"width":1920,"height":1080,"pix_fmt":"yuv420p10le","color_transfer":"bt709"`)
+	if sdr.IsHDR || sdr.VideoRangeType != "SDR" {
+		t.Errorf("10bit SDR 被误判为 HDR：%+v", sdr)
+	}
+
+	// DV 头但基流不是 bt2020/PQ，按规范判无效
+	bad := mediaInfoOfVideo(t, `"width":1920,"height":1080,"pix_fmt":"yuv420p10le","color_space":"bt709","color_transfer":"bt709","color_primaries":"bt709","side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":8,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":1}]`)
+	if bad.VideoRangeType != "DOVIInvalid" {
+		t.Errorf("DV 基流色彩校验未生效：%+v", bad)
+	}
+
+	deep := mediaInfoOfVideo(t, `"width":3840,"height":2160,"pix_fmt":"yuv420p12le","color_transfer":"smpte2084"`)
+	if deep.BitDepth != 12 {
+		t.Errorf("12bit 位深错误：%d", deep.BitDepth)
+	}
+}
