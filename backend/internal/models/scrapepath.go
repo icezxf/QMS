@@ -72,41 +72,42 @@ type ScrapePathCategoryCollection struct {
 // 关闭分类最终路径为：DestPath/文件夹名称模板/文件名称模板
 type ScrapePath struct {
 	BaseModel
-	AccountId             uint                         `json:"account_id" form:"account_id"`                             // 账号 ID
-	SourceType            SourceType                   `json:"source_type" form:"source_type"`                           // 同步路径类型
-	MediaType             MediaType                    `json:"media_type" form:"media_type"`                             // 媒体类型
-	SourcePath            string                       `json:"source_path" form:"source_path"`                           // 源路径，绝对路径
-	SourcePathId          string                       `json:"source_path_id" form:"source_path_id"`                     // 源路径 ID，如果是 115 则是 FileId，如果是本地则为空字符串，如果是 OpenList 则是远程路径 ID
-	DestPath              string                       `json:"dest_path" form:"dest_path"`                               // 目标路径，绝对路径
-	DestPathId            string                       `json:"dest_path_id" form:"dest_path_id"`                         // 目标路径 ID，如果是 115 则是 FileId，如果是本地则为空字符串，如果是 OpenList 则是远程路径 ID
-	ScrapeType            ScrapeType                   `json:"scrape_type" form:"scrape_type"`                           // 刮削类型
-	RenameType            RenameType                   `json:"rename_type" form:"rename_type"`                           // 重命名类型，非本地仅支持移动重命名
-	FolderNameTemplate    string                       `json:"folder_name_template" form:"folder_name_template"`         // 文件夹名称模板，支持{{title}}、{{year}}、{{season}}、{{episode}}
-	FileNameTemplate      string                       `json:"file_name_template" form:"file_name_template"`             // 文件名称模板，支持{{title}}、{{year}}、{{season}}、{{episode}}
-	DeletedKeyword        string                       `json:"-" form:"-"`                                               // 要删除的关键词，JSON 字符串数组，识别时会将数组中包含的关键字全部替换为空字符串
-	DeleteKeyword         []string                     `json:"delete_keyword" form:"delete_keyword" gorm:"-"`            // 要删除的关键词，字符串数组，识别时会将数组中包含的关键字全部替换为空字符串
-	EnableCategory        bool                         `json:"enable_category" form:"enable_category"`                   // 是否启用分类，开启时会根据分类名称创建文件夹
-	VideoExt              string                       `json:"-" form:"-"`                                               // 视频文件扩展名，JSON 字符串数组，例如："[\"mp4\",\"mkv\",\"avi\"]"
-	VideoExtList          []string                     `json:"video_ext_list" form:"video_ext_list" gorm:"-"`            // 视频文件扩展名列表，字符串数组，例如：["mp4","mkv","avi"]
-	MinVideoFileSize      int64                        `json:"min_video_file_size" form:"min_video_file_size"`           // 最小视频文件大小，单位为字节，默认值为 0，即不限制最小文件大小
-	ExcludeNoImageActor   bool                         `json:"exclude_no_image_actor" form:"exclude_no_image_actor"`     // 是否排除没有图片的演员，开启时会将没有图片的演员从演员列表中排除
-	EnableAi              AiAction                     `json:"enable_ai" form:"enable_ai"`                               // 是否启用 AI 识别，开启时会使用 AI 识别视频文件的元数据
-	AiPrompt              string                       `json:"ai_prompt" form:"ai_prompt"`                               // AI 识别提示词，用于自定义 AI 识别的元数据
-	ForceDeleteSourcePath bool                         `json:"force_delete_source_path" form:"force_delete_source_path"` // 是否强制删除源路径，开启时会强制删除源路径下的所有文件，包括子目录
-	EnableCron            bool                         `json:"enable_cron" form:"enable_cron"`                           // 是否启用定时任务，开启时会根据定时任务规则定时刮削
-	CronExpression        string                       `json:"cron_expression" form:"cron_expression"`                   // Cron 表达式（如：0 3 * * *）
-	CronDescription       string                       `json:"cron_description" form:"cron_description"`                 // Cron 表达式描述（如：每天 3 点）
-	LastCronRun           string                       `json:"last_cron_run" form:"last_cron_run"`                       // 上次执行时间
-	NextCronRun           string                       `json:"next_cron_run" form:"next_cron_run"`                       // 下次执行时间
-	CronEnabled           int                          `json:"cron_enabled" form:"cron_enabled"`                         // 定时任务启用状态（0/1）
-	EnableFanartTv        bool                         `json:"enable_fanart_tv" form:"enable_fanart_tv"`                 // 是否启用 fanart.tv，开启时会从 fanart.tv 下载高清图
-	IsScraping            bool                         `json:"is_scraping" form:"is_scraping"`                           // 是否正在刮削
-	MaxThreads            int                          `json:"max_threads" form:"max_threads"`                           // 刮削最大线程数，默认值为 5
-	V115Client            *v115open.OpenClient         `json:"-" gorm:"-"`                                               // 115 客户端
-	BaiduPanClient        *baidupan.Client             `json:"-" gorm:"-"`                                               // 百度网盘客户端
-	OpenListClient        *openlist.Client             `json:"-" gorm:"-"`                                               // OpenList 客户端
-	ExistsFiles           map[string]bool              `json:"-" gorm:"-"`                                               // 已存在的文件，key 为文件路径，value 为是否存在
-	ScrapeRootPath        string                       `json:"-" gorm:"-"`                                               // 刮削根路径
+	AccountId             uint                         `json:"account_id" form:"account_id"`                                             // 账号 ID
+	SourceType            SourceType                   `json:"source_type" form:"source_type"`                                           // 同步路径类型
+	MediaType             MediaType                    `json:"media_type" form:"media_type"`                                             // 媒体类型
+	SourcePath            string                       `json:"source_path" form:"source_path"`                                           // 源路径，绝对路径
+	SourcePathId          string                       `json:"source_path_id" form:"source_path_id"`                                     // 源路径 ID，如果是 115 则是 FileId，如果是本地则为空字符串，如果是 OpenList 则是远程路径 ID
+	DestPath              string                       `json:"dest_path" form:"dest_path"`                                               // 目标路径，绝对路径
+	DestPathId            string                       `json:"dest_path_id" form:"dest_path_id"`                                         // 目标路径 ID，如果是 115 则是 FileId，如果是本地则为空字符串，如果是 OpenList 则是远程路径 ID
+	ScrapeType            ScrapeType                   `json:"scrape_type" form:"scrape_type"`                                           // 刮削类型
+	RenameType            RenameType                   `json:"rename_type" form:"rename_type"`                                           // 重命名类型，非本地仅支持移动重命名
+	FolderNameTemplate    string                       `json:"folder_name_template" form:"folder_name_template"`                         // 文件夹名称模板，支持{{title}}、{{year}}、{{season}}、{{episode}}
+	FileNameTemplate      string                       `json:"file_name_template" form:"file_name_template"`                             // 文件名称模板，支持{{title}}、{{year}}、{{season}}、{{episode}}
+	DeletedKeyword        string                       `json:"-" form:"-"`                                                               // 要删除的关键词，JSON 字符串数组，识别时会将数组中包含的关键字全部替换为空字符串
+	DeleteKeyword         []string                     `json:"delete_keyword" form:"delete_keyword" gorm:"-"`                            // 要删除的关键词，字符串数组，识别时会将数组中包含的关键字全部替换为空字符串
+	EnableCategory        bool                         `json:"enable_category" form:"enable_category"`                                   // 是否启用分类，开启时会根据分类名称创建文件夹
+	VideoExt              string                       `json:"-" form:"-"`                                                               // 视频文件扩展名，JSON 字符串数组，例如："[\"mp4\",\"mkv\",\"avi\"]"
+	VideoExtList          []string                     `json:"video_ext_list" form:"video_ext_list" gorm:"-"`                            // 视频文件扩展名列表，字符串数组，例如：["mp4","mkv","avi"]
+	MinVideoFileSize      int64                        `json:"min_video_file_size" form:"min_video_file_size"`                           // 最小视频文件大小，单位为字节，默认值为 0，即不限制最小文件大小
+	ExcludeNoImageActor   bool                         `json:"exclude_no_image_actor" form:"exclude_no_image_actor"`                     // 是否排除没有图片的演员，开启时会将没有图片的演员从演员列表中排除
+	EnableAi              AiAction                     `json:"enable_ai" form:"enable_ai"`                                               // 是否启用 AI 识别，开启时会使用 AI 识别视频文件的元数据
+	AiPrompt              string                       `json:"ai_prompt" form:"ai_prompt"`                                               // AI 识别提示词，用于自定义 AI 识别的元数据
+	ForceDeleteSourcePath bool                         `json:"force_delete_source_path" form:"force_delete_source_path"`                 // 是否强制删除源路径，开启时会强制删除源路径下的所有文件，包括子目录
+	EnableCron            bool                         `json:"enable_cron" form:"enable_cron"`                                           // 是否启用定时任务，开启时会根据定时任务规则定时刮削
+	CronExpression        string                       `json:"cron_expression" form:"cron_expression"`                                   // Cron 表达式（如：0 3 * * *）
+	CronDescription       string                       `json:"cron_description" form:"cron_description"`                                 // Cron 表达式描述（如：每天 3 点）
+	LastCronRun           string                       `json:"last_cron_run" form:"last_cron_run"`                                       // 上次执行时间
+	NextCronRun           string                       `json:"next_cron_run" form:"next_cron_run"`                                       // 下次执行时间
+	CronEnabled           int                          `json:"cron_enabled" form:"cron_enabled"`                                         // 定时任务启用状态（0/1）
+	EnableFanartTv        bool                         `json:"enable_fanart_tv" form:"enable_fanart_tv"`                                 // 是否启用 fanart.tv，开启时会从 fanart.tv 下载高清图
+	EnableMediaInfoJson   bool                         `json:"enable_media_info_json" form:"enable_media_info_json" gorm:"default:true"` // 是否生成 ffprobe 媒体信息 JSON，开启时刮削后会生成 <视频名>-mediainfo.json
+	IsScraping            bool                         `json:"is_scraping" form:"is_scraping"`                                           // 是否正在刮削
+	MaxThreads            int                          `json:"max_threads" form:"max_threads"`                                           // 刮削最大线程数，默认值为 5
+	V115Client            *v115open.OpenClient         `json:"-" gorm:"-"`                                                               // 115 客户端
+	BaiduPanClient        *baidupan.Client             `json:"-" gorm:"-"`                                                               // 百度网盘客户端
+	OpenListClient        *openlist.Client             `json:"-" gorm:"-"`                                                               // OpenList 客户端
+	ExistsFiles           map[string]bool              `json:"-" gorm:"-"`                                                               // 已存在的文件，key 为文件路径，value 为是否存在
+	ScrapeRootPath        string                       `json:"-" gorm:"-"`                                                               // 刮削根路径
 	Category              ScrapePathCategoryCollection `json:"-" gorm:"-"`
 	CategoryMap           map[uint]string              `json:"-" gorm:"-"`
 	// 完成的电视剧缓存，每次启动整理时清除，防止多次操作电视剧完成
@@ -239,6 +240,7 @@ func (m *ScrapePath) Save() error {
 			"exclude_no_image_actor":   m.ExcludeNoImageActor,
 			"force_delete_source_path": m.ForceDeleteSourcePath,
 			"enable_fanart_tv":         m.EnableFanartTv,
+			"enable_media_info_json":   m.EnableMediaInfoJson,
 			"max_threads":              m.MaxThreads,
 			"enable_cron":              m.EnableCron,
 			"cron_expression":          m.CronExpression,

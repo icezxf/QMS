@@ -147,66 +147,67 @@ type MoveNewFileToSourceFile struct {
 type ScrapeMediaFile struct {
 	BaseModel
 	MediaFiles
-	ScrapePathId         uint              `gorm:"index" json:"scrape_path_id"`                     // 同步路径 ID
-	MediaType            MediaType         `gorm:"index" json:"media_type"`                         // 媒体类型
-	SourceType           SourceType        `gorm:"index" json:"source_type"`                        // 来源类型
-	ScrapeType           ScrapeType        `gorm:"index" json:"scrape_type"`                        // 刮削类型
-	RenameType           RenameType        `gorm:"index" json:"rename_type"`                        // 重命名类型
-	EnableCategory       bool              `gorm:"index" json:"enable_category"`                    // 是否启用二级分类
-	SourcePath           string            `gorm:"index" json:"source_path"`                        // 来源路径
-	SourcePathId         string            `gorm:"index" json:"source_path_id"`                     // 来源路径 ID
-	DestPath             string            `gorm:"index" json:"dest_path"`                          // 目标路径
-	DestPathId           string            `gorm:"index" json:"dest_path_id"`                       // 目标路径 ID
-	MediaId              uint              `gorm:"index" json:"media_id"`                           // 媒体 ID
-	MediaSeasonId        uint              `gorm:"index" json:"media_season_id"`                    // 季 ID
-	MediaEpisodeId       uint              `gorm:"index" json:"media_episode_id"`                   // 集 ID
-	Name                 string            `json:"name"`                                            // TMDB 名称，如果没有 Media 数据则使用该字段
-	Year                 int               `json:"year"`                                            // TMDB 年份，如果没有 Media 数据则使用该字段
-	TmdbId               int64             `json:"tmdb_id"`                                         // TMDB ID，如果没有 Media 数据则使用该字段
-	SeasonNumber         int               `json:"season_number"`                                   // 季编号，例如：S01E01 中的 S01
-	EpisodeNumber        int               `json:"episode_number"`                                  // 集编号，例如：S01E01 中的 E01
-	Path                 string            `json:"path"`                                            // 媒体文件夹路径，相对 ScrapePath.SourcePath 的路径
-	PathId               string            `json:"path_id"`                                         // 媒体文件夹路径 ID，本地类型是绝对路径，网盘类型是文件 ID
-	TvshowPath           string            `json:"tvshow_path"`                                     // 电视剧路径，相对 ScrapePath.SourcePath 的路径
-	TvshowPathId         string            `json:"tvshow_path_id" gorm:"index:idx_batch_no_tvshow"` // 电视剧路径 ID，本地类型是绝对路径，网盘类型是文件 ID
-	VideoFilename        string            `json:"video_filename"`                                  // 视频文件名，相对于 SyncPath.LocalPath + SyncPath.RemotePath 的相对路径
-	VideoFileId          string            `json:"video_file_id"`                                   // 视频文件 ID，本地类型是绝对路径，网盘类型是文件 ID
-	VideoPickCode        string            `json:"video_pick_code"`                                 // 视频文件 PickCode
-	TvshowFiles          []*MediaMetaFiles `json:"tvshow_files" gorm:"-"`                           // 剧集文件列表
-	TvshowFilesJson      string            `json:"-"`                                               // 剧集文件列表 JSON 字符串
-	SeasonFiles          []*MediaMetaFiles `json:"season_files" gorm:"-"`                           // 季文件列表
-	SeasonFilesJson      string            `json:"-"`                                               // 季文件列表 JSON 字符串
-	Resolution           string            `json:"resolution"`                                      // 分辨率
-	ResolutionLevel      string            `json:"resolution_level"`                                // 分辨率等级
-	IsHDR                bool              `json:"is_hdr"`                                          // 是否 HDR
-	VideoCodec           *VideoCodec       `json:"video_codec" gorm:"-"`                            // 视频编码，使用 ffprobe 提取
-	AudioCodec           []*AudioCodec     `json:"audio_codec" gorm:"-"`                            // 音频编码，使用 ffprobe 提取
-	SubtitleCodec        []*Subtitle       `json:"subtitle_codec" gorm:"-"`                         // 内封字幕流，使用 ffprobe 提取
-	VideoCodecJson       string            `json:"-"`                                               // 视频编码 JSON 字符串
-	AudioCodecJson       string            `json:"-"`                                               // 音频编码 JSON 字符串
-	SubtitleCodecJson    string            `json:"-"`                                               // 内封字幕流 JSON 字符串
-	Status               ScrapeMediaStatus `json:"status"`                                          // 媒体状态
-	FailedReason         string            `json:"failed_reason"`                                   // 刮削失败原因
-	ScanTime             int64             `json:"scan_time"`                                       // 识别时间
-	ScrapeTime           int64             `json:"scrape_time"`                                     // 刮削时间
-	RenameTime           int64             `json:"rename_time"`                                     // 重命名时间
-	CategoryName         string            `json:"category_name"`                                   // 分类名称
-	ScrapePathCategoryId uint              `json:"scrape_path_category_id"`                         // 分类目录 ID
-	NewPathName          string            `json:"new_path_name"`                                   // 新路径名称，不含二级分类
-	NewSeasonPathName    string            `json:"new_season_path_name"`                            // 新季路径名称
-	NewPathId            string            `json:"new_path_id"`                                     // 新路径 ID
-	NewSeasonPathId      string            `json:"new_season_path_id"`                              // 新季路径 ID
-	NewVideoBaseName     string            `json:"new_video_base_name"`                             // 新视频文件名（不含扩展名）
-	VideoExt             string            `json:"video_ext"`                                       // 视频文件扩展名
-	ReScrapeTime         int64             `json:"re_scrape_time"`                                  // 重新刮削时间
-	IsReScrape           bool              `json:"is_re_scrape"`                                    // 是否重新刮削
-	BatchNo              string            `json:"batch_no" gorm:"index:idx_batch_no_tvshow"`       // 批次号（同一次扫描共用同一个批次）
-	TvIsRename           bool              `json:"tv_is_rename"`                                    // 是否重命名剧集
-	SeasonIsRename       bool              `json:"season_is_rename"`                                // 是否重命名季
-	Media                *Media            `json:"-" gorm:"-"`                                      // 影视剧信息
-	MediaSeason          *MediaSeason      `json:"-" gorm:"-"`                                      // 季信息
-	MediaEpisode         *MediaEpisode     `json:"-" gorm:"-"`                                      // 集信息
-	ScrapeRootPath       string            `json:"scrape_root_path" gorm:"-"`                       // 刮削根目录
+	ScrapePathId         uint                 `gorm:"index" json:"scrape_path_id"`                     // 同步路径 ID
+	MediaType            MediaType            `gorm:"index" json:"media_type"`                         // 媒体类型
+	SourceType           SourceType           `gorm:"index" json:"source_type"`                        // 来源类型
+	ScrapeType           ScrapeType           `gorm:"index" json:"scrape_type"`                        // 刮削类型
+	RenameType           RenameType           `gorm:"index" json:"rename_type"`                        // 重命名类型
+	EnableCategory       bool                 `gorm:"index" json:"enable_category"`                    // 是否启用二级分类
+	SourcePath           string               `gorm:"index" json:"source_path"`                        // 来源路径
+	SourcePathId         string               `gorm:"index" json:"source_path_id"`                     // 来源路径 ID
+	DestPath             string               `gorm:"index" json:"dest_path"`                          // 目标路径
+	DestPathId           string               `gorm:"index" json:"dest_path_id"`                       // 目标路径 ID
+	MediaId              uint                 `gorm:"index" json:"media_id"`                           // 媒体 ID
+	MediaSeasonId        uint                 `gorm:"index" json:"media_season_id"`                    // 季 ID
+	MediaEpisodeId       uint                 `gorm:"index" json:"media_episode_id"`                   // 集 ID
+	Name                 string               `json:"name"`                                            // TMDB 名称，如果没有 Media 数据则使用该字段
+	Year                 int                  `json:"year"`                                            // TMDB 年份，如果没有 Media 数据则使用该字段
+	TmdbId               int64                `json:"tmdb_id"`                                         // TMDB ID，如果没有 Media 数据则使用该字段
+	SeasonNumber         int                  `json:"season_number"`                                   // 季编号，例如：S01E01 中的 S01
+	EpisodeNumber        int                  `json:"episode_number"`                                  // 集编号，例如：S01E01 中的 E01
+	Path                 string               `json:"path"`                                            // 媒体文件夹路径，相对 ScrapePath.SourcePath 的路径
+	PathId               string               `json:"path_id"`                                         // 媒体文件夹路径 ID，本地类型是绝对路径，网盘类型是文件 ID
+	TvshowPath           string               `json:"tvshow_path"`                                     // 电视剧路径，相对 ScrapePath.SourcePath 的路径
+	TvshowPathId         string               `json:"tvshow_path_id" gorm:"index:idx_batch_no_tvshow"` // 电视剧路径 ID，本地类型是绝对路径，网盘类型是文件 ID
+	VideoFilename        string               `json:"video_filename"`                                  // 视频文件名，相对于 SyncPath.LocalPath + SyncPath.RemotePath 的相对路径
+	VideoFileId          string               `json:"video_file_id"`                                   // 视频文件 ID，本地类型是绝对路径，网盘类型是文件 ID
+	VideoPickCode        string               `json:"video_pick_code"`                                 // 视频文件 PickCode
+	TvshowFiles          []*MediaMetaFiles    `json:"tvshow_files" gorm:"-"`                           // 剧集文件列表
+	TvshowFilesJson      string               `json:"-"`                                               // 剧集文件列表 JSON 字符串
+	SeasonFiles          []*MediaMetaFiles    `json:"season_files" gorm:"-"`                           // 季文件列表
+	SeasonFilesJson      string               `json:"-"`                                               // 季文件列表 JSON 字符串
+	Resolution           string               `json:"resolution"`                                      // 分辨率
+	ResolutionLevel      string               `json:"resolution_level"`                                // 分辨率等级
+	IsHDR                bool                 `json:"is_hdr"`                                          // 是否 HDR
+	VideoCodec           *VideoCodec          `json:"video_codec" gorm:"-"`                            // 视频编码，使用 ffprobe 提取
+	AudioCodec           []*AudioCodec        `json:"audio_codec" gorm:"-"`                            // 音频编码，使用 ffprobe 提取
+	SubtitleCodec        []*Subtitle          `json:"subtitle_codec" gorm:"-"`                         // 内封字幕流，使用 ffprobe 提取
+	VideoCodecJson       string               `json:"-"`                                               // 视频编码 JSON 字符串
+	AudioCodecJson       string               `json:"-"`                                               // 音频编码 JSON 字符串
+	SubtitleCodecJson    string               `json:"-"`                                               // 内封字幕流 JSON 字符串
+	FFprobeJson          *helpers.FFprobeJson `json:"-" gorm:"-"`                                      // 本次刮削的 ffprobe 原始数据，用于生成 mediainfo.json（不入库）
+	Status               ScrapeMediaStatus    `json:"status"`                                          // 媒体状态
+	FailedReason         string               `json:"failed_reason"`                                   // 刮削失败原因
+	ScanTime             int64                `json:"scan_time"`                                       // 识别时间
+	ScrapeTime           int64                `json:"scrape_time"`                                     // 刮削时间
+	RenameTime           int64                `json:"rename_time"`                                     // 重命名时间
+	CategoryName         string               `json:"category_name"`                                   // 分类名称
+	ScrapePathCategoryId uint                 `json:"scrape_path_category_id"`                         // 分类目录 ID
+	NewPathName          string               `json:"new_path_name"`                                   // 新路径名称，不含二级分类
+	NewSeasonPathName    string               `json:"new_season_path_name"`                            // 新季路径名称
+	NewPathId            string               `json:"new_path_id"`                                     // 新路径 ID
+	NewSeasonPathId      string               `json:"new_season_path_id"`                              // 新季路径 ID
+	NewVideoBaseName     string               `json:"new_video_base_name"`                             // 新视频文件名（不含扩展名）
+	VideoExt             string               `json:"video_ext"`                                       // 视频文件扩展名
+	ReScrapeTime         int64                `json:"re_scrape_time"`                                  // 重新刮削时间
+	IsReScrape           bool                 `json:"is_re_scrape"`                                    // 是否重新刮削
+	BatchNo              string               `json:"batch_no" gorm:"index:idx_batch_no_tvshow"`       // 批次号（同一次扫描共用同一个批次）
+	TvIsRename           bool                 `json:"tv_is_rename"`                                    // 是否重命名剧集
+	SeasonIsRename       bool                 `json:"season_is_rename"`                                // 是否重命名季
+	Media                *Media               `json:"-" gorm:"-"`                                      // 影视剧信息
+	MediaSeason          *MediaSeason         `json:"-" gorm:"-"`                                      // 季信息
+	MediaEpisode         *MediaEpisode        `json:"-" gorm:"-"`                                      // 集信息
+	ScrapeRootPath       string               `json:"scrape_root_path" gorm:"-"`                       // 刮削根目录
 }
 
 func (sm *ScrapeMediaFile) Save() error {

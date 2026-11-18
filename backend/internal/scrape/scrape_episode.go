@@ -103,6 +103,10 @@ func (t *tvShowScrapeImpl) Scrape(mediaFile *models.ScrapeMediaFile) error {
 	if mediaFile.ScrapeType != models.ScrapeTypeOnlyRename {
 		// 生成 NFO
 		t.GenerateEpisodeNfo(mediaFile)
+		// 生成 ffprobe 媒体信息 JSON（随 NFO 一并上传）
+		if t.scrapePath.EnableMediaInfoJson {
+			t.WriteMediaInfoJSON(mediaFile, episodePath, mediaFile.NewVideoBaseName)
+		}
 		// 下载集的图片
 		episodeImageList := make(map[string]string)
 		episodeImageList[mediaFile.GetEpisodePosterName()] = mediaFile.MediaEpisode.PosterPath
@@ -358,6 +362,20 @@ func (t *tvShowScrapeImpl) GetEpisodeUploadFiles(mediaFile *models.ScrapeMediaFi
 		SourcePath: filepath.Join(sourcePath, jpgName),
 	}
 	fileList = append(fileList, file)
+	// 媒体信息 JSON：开启且已生成时才加入上传列表
+	if t.scrapePath.EnableMediaInfoJson {
+		mediaInfoName := mediaFile.NewVideoBaseName + "-mediainfo.json"
+		mediaInfoPath := filepath.Join(sourcePath, mediaInfoName)
+		if helpers.PathExists(mediaInfoPath) {
+			fileList = append(fileList, uploadFile{
+				ID:         fmt.Sprintf("%d", mediaFile.ID),
+				DestPathId: destPathId,
+				DestPath:   destPath,
+				FileName:   mediaInfoName,
+				SourcePath: mediaInfoPath,
+			})
+		}
+	}
 	return fileList
 }
 

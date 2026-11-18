@@ -31,6 +31,16 @@ type FFprobeStream struct {
 	DisplayAspectRatio string            `json:"display_aspect_ratio"`
 	BitRate            string            `json:"bit_rate"`
 	NB_Frames          string            `json:"nb_frames"`
+	Profile            string            `json:"profile"`             // 编码档次，如 Main 10
+	Level              int               `json:"level"`               // 编码等级，如 120
+	ChannelLayout      string            `json:"channel_layout"`      // 声道布局，如 5.1
+	ColorSpace         string            `json:"color_space"`         // 色彩空间，如 bt2020nc
+	ColorTransfer      string            `json:"color_transfer"`      // 色彩转换，如 smpte2084
+	ColorPrimaries     string            `json:"color_primaries"`     // 原色，如 bt2020
+	ColorRange         string            `json:"color_range"`         // 色彩范围，如 tv/pc
+	FieldOrder         string            `json:"field_order"`         // 扫描方式，如 progressive
+	SampleAspectRatio  string            `json:"sample_aspect_ratio"` // 像素宽高比，如 1:1
+	Disposition        map[string]int    `json:"disposition"`         // 流标记，如 default/forced
 	Tags               map[string]string `json:"tags"`
 }
 

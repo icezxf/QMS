@@ -29,6 +29,7 @@ export interface ScrapePath {
   cron_expression?: string
   cron_description?: string
   enable_fanart_tv: boolean
+  enable_media_info_json?: boolean
   max_threads: number
   is_running: number
   created_at?: number

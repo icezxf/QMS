@@ -32,6 +32,7 @@ type SaveScrapePathRequest struct {
 	EnableCron            bool              `json:"enable_cron" form:"enable_cron"`
 	CronExpression        string            `json:"cron_expression" form:"cron_expression"`
 	EnableFanartTv        bool              `json:"enable_fanart_tv" form:"enable_fanart_tv"`
+	EnableMediaInfoJson   *bool             `json:"enable_media_info_json" form:"enable_media_info_json"` // 未传时默认开启
 	MaxThreads            int               `json:"max_threads" form:"max_threads"`
 }
 
@@ -65,6 +66,11 @@ func (r *SaveScrapePathRequest) ValidateUpdate(oldScrapePath *models.ScrapePath)
 	r.SourceType = oldScrapePath.SourceType
 	r.AccountID = oldScrapePath.AccountId
 	r.MediaType = oldScrapePath.MediaType
+	// 未传该字段时保留旧值
+	if r.EnableMediaInfoJson == nil {
+		defaultValue := oldScrapePath.EnableMediaInfoJson
+		r.EnableMediaInfoJson = &defaultValue
+	}
 	return r.validate()
 }
 
@@ -181,6 +187,10 @@ func validateScrapePathRenameType(sourceType models.SourceType, scrapeType model
 
 // ToModel 转换为刮削路径模型。
 func (r SaveScrapePathRequest) ToModel() models.ScrapePath {
+	enableMediaInfoJson := true
+	if r.EnableMediaInfoJson != nil {
+		enableMediaInfoJson = *r.EnableMediaInfoJson
+	}
 	return models.ScrapePath{
 		ID:                    r.ID,
 		AccountId:             r.AccountID,
@@ -205,6 +215,7 @@ func (r SaveScrapePathRequest) ToModel() models.ScrapePath {
 		EnableCron:            r.EnableCron,
 		CronExpression:        r.CronExpression,
 		EnableFanartTv:        r.EnableFanartTv,
+		EnableMediaInfoJson:   enableMediaInfoJson,
 		MaxThreads:            r.MaxThreads,
 	}
 }

@@ -374,6 +374,20 @@
             开启后会从 fanart.tv 下载高清图片，速度较慢，可能降低刮削效率。
           </div>
         </el-form-item>
+        <el-form-item
+          label="生成媒体信息 JSON"
+          prop="enable_media_info_json"
+        >
+          <el-switch
+            v-model="form.enable_media_info_json"
+            :active-value="true"
+            :inactive-value="false"
+            :disabled="loading"
+          />
+          <div class="form-tip">
+            开启后刮削完成时会用 ffprobe 生成 &lt;视频名&gt;-mediainfo.json，包含视频、音频、字幕流信息，随元数据一并上传。
+          </div>
+        </el-form-item>
       </el-form>
 
       <div class="mobile-form-footer">
@@ -752,6 +766,20 @@
             开启后会从 fanart.tv 下载高清图片，速度较慢，可能降低刮削效率。
           </div>
         </el-form-item>
+        <el-form-item
+          label="生成媒体信息 JSON"
+          prop="enable_media_info_json"
+        >
+          <el-switch
+            v-model="form.enable_media_info_json"
+            :active-value="true"
+            :inactive-value="false"
+            :disabled="loading"
+          />
+          <div class="form-tip">
+            开启后刮削完成时会用 ffprobe 生成 &lt;视频名&gt;-mediainfo.json，包含视频、音频、字幕流信息，随元数据一并上传。
+          </div>
+        </el-form-item>
       </el-form>
 
       <template #footer>
@@ -884,6 +912,7 @@ const form = reactive<Omit<ScrapePath, 'is_running'>>({
   cron_expression: '',
   cron_description: '',
   enable_fanart_tv: false,
+  enable_media_info_json: true,
   max_threads: SCRAPE_THREAD_LIMITS.remoteMax,
 })
 
@@ -990,6 +1019,7 @@ const loadDirectoryData = async (id: number) => {
     form.cron_expression = directory.cron_expression || ''
     form.cron_description = directory.cron_description || ''
     form.enable_fanart_tv = directory.enable_fanart_tv || false
+    form.enable_media_info_json = directory.enable_media_info_json ?? true
     form.max_threads = parseInt(directory.max_threads + '') || SCRAPE_THREAD_LIMITS.remoteMax
     directoryLoaded.value = true
   } catch (error) {
@@ -1100,6 +1130,7 @@ const handleSubmit = async () => {
         cron_expression: form.cron_expression || '',
         cron_description: form.cron_description || '',
         enable_fanart_tv: form.enable_fanart_tv,
+        enable_media_info_json: form.enable_media_info_json,
         max_threads: parseInt(form.max_threads + ''),
       })
 
@@ -1131,6 +1162,7 @@ const handleSubmit = async () => {
         cron_expression: form.cron_expression || '',
         cron_description: form.cron_description || '',
         enable_fanart_tv: form.enable_fanart_tv,
+        enable_media_info_json: form.enable_media_info_json,
         max_threads: form.max_threads,
       })
 

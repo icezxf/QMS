@@ -197,6 +197,10 @@ func (m *movieScrapeImpl) Scrape(mediaFile *models.ScrapeMediaFile) error {
 		nfoName := m.GetMovieRealName(mediaFile, "", "nfo")
 		// 生成 NFO
 		m.GenerateMovieNfo(mediaFile, localTempPath, nfoName, m.scrapePath.ExcludeNoImageActor)
+		// 生成 ffprobe 媒体信息 JSON（随 NFO 一并上传）
+		if m.scrapePath.EnableMediaInfoJson {
+			m.WriteMediaInfoJSON(mediaFile, localTempPath, mediaFile.NewVideoBaseName)
+		}
 		fileList := map[string]string{}
 		posterExt := filepath.Ext(mediaFile.Media.PosterPath)
 		fileList[m.GetMovieRealName(mediaFile, fmt.Sprintf("poster%s", posterExt), "image")] = mediaFile.Media.PosterPath

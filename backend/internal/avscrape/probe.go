@@ -335,6 +335,40 @@ func fillOshash(videoURL string, pr *probeResult) {
 // 只在方案 1 失败时用（只对 faststart MP4 有效）
 // ============================================================
 
+// injectRealFileSize 把 ffprobe 原始 JSON 中 format.size 修正为真实文件大小。
+// 回退方案用 2MB 临时文件探测，ffprobe 报的 size 是截断值；这里保留其余字段
+// （streams、duration、format_name 等），只覆盖 size 与由 size 派生的 bit_rate。
+// 解析失败时原样返回，不破坏下游解析。
+func injectRealFileSize(rawJSON []byte, realSize int64) []byte {
+	var data map[string]interface{}
+	if err := json.Unmarshal(rawJSON, &data); err != nil {
+		return rawJSON
+	}
+	format, ok := data["format"].(map[string]interface{})
+	if !ok || format == nil {
+		format = make(map[string]interface{})
+		data["format"] = format
+	}
+	format["size"] = fmt.Sprintf("%d", realSize)
+
+	// bit_rate 在截断文件上会被 ffprobe 按 2MB 时长高估，用真实时长重算更接近实际。
+	// ffprobe 的 bit_rate 通常是字符串；duration 无法从截断文件可靠获得时不强行覆盖。
+	durStr, _ := format["duration"].(string)
+	var duration float64
+	if durStr != "" {
+		fmt.Sscanf(durStr, "%f", &duration)
+	}
+	if duration > 0 {
+		format["bit_rate"] = fmt.Sprintf("%d", int64(float64(realSize)*8/duration))
+	}
+
+	fixed, err := json.Marshal(data)
+	if err != nil {
+		return rawJSON
+	}
+	return fixed
+}
+
 func probeVideoLocal(videoURL string) (*probeResult, error) {
 	if videoURL == "" {
 		return nil, fmt.Errorf("空 URL")
@@ -369,6 +403,7 @@ func probeVideoLocal(videoURL string) (*probeResult, error) {
 	args := []string{
 		"-v", "error",
 		"-print_format", "json",
+		"-show_format",
 		"-show_streams",
 		"-analyzeduration", "5000000",
 		"-probesize", "2000000",
@@ -411,11 +446,16 @@ func probeVideoLocal(videoURL string) (*probeResult, error) {
 	}
 
 	s := result.Streams[0]
+	// ffprobe 探测的是前 2MB 临时文件，format 里的 size（及由 size 派生的 bit_rate）
+	// 反映的是截断文件而非真实文件。用 HTTP Content-Range 拿到的真实 fileSize 修正，
+	// 保证下游 -mediainfo.json 的 Size/Bitrate 正确。duration/format_name 来自头部
+	// moov atom，对 faststart MP4 是准确的，无需修正。
+	rawJSON := injectRealFileSize(stdout.Bytes(), fileSize)
 	pr := &probeResult{
 		Resolution: classifyResolution(s.Width, s.Height),
 		IsHDR:      isHDRPixelFormat(s.PixFmt, s.ColorTrc),
 		FileSize:   fileSize,
-		RawJSON:    stdout.Bytes(),
+		RawJSON:    rawJSON,
 	}
 
 	tail := <-tailCh

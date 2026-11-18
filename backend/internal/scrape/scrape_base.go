@@ -101,6 +101,8 @@ func (sm *ScrapeBase) GetFFprobeInfoFromFileOrUrl(mediaFile *models.ScrapeMediaF
 		helpers.AppLogger.Error("获取 ffprobe 数据失败，数据为空")
 		return
 	}
+	// 暂存原始数据，供后续生成 mediainfo.json 使用
+	mediaFile.FFprobeJson = ffprobeJson
 	for index, stream := range ffprobeJson.Streams {
 		// 解析视频编码
 		if stream.CodecType == "video" {

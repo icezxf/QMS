@@ -456,6 +456,7 @@ STRM 相关字段：
 - `ai_prompt`：AI 提示词。
 - `force_delete_source_path`：是否强制删除源路径。
 - `enable_fanart_tv`：是否启用 fanart.tv。
+- `enable_media_info_json`：是否生成 ffprobe 媒体信息 JSON（默认 true），开启时刮削后生成 `<视频名>-mediainfo.json` 并随元数据上传，包含视频、音频、字幕流信息。
 - `max_threads`：最大刮削线程数。
 
 定时字段：
