@@ -124,7 +124,7 @@ func BuildMediaInfoJSON(rawJSON []byte) ([]byte, error) {
 			info.IsHDR = info.VideoRange == "HDR"
 			info.BitRate = streamBitrate
 			info.AvgFrameRate = st.AvgFrameRate
-			info.DisplayTitle = mediainfoDisplayName(st.Width, st.Height, st.CodecName, info.BitDepth)
+			info.DisplayTitle = mediainfoDisplayName(st.Width, st.Height, st.CodecName, info.VideoRangeType)
 		case "audio":
 			info.Type = "Audio"
 			info.Channels = st.Channels
@@ -156,27 +156,87 @@ func BuildMediaInfoJSON(rawJSON []byte) ([]byte, error) {
 		Size:         size,
 		RunTimeTicks: runTimeTicks,
 		Bitrate:      bitrate,
-		Container:    ff.Format.FormatName,
+		Container:    normalizeContainer(ff.Format.FormatName),
 		MediaStreams: streams,
 	}
 	return json.MarshalIndent([]MediaInfoOutput{{MediaSourceInfo: source}}, "", "  ")
 }
 
-// mediainfoDisplayName 生成分辨率/编码/位深展示标题，如 1080p HEVC 10bit。
-func mediainfoDisplayName(width, height int64, codec string, bitDepth int) string {
+// mediainfoDisplayName 生成与 Emby 官方一致的视频 DisplayTitle。
+//
+// 顺序固定为「分辨率 + 动态范围 + 编码」，例如：
+//
+//	4K Dolby Vision HEVC / 4K HDR 10 HEVC / 4K HLG HEVC / 1080p HEVC
+//
+// 位深度不再拼进标题：官方客户端把 BitDepth 单独显示成一行「位深度: 10」，
+// 旧版拼出的 "2160p HEVC 10bit" 与官方不符。HDR10 里的 "10" 是格式名，不是位深。
+func mediainfoDisplayName(width, height int64, codec, videoRangeType string) string {
 	base := width
 	if height > base {
 		base = height
 	}
 	quality := "SD"
 	if base >= 2160 {
-		quality = "2160p"
+		quality = "4K"
 	} else if base >= 1080 {
 		quality = "1080p"
 	} else if base >= 720 {
 		quality = "720p"
 	}
-	return fmt.Sprintf("%s %s %dbit", quality, strings.ToUpper(codec), bitDepth)
+
+	// 动态范围徽章：杜比视界优先（含各种组合），再 HDR/HLG。
+	// SDR 不加徽章，标题就是「分辨率 + 编码」。
+	var hdr string
+	switch {
+	case strings.HasPrefix(videoRangeType, "DOVI"):
+		hdr = "Dolby Vision"
+	case videoRangeType == "HDR10Plus":
+		hdr = "HDR 10+"
+	case videoRangeType == "HDR10":
+		hdr = "HDR 10"
+	case videoRangeType == "HLG":
+		hdr = "HLG"
+	}
+
+	parts := make([]string, 0, 3)
+	parts = append(parts, quality)
+	if hdr != "" {
+		parts = append(parts, hdr)
+	}
+	if codec != "" {
+		parts = append(parts, strings.ToUpper(codec))
+	}
+	return strings.Join(parts, " ")
+}
+
+// normalizeContainer 把 ffprobe 的 format_name 映射成 Emby 认识的容器扩展名。
+// ffprobe 常返回 "matroska,webm" 这类逗号分隔的别名，官方显示的是 MKV/mkv。
+func normalizeContainer(formatName string) string {
+	name := strings.ToLower(strings.TrimSpace(formatName))
+	// 逗号分隔时优先取能识别的规范名
+	for _, part := range strings.Split(name, ",") {
+		switch strings.TrimSpace(part) {
+		case "matroska", "webm":
+			return "mkv"
+		case "mov,mp4,m4a,3gp,3g2,mj2", "mp4", "mov":
+			return "mp4"
+		case "mpegts":
+			return "ts"
+		case "avi":
+			return "avi"
+		case "flv":
+			return "flv"
+		case "mp3":
+			return "mp3"
+		case "wav":
+			return "wav"
+		}
+	}
+	// 未识别时保留原名（去掉逗号别名只留第一段）
+	if i := strings.IndexByte(name, ','); i > 0 {
+		return strings.TrimSpace(name[:i])
+	}
+	return formatName
 }
 
 // bitDepthOf 从像素格式推位深。之前 12bit 被算成 10bit，HDR 片源的位深显示不准。
