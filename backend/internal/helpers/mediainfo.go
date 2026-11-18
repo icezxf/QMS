@@ -3,12 +3,20 @@ package helpers
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
 
-// MediaInfoStream 媒体流信息，对齐 Emby/Jellyfin 的 MediaStream。
-// 字段名沿用 avscrape 既有输出（大写驼峰），保证媒体服务器及既有消费方兼容。
+// MediaInfoStream 媒体流信息，直接对齐 Emby/Jellyfin 的 MediaStream。
+//
+// 所有字段在刮削阶段（QMS）就生成为 Emby 标准形状：
+//   - 标准字段名：IsDefault / IsForced / IsExternal（而非 Default / Forced）
+//   - 标准帧率：AverageFrameRate / RealFrameRate 为浮点（而非分数字符串 AvgFrameRate）
+//   - 拼好的 DisplayTitle：视频按「分辨率 + 动态范围 + 编码」，音轨/字幕带语言名
+//   - 字幕辅助标记：IsTextSubtitleStream / SupportsExternalStream / Protocol
+//
+// 消费方（媒体服务器）只需原样透传，不再做二次转换。
 type MediaInfoStream struct {
 	Index          int    `json:"Index"`
 	Type           string `json:"Type"`
@@ -30,28 +38,35 @@ type MediaInfoStream struct {
 	AspectRatio    string `json:"AspectRatio,omitempty"`
 	IsInterlaced   bool   `json:"IsInterlaced,omitempty"`
 	IsHDR          bool   `json:"IsHDR,omitempty"`
-	// VideoRange/VideoRangeType 是 Emby 客户端点亮 HDR / 杜比视界角标的唯一依据，
-	// 只给色彩三元组不够。取值与 Jellyfin 的 VideoRange/VideoRangeType 枚举一致。
+	// VideoRange/VideoRangeType 是 Emby 客户端点亮 HDR / 杜比视界角标的唯一依据。
 	VideoRange     string `json:"VideoRange,omitempty"`
 	VideoRangeType string `json:"VideoRangeType,omitempty"`
-	// 杜比视界：来自 ffprobe 的 "DOVI configuration record" side data
-	DvVersionMajor            int    `json:"DvVersionMajor,omitempty"`
-	DvVersionMinor            int    `json:"DvVersionMinor,omitempty"`
-	DvProfile                 int    `json:"DvProfile,omitempty"`
-	DvLevel                   int    `json:"DvLevel,omitempty"`
-	RpuPresentFlag            int    `json:"RpuPresentFlag,omitempty"`
-	ElPresentFlag             int    `json:"ElPresentFlag,omitempty"`
-	BlPresentFlag             int    `json:"BlPresentFlag,omitempty"`
-	DvBlSignalCompatibilityID int    `json:"DvBlSignalCompatibilityId,omitempty"`
-	Hdr10PlusPresentFlag      bool   `json:"Hdr10PlusPresentFlag,omitempty"`
-	BitRate                   int64  `json:"BitRate,omitempty"`
-	AvgFrameRate              string `json:"AvgFrameRate,omitempty"`
-	Channels                  int64  `json:"Channels,omitempty"`
-	ChannelLayout             string `json:"ChannelLayout,omitempty"`
-	SampleRate                int64  `json:"SampleRate,omitempty"`
-	Default                   bool   `json:"Default,omitempty"`
-	Forced                    bool   `json:"Forced,omitempty"`
-	DisplayTitle              string `json:"DisplayTitle,omitempty"`
+	// 杜比视界：来自 ffprobe 的 "DOVI configuration record" side data。
+	DvVersionMajor            int   `json:"DvVersionMajor,omitempty"`
+	DvVersionMinor            int   `json:"DvVersionMinor,omitempty"`
+	DvProfile                 int   `json:"DvProfile,omitempty"`
+	DvLevel                   int   `json:"DvLevel,omitempty"`
+	RpuPresentFlag            int   `json:"RpuPresentFlag,omitempty"`
+	ElPresentFlag             int   `json:"ElPresentFlag,omitempty"`
+	BlPresentFlag             int   `json:"BlPresentFlag,omitempty"`
+	DvBlSignalCompatibilityID int   `json:"DvBlSignalCompatibilityId,omitempty"`
+	Hdr10PlusPresentFlag      bool  `json:"Hdr10PlusPresentFlag,omitempty"`
+	BitRate                   int64 `json:"BitRate,omitempty"`
+	// 帧率为浮点（Emby 标准），由 ffprobe 的分数字符串换算而来。
+	AverageFrameRate float64 `json:"AverageFrameRate,omitempty"`
+	RealFrameRate    float64 `json:"RealFrameRate,omitempty"`
+	Channels         int64   `json:"Channels,omitempty"`
+	ChannelLayout    string  `json:"ChannelLayout,omitempty"`
+	SampleRate       int64   `json:"SampleRate,omitempty"`
+	// 标准布尔字段：不带 omitempty，保证始终输出，客户端可可靠读取。
+	IsDefault  bool `json:"IsDefault"`
+	IsForced   bool `json:"IsForced"`
+	IsExternal bool `json:"IsExternal"`
+	// 字幕辅助标记。
+	IsTextSubtitleStream   bool   `json:"IsTextSubtitleStream,omitempty"`
+	SupportsExternalStream bool   `json:"SupportsExternalStream,omitempty"`
+	Protocol               string `json:"Protocol,omitempty"`
+	DisplayTitle           string `json:"DisplayTitle,omitempty"`
 }
 
 // MediaSourceInfo 媒体源信息，对齐 Emby/Jellyfin 的 MediaSourceInfo。
@@ -63,14 +78,14 @@ type MediaSourceInfo struct {
 	MediaStreams []MediaInfoStream `json:"MediaStreams"`
 }
 
-// MediaInfoOutput 对应 avscrape 既有的外层结构：[{"MediaSourceInfo": {...}}]
+// MediaInfoOutput 对应外层结构：[{"MediaSourceInfo": {...}}]
 type MediaInfoOutput struct {
 	MediaSourceInfo MediaSourceInfo `json:"MediaSourceInfo"`
 }
 
 // BuildMediaInfoJSON 从 ffprobe 原始 JSON 生成补全版媒体信息 JSON。
 // 输出为 Jellyfin/Emby 风格数组：[{"MediaSourceInfo": {...}}]。
-// 相比原 avscrape 实现，补全了字幕流、HDR、帧率、色彩空间、disposition 等字段。
+// 每条流在刮削阶段就生成为 Emby 标准形状，消费方无需二次转换。
 // 入参 rawJSON 为 ffprobe -print_format json -show_format -show_streams 的原始输出。
 func BuildMediaInfoJSON(rawJSON []byte) ([]byte, error) {
 	if len(rawJSON) == 0 {
@@ -91,16 +106,21 @@ func BuildMediaInfoJSON(rawJSON []byte) ([]byte, error) {
 
 	streams := make([]MediaInfoStream, 0, len(ff.Streams))
 	for _, st := range ff.Streams {
-		info := MediaInfoStream{Index: st.Index, Codec: st.CodecName}
+		info := MediaInfoStream{Index: st.Index, Codec: st.CodecName, Protocol: "File"}
 		if st.Tags != nil {
 			info.Language = st.Tags["language"]
 			info.Title = st.Tags["title"]
 		}
 		if st.Disposition != nil {
-			info.Default = st.Disposition["default"] == 1
-			info.Forced = st.Disposition["forced"] == 1
+			info.IsDefault = st.Disposition["default"] == 1
+			info.IsForced = st.Disposition["forced"] == 1
+			info.IsExternal = st.Disposition["external"] == 1
 		}
 		streamBitrate, _ := strconv.ParseInt(st.BitRate, 10, 64)
+
+		// 帧率：ffprobe 给的是分数字符串（如 "24000/1001"），Emby 要浮点，保留三位小数。
+		info.AverageFrameRate = mediaFrameRate(st.AvgFrameRate)
+		info.RealFrameRate = mediaFrameRate(st.RFrameRate)
 
 		switch st.CodecType {
 		case "video":
@@ -123,7 +143,6 @@ func BuildMediaInfoJSON(rawJSON []byte) ([]byte, error) {
 			info.VideoRange, info.VideoRangeType = videoRangeOf(info)
 			info.IsHDR = info.VideoRange == "HDR"
 			info.BitRate = streamBitrate
-			info.AvgFrameRate = st.AvgFrameRate
 			info.DisplayTitle = mediainfoDisplayName(st.Width, st.Height, st.CodecName, info.VideoRangeType)
 		case "audio":
 			info.Type = "Audio"
@@ -131,17 +150,15 @@ func BuildMediaInfoJSON(rawJSON []byte) ([]byte, error) {
 			info.ChannelLayout = st.ChannelLayout
 			info.SampleRate, _ = strconv.ParseInt(st.SampleRate, 10, 64)
 			info.BitRate = streamBitrate
-			if info.ChannelLayout != "" {
-				info.DisplayTitle = fmt.Sprintf("%s %s", strings.ToUpper(st.CodecName), info.ChannelLayout)
-			} else {
-				info.DisplayTitle = strings.ToUpper(st.CodecName)
-			}
+			info.DisplayTitle = audioDisplayTitle(st.CodecName, info.ChannelLayout, info.Language, info.Title)
 		case "subtitle":
 			info.Type = "Subtitle"
 			if info.Title == "" {
 				info.Title = info.Language
 			}
-			info.DisplayTitle = strings.ToUpper(st.CodecName)
+			info.DisplayTitle = subtitleDisplayTitle(st.CodecName, info.Language, info.Title, info.IsForced)
+			info.IsTextSubtitleStream = isTextSubtitle(st.CodecName)
+			info.SupportsExternalStream = true
 		default:
 			continue
 		}
@@ -168,7 +185,7 @@ func BuildMediaInfoJSON(rawJSON []byte) ([]byte, error) {
 //
 //	4K Dolby Vision HEVC / 4K HDR 10 HEVC / 4K HLG HEVC / 1080p HEVC
 //
-// 位深度不再拼进标题：官方客户端把 BitDepth 单独显示成一行「位深度: 10」，
+// 位深度不拼进标题：官方客户端把 BitDepth 单独显示成一行「位深度: 10」，
 // 旧版拼出的 "2160p HEVC 10bit" 与官方不符。HDR10 里的 "10" 是格式名，不是位深。
 func mediainfoDisplayName(width, height int64, codec, videoRangeType string) string {
 	base := width
@@ -209,11 +226,119 @@ func mediainfoDisplayName(width, height int64, codec, videoRangeType string) str
 	return strings.Join(parts, " ")
 }
 
+// audioDisplayTitle 生成音轨 DisplayTitle：`[自定义标题 ]语言名 编码 声道布局`。
+// 逻辑与媒体服务器原先的清洗保持一致，转换下沉到刮削阶段后行为不变。
+func audioDisplayTitle(codec, layout, lang, title string) string {
+	base := strings.ToUpper(codec)
+	if layout != "" {
+		base = strings.ToUpper(codec) + " " + layout
+	}
+	langName := languageName(lang)
+	trackTitle := strings.TrimSpace(title)
+	if trackTitle != "" && !strings.EqualFold(trackTitle, lang) && !isLanguageCode(trackTitle) {
+		if strings.EqualFold(trackTitle, langName) {
+			base = trackTitle + " " + base
+		} else {
+			base = fmt.Sprintf("%s (%s)", trackTitle, base)
+		}
+	} else if langName != "" && !strings.Contains(base, langName) {
+		base = langName + " " + base
+	}
+	return base
+}
+
+// subtitleDisplayTitle 生成字幕 DisplayTitle：`[自定义标题 ]语言名 编码 [(强制)]`。
+func subtitleDisplayTitle(codec, lang, title string, forced bool) string {
+	base := strings.ToUpper(codec)
+	langName := languageName(lang)
+	trackTitle := strings.TrimSpace(title)
+	useful := trackTitle != "" && !strings.EqualFold(trackTitle, lang) && !isLanguageCode(trackTitle)
+	if useful {
+		base = fmt.Sprintf("%s (%s)", trackTitle, base)
+	} else if langName != "" {
+		base = langName + " " + base
+	}
+	if forced {
+		base = base + " (强制)"
+	}
+	return base
+}
+
+// mediaFrameRate 把 ffprobe 的分数帧率字符串（如 "24000/1001"）换算成浮点，保留三位小数。
+// 复用 ffprobe.go 的 parseFrameRate，再按 Emby 口径取整。
+func mediaFrameRate(s string) float64 {
+	f, _ := parseFrameRate(strings.TrimSpace(s))
+	if f <= 0 {
+		return 0
+	}
+	return math.Round(f*1000) / 1000
+}
+
+// languageName ISO 639 语言码 → 客户端可读语言名。
+func languageName(code string) string {
+	switch strings.ToLower(code) {
+	case "chi", "zho", "zh", "chs", "cht":
+		return "Chinese"
+	case "eng", "en":
+		return "English"
+	case "ger", "deu", "de":
+		return "German"
+	case "fre", "fra", "fr":
+		return "French"
+	case "jpn", "ja":
+		return "Japanese"
+	case "kor", "ko":
+		return "Korean"
+	case "spa", "es":
+		return "Spanish"
+	case "ita", "it":
+		return "Italian"
+	case "rus", "ru":
+		return "Russian"
+	case "por", "pt":
+		return "Portuguese"
+	case "hin", "hi":
+		return "Hindi"
+	case "tha", "th":
+		return "Thai"
+	case "may", "msa", "ms":
+		return "Malay"
+	case "vie", "vi":
+		return "Vietnamese"
+	case "ara", "ar":
+		return "Arabic"
+	default:
+		return ""
+	}
+}
+
+// isLanguageCode 判断一个标题是否只是语言码（"chi" / "ger" / "en"），这种不该当自定义标题。
+func isLanguageCode(s string) bool {
+	t := strings.TrimSpace(s)
+	if len(t) != 2 && len(t) != 3 {
+		return false
+	}
+	for _, r := range t {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+			return false
+		}
+	}
+	return languageName(t) != ""
+}
+
+// isTextSubtitle 判断字幕编码是否为文本字幕。
+func isTextSubtitle(codec string) bool {
+	switch strings.ToLower(codec) {
+	case "subrip", "srt", "ass", "ssa", "webvtt", "vtt", "mov_text", "text", "txt", "ttml", "dfxp":
+		return true
+	}
+	return false
+}
+
 // normalizeContainer 把 ffprobe 的 format_name 映射成 Emby 认识的容器扩展名。
 // ffprobe 常返回 "matroska,webm" 这类逗号分隔的别名，官方显示的是 MKV/mkv。
 func normalizeContainer(formatName string) string {
 	name := strings.ToLower(strings.TrimSpace(formatName))
-	// 逗号分隔时优先取能识别的规范名
 	for _, part := range strings.Split(name, ",") {
 		switch strings.TrimSpace(part) {
 		case "matroska", "webm":
@@ -232,14 +357,13 @@ func normalizeContainer(formatName string) string {
 			return "wav"
 		}
 	}
-	// 未识别时保留原名（去掉逗号别名只留第一段）
 	if i := strings.IndexByte(name, ','); i > 0 {
 		return strings.TrimSpace(name[:i])
 	}
 	return formatName
 }
 
-// bitDepthOf 从像素格式推位深。之前 12bit 被算成 10bit，HDR 片源的位深显示不准。
+// bitDepthOf 从像素格式推位深。
 func bitDepthOf(pixelFormat string) int {
 	p := strings.ToLower(pixelFormat)
 	switch {
@@ -253,7 +377,6 @@ func bitDepthOf(pixelFormat string) int {
 }
 
 // applyDolbyVision 把 ffprobe 的 side_data_list 落到流字段上。
-//
 // 杜比视界片的 codec/profile 和普通 HDR10 完全一样（都是 hevc Main 10），
 // 只有这段 "DOVI configuration record" 能区分，漏了就只能当 HDR10 处理。
 func applyDolbyVision(info *MediaInfoStream, sideData []FFprobeSideData) {
@@ -276,7 +399,6 @@ func applyDolbyVision(info *MediaInfoStream, sideData []FFprobeSideData) {
 }
 
 // videoRangeOf 推导 Emby 的 VideoRange / VideoRangeType。
-//
 // 规则与 Jellyfin MediaStream.GetVideoColorRange() 对齐：
 // 是否 HDR 看 color_transfer（smpte2084=PQ、arib-std-b67=HLG），
 // 杜比视界再看 profile 与 bl_signal_compatibility_id，基流色彩不匹配判 DOVIInvalid。
@@ -328,7 +450,6 @@ func videoRangeOf(s MediaInfoStream) (string, string) {
 				return base, "DOVIInvalid"
 			}
 		default:
-			// 只靠 codec tag 认出是 DV、profile 未知，基流是什么就是什么
 			rng, typ = base, "DOVI"
 		}
 
