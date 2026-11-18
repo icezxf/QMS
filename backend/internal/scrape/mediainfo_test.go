@@ -73,7 +73,7 @@ func TestWriteMediaInfoJSON生成完整媒体信息(t *testing.T) {
 	}
 
 	source := result[0].MediaSourceInfo
-	if source.Size != 12345678 || source.Bitrate != 5000000 || source.Container != "matroska,webm" {
+	if source.Size != 12345678 || source.Bitrate != 5000000 || source.Container != "mkv" {
 		t.Errorf("容器信息不符合预期：%+v", source)
 	}
 	if source.RunTimeTicks != int64(3600.5*10000000) {
@@ -91,7 +91,7 @@ func TestWriteMediaInfoJSON生成完整媒体信息(t *testing.T) {
 	if !video.IsHDR || video.Level != 120 || video.ColorSpace != "bt2020nc" {
 		t.Errorf("HDR/等级/色彩空间不符合预期：%+v", video)
 	}
-	if video.DisplayTitle != "2160p HEVC 10bit" {
+	if video.DisplayTitle != "4K HDR 10 HEVC" {
 		t.Errorf("视频展示标题不符合预期：%s", video.DisplayTitle)
 	}
 
