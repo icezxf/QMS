@@ -1839,3 +1839,44 @@ func assertUploadTaskSource(t *testing.T, localFullPath string, wantSource strin
 		t.Fatalf("上传任务 %s source = %s，期望 %s", localFullPath, task.Source, wantSource)
 	}
 }
+
+func TestMigrateVersion70AddsScrapePathEnableMediaInfoJSON(t *testing.T) {
+	if helpers.AppLogger == nil {
+		helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	}
+	testDb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	db.Db = testDb
+	createMigratorTestTable(t)
+	if err := db.Db.Create(&Migrator{VersionCode: 69}).Error; err != nil {
+		t.Fatalf("创建迁移版本记录失败: %v", err)
+	}
+	if err := db.Db.Exec(`CREATE TABLE scrape_paths (id integer primary key autoincrement)`).Error; err != nil {
+		t.Fatalf("创建旧版刮削目录表失败: %v", err)
+	}
+	if err := db.Db.Exec(`INSERT INTO scrape_paths (id) VALUES (1)`).Error; err != nil {
+		t.Fatalf("写入旧版刮削目录失败: %v", err)
+	}
+
+	Migrate()
+
+	var migrator Migrator
+	if err := db.Db.First(&migrator).Error; err != nil {
+		t.Fatalf("读取迁移版本失败: %v", err)
+	}
+	if migrator.VersionCode != MaxVersionCode {
+		t.Fatalf("迁移版本 = %d，期望 %d", migrator.VersionCode, MaxVersionCode)
+	}
+	if !db.Db.Migrator().HasColumn(&ScrapePath{}, "EnableMediaInfoJson") {
+		t.Fatal("迁移应添加 scrape_paths.enable_media_info_json 列")
+	}
+	var scrapePath ScrapePath
+	if err := db.Db.First(&scrapePath, 1).Error; err != nil {
+		t.Fatalf("读取迁移后的刮削目录失败: %v", err)
+	}
+	if !scrapePath.EnableMediaInfoJson {
+		t.Fatal("旧刮削目录的 enable_media_info_json 应默认开启")
+	}
+}

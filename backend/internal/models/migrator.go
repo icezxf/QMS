@@ -20,8 +20,8 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-// ===== 改动 1：MaxVersionCode 从 66 改成 67 =====
-var MaxVersionCode = 69
+// ===== 媒体信息 JSON 开关迁移：MaxVersionCode 从 69 改成 70 =====
+var MaxVersionCode = 70
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -708,7 +708,7 @@ func Migrate() {
 		helpers.AppLogger.Info("已添加欧美刮削模块的 aven_settings / aven_tasks / aven_media / aven_paths 表")
 		migrator.UpdateVersionCode(db.Db)
 	}
-		// ===== 新增 version 67：AVPath 加 is_vr 字段 =====
+	// ===== 新增 version 67：AVPath 加 is_vr 字段 =====
 	if migrator.VersionCode == 67 {
 		if err := db.Db.AutoMigrate(AVPath{}); err != nil {
 			helpers.AppLogger.Errorf("迁移 AV 目录 is_vr 字段失败：%v", err)
@@ -718,13 +718,27 @@ func Migrate() {
 		migrator.UpdateVersionCode(db.Db)
 	}
 	if migrator.VersionCode == 68 {
-    if err := db.Db.AutoMigrate(AVENMedia{}); err != nil {
-        helpers.AppLogger.Errorf("迁移 AVENMedia.Code 字段失败：%v", err)
-        return
-    }
-    helpers.AppLogger.Info("已添加 AVENMedia.Code 字段")
-    migrator.UpdateVersionCode(db.Db)
-}
+		if err := db.Db.AutoMigrate(AVENMedia{}); err != nil {
+			helpers.AppLogger.Errorf("迁移 AVENMedia.Code 字段失败：%v", err)
+			return
+		}
+		helpers.AppLogger.Info("已添加 AVENMedia.Code 字段")
+		migrator.UpdateVersionCode(db.Db)
+	}
+	if migrator.VersionCode == 69 {
+		if err := db.Db.AutoMigrate(ScrapePath{}); err != nil {
+			helpers.AppLogger.Errorf("迁移刮削目录生成媒体信息 JSON 开关失败：%v", err)
+			return
+		}
+		if err := db.Db.Model(&ScrapePath{}).
+			Where("enable_media_info_json IS NULL").
+			UpdateColumn("enable_media_info_json", true).Error; err != nil {
+			helpers.AppLogger.Errorf("初始化刮削目录生成媒体信息 JSON 开关失败：%v", err)
+			return
+		}
+		helpers.AppLogger.Info("已添加刮削目录生成媒体信息 JSON 开关")
+		migrator.UpdateVersionCode(db.Db)
+	}
 	// ==================================================
 	// ============================================================
 	if migrator.VersionCode == MaxVersionCode {
