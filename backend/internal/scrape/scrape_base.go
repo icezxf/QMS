@@ -83,10 +83,28 @@ func (s *ScrapeBase) FFprobe(mediaFile *models.ScrapeMediaFile) error {
 	return nil
 }
 
+// shouldSkipFFprobe 判断是否命中 ffprobe 缓存从而跳过重复探测。
+// 命中条件：已有视频/音频/分辨率缓存，且本次不是重新刮削。
+// 重新刮削（IsReScrape）必须强制重新探测，以便刷新 FFprobeJson 并生成 mediainfo.json
+// （FFprobeJson 是内存字段，不入库，重新加载后必为空）。
+func shouldSkipFFprobe(mediaFile *models.ScrapeMediaFile) bool {
+	if mediaFile.IsReScrape {
+		return false
+	}
+	return mediaFile.VideoCodecJson != "" && mediaFile.AudioCodecJson != "" && mediaFile.Resolution != ""
+}
+
 func (sm *ScrapeBase) GetFFprobeInfoFromFileOrUrl(mediaFile *models.ScrapeMediaFile, videoPathOrUrl string) {
 	var ffprobeJson *helpers.FFprobeJson
-	if mediaFile.VideoCodecJson != "" && mediaFile.AudioCodecJson != "" && mediaFile.Resolution != "" {
+	if shouldSkipFFprobe(mediaFile) {
 		return
+	}
+	// 重新探测前清空流缓存：VideoCodec 仅在 nil 时赋值，Audio/SubtitleCodec 用 append，
+	// 若沿用旧值会导致编解码信息被跳过或重复累积。
+	if mediaFile.IsReScrape {
+		mediaFile.VideoCodec = nil
+		mediaFile.AudioCodec = nil
+		mediaFile.SubtitleCodec = nil
 	}
 	var err error
 	ffprobeJson, err = helpers.GetFFprobeJson(videoPathOrUrl)
