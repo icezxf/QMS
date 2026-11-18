@@ -30,7 +30,7 @@ func TestBuildMediaInfoJSON补全字幕与HDR(t *testing.T) {
 	}
 
 	src := result[0].MediaSourceInfo
-	if src.Size != 12345678 || src.Container != "matroska,webm" || src.RunTimeTicks != int64(3600.5*10000000) {
+	if src.Size != 12345678 || src.Container != "mkv" || src.RunTimeTicks != int64(3600.5*10000000) {
 		t.Errorf("容器信息不符合预期：%+v", src)
 	}
 	if len(src.MediaStreams) != 3 {
@@ -38,7 +38,7 @@ func TestBuildMediaInfoJSON补全字幕与HDR(t *testing.T) {
 	}
 
 	video := src.MediaStreams[0]
-	if video.Type != "Video" || !video.IsHDR || video.ColorSpace != "bt2020nc" || video.Level != 120 || video.DisplayTitle != "2160p HEVC 10bit" {
+	if video.Type != "Video" || !video.IsHDR || video.ColorSpace != "bt2020nc" || video.Level != 120 || video.DisplayTitle != "4K HDR 10 HEVC" {
 		t.Errorf("视频流不符合预期：%+v", video)
 	}
 	if !video.Default || video.AvgFrameRate != "24000/1001" {
@@ -89,13 +89,14 @@ func TestBuildMediaInfoJSON识别杜比视界(t *testing.T) {
 		extra     string
 		wantRange string
 		wantType  string
+		wantTitle string
 	}{
-		{"DV8 兼容 HDR10", `"codec_tag_string":"dvhe","side_data_list":[{"side_data_type":"DOVI configuration record","dv_version_major":1,"dv_profile":8,"dv_level":6,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":1}]`, "HDR", "DOVIWithHDR10"},
-		{"DV8 with HDR10+", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":8,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":1},{"side_data_type":"HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}]`, "HDR", "DOVIWithHDR10Plus"},
-		{"DV5 纯杜比视界", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":5,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":0}]`, "HDR", "DOVI"},
-		{"DV7 带增强层", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":7,"rpu_present_flag":1,"el_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":6}]`, "HDR", "DOVIWithEL"},
-		{"仅 HDR10+", `"side_data_list":[{"side_data_type":"HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}]`, "HDR", "HDR10Plus"},
-		{"普通 HDR10", ``, "HDR", "HDR10"},
+		{"DV8 兼容 HDR10", `"codec_tag_string":"dvhe","side_data_list":[{"side_data_type":"DOVI configuration record","dv_version_major":1,"dv_profile":8,"dv_level":6,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":1}]`, "HDR", "DOVIWithHDR10", "4K Dolby Vision HEVC"},
+		{"DV8 with HDR10+", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":8,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":1},{"side_data_type":"HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}]`, "HDR", "DOVIWithHDR10Plus", "4K Dolby Vision HEVC"},
+		{"DV5 纯杜比视界", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":5,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":0}]`, "HDR", "DOVI", "4K Dolby Vision HEVC"},
+		{"DV7 带增强层", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":7,"rpu_present_flag":1,"el_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":6}]`, "HDR", "DOVIWithEL", "4K Dolby Vision HEVC"},
+		{"仅 HDR10+", `"side_data_list":[{"side_data_type":"HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}]`, "HDR", "HDR10Plus", "4K HDR 10+ HEVC"},
+		{"普通 HDR10", ``, "HDR", "HDR10", "4K HDR 10 HEVC"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -109,6 +110,9 @@ func TestBuildMediaInfoJSON识别杜比视界(t *testing.T) {
 			}
 			if s.IsHDR != (c.wantRange == "HDR") {
 				t.Errorf("IsHDR 与 VideoRange 不一致：%+v", s)
+			}
+			if s.DisplayTitle != c.wantTitle {
+				t.Errorf("DisplayTitle 得到 %q，期望 %q", s.DisplayTitle, c.wantTitle)
 			}
 		})
 	}
