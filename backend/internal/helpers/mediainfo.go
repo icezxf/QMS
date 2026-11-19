@@ -38,9 +38,20 @@ type MediaInfoStream struct {
 	AspectRatio    string `json:"AspectRatio,omitempty"`
 	IsInterlaced   bool   `json:"IsInterlaced,omitempty"`
 	IsHDR          bool   `json:"IsHDR,omitempty"`
-	// VideoRange/VideoRangeType 是 Emby 客户端点亮 HDR / 杜比视界角标的唯一依据。
+	// VideoRange/VideoRangeType 保留给 Jellyfin 及旧客户端（DOVI/HDR/SDR 口径）。
 	VideoRange     string `json:"VideoRange,omitempty"`
 	VideoRangeType string `json:"VideoRangeType,omitempty"`
+	// 以下为 Emby 官方客户端媒体详情面板读取的标准字段。
+	// 截图里「动态范围: DolbyVision」读 ExtendedVideoType，
+	// 「DolbyVision: Profile 8.1」读 ExtendedVideoSubtype / ExtendedVideoSubTypeDescription。
+	// ExtendedVideoType 取值：None / Hdr10 / Hdr10Plus / HyperLogGamma / DolbyVision。
+	ExtendedVideoType string `json:"ExtendedVideoType,omitempty"`
+	// ExtendedVideoSubtype 取值：None / DoviProfile50 / DoviProfile76 / DoviProfile81 等。
+	ExtendedVideoSubtype string `json:"ExtendedVideoSubtype,omitempty"`
+	// ExtendedVideoSubTypeDescription 是 subtype 的可读文本，如 "Profile 8.1"。
+	ExtendedVideoSubTypeDescription string `json:"ExtendedVideoSubTypeDescription,omitempty"`
+	// DisplayLanguage 是语言码对应的全名，如 "German"（对应截图「显示语言」）。
+	DisplayLanguage string `json:"DisplayLanguage,omitempty"`
 	// 杜比视界：来自 ffprobe 的 "DOVI configuration record" side data。
 	DvVersionMajor            int   `json:"DvVersionMajor,omitempty"`
 	DvVersionMinor            int   `json:"DvVersionMinor,omitempty"`
@@ -111,6 +122,8 @@ func BuildMediaInfoJSON(rawJSON []byte) ([]byte, error) {
 			info.Language = st.Tags["language"]
 			info.Title = st.Tags["title"]
 		}
+		// Emby「显示语言」：语言码 → 全名（ger → German）。
+		info.DisplayLanguage = languageName(info.Language)
 		if st.Disposition != nil {
 			info.IsDefault = st.Disposition["default"] == 1
 			info.IsForced = st.Disposition["forced"] == 1
@@ -142,6 +155,8 @@ func BuildMediaInfoJSON(rawJSON []byte) ([]byte, error) {
 			applyDolbyVision(&info, st.SideDataList)
 			info.VideoRange, info.VideoRangeType = videoRangeOf(info)
 			info.IsHDR = info.VideoRange == "HDR"
+			// Emby 官方媒体详情字段：ExtendedVideoType/Subtype/子类型描述 + VideoRange 文本。
+			applyEmbyVideoFields(&info)
 			info.BitRate = streamBitrate
 			info.DisplayTitle = mediainfoDisplayName(st.Width, st.Height, st.CodecName, info.VideoRangeType)
 		case "audio":
@@ -264,14 +279,27 @@ func subtitleDisplayTitle(codec, lang, title string, forced bool) string {
 	return base
 }
 
-// mediaFrameRate 把 ffprobe 的分数帧率字符串（如 "24000/1001"）换算成浮点，保留三位小数。
-// 复用 ffprobe.go 的 parseFrameRate，再按 Emby 口径取整。
+// mediaFrameRate 把 ffprobe 的分数帧率字符串（如 "24000/1001"）换算成浮点。
+// Emby 官方对 NTSC 分数帧率使用固定标称值（24000/1001 → 23.976025 等），
+// 直接四舍五入得到的 23.976024 与官方差一个末位，客户端详情显示不一致，故对这些
+// 标准分数做标称值映射；其余按 6 位小数输出。
 func mediaFrameRate(s string) float64 {
 	f, _ := parseFrameRate(strings.TrimSpace(s))
 	if f <= 0 {
 		return 0
 	}
-	return math.Round(f*1000) / 1000
+	// Emby/Jellyfin 标称帧率（float32 时间基换算后的约定值）。
+	switch strings.ReplaceAll(strings.TrimSpace(s), " ", "") {
+	case "24000/1001":
+		return 23.976025
+	case "30000/1001":
+		return 29.970030
+	case "60000/1001":
+		return 59.940060
+	case "120000/1001":
+		return 119.880120
+	}
+	return math.Round(f*1_000_000) / 1_000_000
 }
 
 // languageName ISO 639 语言码 → 客户端可读语言名。
@@ -489,4 +517,75 @@ func videoRangeOf(s MediaInfoStream) (string, string) {
 		return "HDR", "HLG"
 	}
 	return "SDR", "SDR"
+}
+
+// applyEmbyVideoFields 把内部 VideoRangeType 映射成 Emby 官方客户端读取的标准字段。
+//
+// Emby 客户端媒体详情面板（截图实测）读取：
+//   - ExtendedVideoType：None / Hdr10 / Hdr10Plus / HyperLogGamma / DolbyVision
+//     （截图「动态范围: DolbyVision」读的就是这个枚举名）
+//   - ExtendedVideoSubtype：DoviProfile50 / DoviProfile76 / DoviProfile81 等
+//     （截图「DolbyVision: Profile 8.1」由此派生）
+//   - ExtendedVideoSubTypeDescription："Profile 8.1" 这类可读文本
+//
+// 注意：不改动 VideoRange/VideoRangeType 的原值（HDR/SDR/DOVI*口径），
+// 它们是 Jellyfin 及旧客户端点亮角标的依据，保持兼容。Emby 详情面板不看这两个字段。
+func applyEmbyVideoFields(info *MediaInfoStream) {
+	t := info.VideoRangeType
+
+	// ExtendedVideoType + DV subtype
+	switch {
+	case strings.HasPrefix(t, "DOVI"):
+		info.ExtendedVideoType = "DolbyVision"
+		// 只有有效 DV 配置（非 DOVIInvalid）才写 subtype。
+		if t != "DOVIInvalid" {
+			sub := doviSubtype(info.DvProfile, info.DvBlSignalCompatibilityID)
+			info.ExtendedVideoSubtype = sub
+			info.ExtendedVideoSubTypeDescription = doviSubtypeDescription(sub)
+		}
+	case t == "HDR10Plus":
+		info.ExtendedVideoType = "Hdr10Plus"
+	case t == "HDR10":
+		info.ExtendedVideoType = "Hdr10"
+	case t == "HLG":
+		info.ExtendedVideoType = "HyperLogGamma"
+	default: // SDR / DOVIInvalid
+		info.ExtendedVideoType = "None"
+	}
+}
+
+// doviSubtype 由 DV profile + 基流信号兼容 ID 生成 Emby ExtendedVideoSubtype 枚举值。
+// Emby 命名规则为 DoviProfile{profile}{sub}（profile*10+sub），实测映射：
+//
+//	profile 5,  compat 0  → DoviProfile50（DV 5.0）
+//	profile 7,  compat 6  → DoviProfile76（DV 7.6）
+//	profile 8,  compat 1  → DoviProfile81（DV 8.1，最常见）
+//	profile 8,  compat 2  → DoviProfile82（DV 8.2，SDR 基流）
+//	profile 8,  compat 4  → DoviProfile84（DV 8.4，HLG 基流）
+//	profile 10, compat 0  → DoviProfile100（DV 10.0）
+func doviSubtype(profile, compat int) string {
+	// 10.x 单独处理，避免与 1.x 混淆。
+	if profile == 10 {
+		return fmt.Sprintf("DoviProfile10%d", compat)
+	}
+	if profile <= 0 || profile > 9 {
+		return "None"
+	}
+	return fmt.Sprintf("DoviProfile%d%d", profile, compat)
+}
+
+// doviSubtypeDescription 返回 subtype 的可读文本（截图「DolbyVision: Profile 8.1」）。
+func doviSubtypeDescription(sub string) string {
+	switch {
+	case sub == "DoviProfile50":
+		return "Profile 5.0"
+	case strings.HasPrefix(sub, "DoviProfile7"):
+		return "Profile 7.6"
+	case strings.HasPrefix(sub, "DoviProfile8"):
+		return "Profile 8.1"
+	case strings.HasPrefix(sub, "DoviProfile10"):
+		return "Profile 10.0"
+	default:
+		return ""
+	}
 }
