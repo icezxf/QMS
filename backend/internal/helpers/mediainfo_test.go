@@ -108,10 +108,10 @@ func TestBuildMediaInfoJSON识别杜比视界(t *testing.T) {
 		wantExtTyp string // Emby ExtendedVideoType
 		wantSubtyp string // Emby ExtendedVideoSubtype
 	}{
-		{"DV8 兼容 HDR10", `"codec_tag_string":"dvhe","side_data_list":[{"side_data_type":"DOVI configuration record","dv_version_major":1,"dv_profile":8,"dv_level":6,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":1}]`, "HDR", "DOVIWithHDR10", "4K Dolby Vision HEVC", "DolbyVision", "DoviProfile81"},
-		{"DV8 with HDR10+", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":8,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":1},{"side_data_type":"HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}]`, "HDR", "DOVIWithHDR10Plus", "4K Dolby Vision HEVC", "DolbyVision", "DoviProfile81"},
-		{"DV5 纯杜比视界", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":5,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":0}]`, "HDR", "DOVI", "4K Dolby Vision HEVC", "DolbyVision", "DoviProfile50"},
-		{"DV7 带增强层", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":7,"rpu_present_flag":1,"el_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":6}]`, "HDR", "DOVIWithEL", "4K Dolby Vision HEVC", "DolbyVision", "DoviProfile76"},
+		{"DV8 兼容 HDR10", `"codec_tag_string":"dvhe","side_data_list":[{"side_data_type":"DOVI configuration record","dv_version_major":1,"dv_profile":8,"dv_level":6,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":1}]`, "DolbyVision", "DOVIWithHDR10", "4K Dolby Vision HEVC", "DolbyVision", "DoviProfile81"},
+		{"DV8 with HDR10+", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":8,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":1},{"side_data_type":"HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}]`, "DolbyVision", "DOVIWithHDR10Plus", "4K Dolby Vision HEVC", "DolbyVision", "DoviProfile81"},
+		{"DV5 纯杜比视界", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":5,"rpu_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":0}]`, "DolbyVision", "DOVI", "4K Dolby Vision HEVC", "DolbyVision", "DoviProfile50"},
+		{"DV7 带增强层", `"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":7,"rpu_present_flag":1,"el_present_flag":1,"bl_present_flag":1,"dv_bl_signal_compatibility_id":6}]`, "DolbyVision", "DOVIWithEL", "4K Dolby Vision HEVC", "DolbyVision", "DoviProfile76"},
 		{"仅 HDR10+", `"side_data_list":[{"side_data_type":"HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}]`, "HDR", "HDR10Plus", "4K HDR 10+ HEVC", "Hdr10Plus", ""},
 		{"普通 HDR10", ``, "HDR", "HDR10", "4K HDR 10 HEVC", "Hdr10", ""},
 	}
@@ -125,8 +125,9 @@ func TestBuildMediaInfoJSON识别杜比视界(t *testing.T) {
 			if s.VideoRange != c.wantRange || s.VideoRangeType != c.wantType {
 				t.Errorf("得到 %s/%s，期望 %s/%s", s.VideoRange, s.VideoRangeType, c.wantRange, c.wantType)
 			}
-			if s.IsHDR != (c.wantRange == "HDR") {
-				t.Errorf("IsHDR 与 VideoRange 不一致：%+v", s)
+			// DV/HDR10/HDR10+ 基流均为 HDR；仅 SDR 不是。
+			if s.IsHDR != (c.wantType != "SDR") {
+				t.Errorf("IsHDR 不符合预期：%+v", s)
 			}
 			if s.DisplayTitle != c.wantTitle {
 				t.Errorf("DisplayTitle 得到 %q，期望 %q", s.DisplayTitle, c.wantTitle)

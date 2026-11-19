@@ -528,15 +528,20 @@ func videoRangeOf(s MediaInfoStream) (string, string) {
 //     （截图「DolbyVision: Profile 8.1」由此派生）
 //   - ExtendedVideoSubTypeDescription："Profile 8.1" 这类可读文本
 //
-// 注意：不改动 VideoRange/VideoRangeType 的原值（HDR/SDR/DOVI*口径），
-// 它们是 Jellyfin 及旧客户端点亮角标的依据，保持兼容。Emby 详情面板不看这两个字段。
+// 注意：VideoRange 是部分 Emby 兼容客户端（如中文 App）实际读取并显示「动态范围」的字段，
+// 必须与 ExtendedVideoType 同步设为 DolbyVision，否则这些客户端仍显示 HDR。
+// VideoRangeType 保留 Jellyfin 口径（DOVI*），供 Jellyfin 点亮角标；两者互不冲突。
 func applyEmbyVideoFields(info *MediaInfoStream) {
 	t := info.VideoRangeType
 
-	// ExtendedVideoType + DV subtype
+	// ExtendedVideoType + VideoRange + DV subtype
 	switch {
 	case strings.HasPrefix(t, "DOVI"):
 		info.ExtendedVideoType = "DolbyVision"
+		// 动态范围角标：读 VideoRange 的客户端据此显示「DolbyVision」而非「HDR」。
+		if t != "DOVIInvalid" {
+			info.VideoRange = "DolbyVision"
+		}
 		// 只有有效 DV 配置（非 DOVIInvalid）才写 subtype。
 		if t != "DOVIInvalid" {
 			sub := doviSubtype(info.DvProfile, info.DvBlSignalCompatibilityID)
