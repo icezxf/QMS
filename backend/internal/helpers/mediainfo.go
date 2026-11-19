@@ -122,8 +122,8 @@ func BuildMediaInfoJSON(rawJSON []byte) ([]byte, error) {
 			info.Language = st.Tags["language"]
 			info.Title = st.Tags["title"]
 		}
-		// Emby「显示语言」：语言码 → 全名（ger → German）。
-		info.DisplayLanguage = languageName(info.Language)
+		// Emby「显示语言」：语言码 → 全名；中文按简繁区分（chi → Chinese Simplified）。
+		info.DisplayLanguage = languageDisplayName(info.Language, info.Title)
 		if st.Disposition != nil {
 			info.IsDefault = st.Disposition["default"] == 1
 			info.IsForced = st.Disposition["forced"] == 1
@@ -165,13 +165,13 @@ func BuildMediaInfoJSON(rawJSON []byte) ([]byte, error) {
 			info.ChannelLayout = st.ChannelLayout
 			info.SampleRate, _ = strconv.ParseInt(st.SampleRate, 10, 64)
 			info.BitRate = streamBitrate
-			info.DisplayTitle = audioDisplayTitle(st.CodecName, info.ChannelLayout, info.Language, info.Title)
+			info.DisplayTitle = audioDisplayTitle(st.CodecName, info.ChannelLayout, info.DisplayLanguage, info.Title)
 		case "subtitle":
 			info.Type = "Subtitle"
 			if info.Title == "" {
 				info.Title = info.Language
 			}
-			info.DisplayTitle = subtitleDisplayTitle(st.CodecName, info.Language, info.Title, info.IsForced)
+			info.DisplayTitle = subtitleDisplayTitle(st.CodecName, info.DisplayLanguage, info.Title, info.IsForced)
 			info.IsTextSubtitleStream = isTextSubtitle(st.CodecName)
 			info.SupportsExternalStream = true
 		default:
@@ -242,41 +242,93 @@ func mediainfoDisplayName(width, height int64, codec, videoRangeType string) str
 }
 
 // audioDisplayTitle 生成音轨 DisplayTitle：`[自定义标题 ]语言名 编码 声道布局`。
-// 逻辑与媒体服务器原先的清洗保持一致，转换下沉到刮削阶段后行为不变。
-func audioDisplayTitle(codec, layout, lang, title string) string {
-	base := strings.ToUpper(codec)
+//
+// Emby 官方对音轨按「显示语言 + 编码 + 声道布局」显示，例如 `Chinese Simplified AC3 stereo`；
+// Mandarin / Cantonese 这类方言名属于语言信息，不进标题（仍保留在 Title 字段供媒体信息面板显示）。
+// 只有真正的自定义标题（如「导演评论」）才作为前缀。
+func audioDisplayTitle(codec, layout, displayLang, title string) string {
+	base := codecDisplayName(codec)
 	if layout != "" {
-		base = strings.ToUpper(codec) + " " + layout
+		base = codecDisplayName(codec) + " " + layout
 	}
-	langName := languageName(lang)
 	trackTitle := strings.TrimSpace(title)
-	if trackTitle != "" && !strings.EqualFold(trackTitle, lang) && !isLanguageCode(trackTitle) {
-		if strings.EqualFold(trackTitle, langName) {
-			base = trackTitle + " " + base
-		} else {
-			base = fmt.Sprintf("%s (%s)", trackTitle, base)
-		}
-	} else if langName != "" && !strings.Contains(base, langName) {
-		base = langName + " " + base
+	if trackTitle != "" && !isLanguageWord(trackTitle) && !strings.EqualFold(trackTitle, displayLang) {
+		return fmt.Sprintf("%s (%s)", trackTitle, base)
+	}
+	if displayLang != "" && !strings.Contains(base, displayLang) {
+		return displayLang + " " + base
 	}
 	return base
 }
 
 // subtitleDisplayTitle 生成字幕 DisplayTitle：`[自定义标题 ]语言名 编码 [(强制)]`。
-func subtitleDisplayTitle(codec, lang, title string, forced bool) string {
-	base := strings.ToUpper(codec)
-	langName := languageName(lang)
+//
+// 与官方一致：`Chinese Simplified PGSSUB`；chs/cht/eng 这类语言码标题不当作自定义标题。
+func subtitleDisplayTitle(codec, displayLang, title string, forced bool) string {
+	base := codecDisplayName(codec)
 	trackTitle := strings.TrimSpace(title)
-	useful := trackTitle != "" && !strings.EqualFold(trackTitle, lang) && !isLanguageCode(trackTitle)
-	if useful {
+	if trackTitle != "" && !isLanguageWord(trackTitle) && !strings.EqualFold(trackTitle, displayLang) {
 		base = fmt.Sprintf("%s (%s)", trackTitle, base)
-	} else if langName != "" {
-		base = langName + " " + base
+	} else if displayLang != "" {
+		base = displayLang + " " + base
 	}
 	if forced {
 		base = base + " (强制)"
 	}
 	return base
+}
+
+// codecDisplayName 把 ffprobe 编码名转成 Emby 客户端的友好显示名（仅用于 DisplayTitle）。
+// Codec 字段本身仍保留 ffprobe 原始值（如 hdmv_pgs_subtitle），客户端判定逻辑不受影响。
+func codecDisplayName(codec string) string {
+	switch strings.ToLower(strings.TrimSpace(codec)) {
+	case "hdmv_pgs_subtitle", "pgs", "pgssub":
+		return "PGSSUB"
+	case "dvd_subtitle", "vobsub":
+		return "VOBSUB"
+	case "subrip", "srt":
+		return "SUBRIP"
+	case "ass", "ssa":
+		return "ASS"
+	case "webvtt", "vtt":
+		return "WEBVTT"
+	case "mov_text":
+		return "MOV_TEXT"
+	case "truehd":
+		return "TrueHD"
+	case "hevc", "h265":
+		return "HEVC"
+	case "h264", "avc":
+		return "H264"
+	case "av1":
+		return "AV1"
+	case "vp9":
+		return "VP9"
+	case "flac":
+		return "FLAC"
+	case "opus":
+		return "OPUS"
+	default:
+		return strings.ToUpper(strings.TrimSpace(codec))
+	}
+}
+
+// isLanguageWord 判断标题是否只是语言/方言名（Mandarin、Cantonese、English、简体中文…）。
+// 这类标题不应作为「自定义标题」出现在 DisplayTitle 里，应改用标准语言名。
+func isLanguageWord(s string) bool {
+	t := strings.ToLower(strings.TrimSpace(s))
+	if t == "" {
+		return false
+	}
+	switch t {
+	case "mandarin", "cantonese", "chinese", "english", "japanese", "korean", "german", "french",
+		"spanish", "italian", "russian", "portuguese", "hindi", "thai", "vietnamese", "arabic",
+		"taiwanese", "hakka", "shanghainese",
+		"普通话", "国语", "粤语", "广东话", "中文", "汉语", "简体", "繁体", "简体中文", "繁体中文",
+		"國語", "粵語", "廣東話", "漢語", "簡體", "繁體", "簡體中文", "繁體中文":
+		return true
+	}
+	return isLanguageCode(t)
 }
 
 // mediaFrameRate 把 ffprobe 的分数帧率字符串（如 "24000/1001"）换算成浮点。
@@ -302,7 +354,38 @@ func mediaFrameRate(s string) float64 {
 	return math.Round(f*1_000_000) / 1_000_000
 }
 
-// languageName ISO 639 语言码 → 客户端可读语言名。
+// languageDisplayName 生成客户端「显示语言」名，中文按简繁区分。
+//
+// Emby 规范：chi / zh（无地区码）视为简体 → Chinese Simplified；
+// zh-HK / zh-TW / cht，或标题标 cht/tc/繁体 → Chinese Traditional。
+func languageDisplayName(lang, title string) string {
+	l := strings.ToLower(strings.TrimSpace(lang))
+	t := strings.ToLower(strings.TrimSpace(title))
+
+	// 语言码本身已带地区/字符集信息时直接判定
+	switch l {
+	case "cht", "tc", "zh-tw", "zh_tw", "zh-hk", "zh_hk", "zh-hant", "zh_hant":
+		return "Chinese Traditional"
+	case "chs", "sc", "zh-cn", "zh_cn", "zh-sg", "zh_sg", "zh-hans", "zh_hans":
+		return "Chinese Simplified"
+	}
+
+	// 通用中文码：再结合标题里的简繁标记，未知时按 Emby 默认（简体）
+	if l == "chi" || l == "zho" || l == "zh" || strings.HasPrefix(l, "zh-") || strings.HasPrefix(l, "zh_") {
+		switch {
+		case t == "cht" || t == "tc" || strings.Contains(t, "繁") || strings.Contains(t, "traditional") || strings.Contains(t, "hant"):
+			return "Chinese Traditional"
+		case t == "chs" || t == "sc" || strings.Contains(t, "简") || strings.Contains(t, "simplified") || strings.Contains(t, "hans"):
+			return "Chinese Simplified"
+		default:
+			return "Chinese Simplified"
+		}
+	}
+
+	return languageName(l)
+}
+
+// languageName ISO 639 语言码 → 客户端可读语言名（中文不细分简繁，统一为 Chinese）。
 func languageName(code string) string {
 	switch strings.ToLower(code) {
 	case "chi", "zho", "zh", "chs", "cht":

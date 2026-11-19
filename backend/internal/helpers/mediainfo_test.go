@@ -63,8 +63,8 @@ func TestBuildMediaInfoJSON补全字幕与HDR(t *testing.T) {
 	if subtitle.Type != "Subtitle" || subtitle.Codec != "ass" || subtitle.Language != "chi" || subtitle.Title != "简体中文" {
 		t.Errorf("字幕流不符合预期：%+v", subtitle)
 	}
-	// 自定义标题（"简体中文"）优先于语言名：(强制) 后缀保留
-	if !subtitle.IsForced || subtitle.DisplayTitle != "简体中文 (ASS) (强制)" || !subtitle.IsTextSubtitleStream || !subtitle.SupportsExternalStream {
+	// 标题是语言名（"简体中文"）→ 改用标准语言名；forced 后缀保留
+	if !subtitle.IsForced || subtitle.DisplayTitle != "Chinese Simplified ASS (强制)" || !subtitle.IsTextSubtitleStream || !subtitle.SupportsExternalStream {
 		t.Errorf("字幕 forced/DisplayTitle 标记不符合预期：%+v", subtitle)
 	}
 }
@@ -218,5 +218,48 @@ func TestE2E真实DV8片源(t *testing.T) {
 	// 音频：Title="German" 与语言名一致 → "German EAC3 5.1(side)"
 	if a.DisplayTitle != "German EAC3 5.1(side)" || !a.IsDefault || a.Protocol != "File" {
 		t.Errorf("音频标准字段错误：%+v", a)
+	}
+}
+
+// 中文简繁与方言名：chi → Chinese Simplified；Mandarin/Cantonese 不进标题；PGS 编码显示为 PGSSUB。
+// 对应真实片源（寒战）：两条中文音轨（Mandarin/Cantonese）+ 简繁两条 PGS 字幕。
+func TestBuildMediaInfoJSON中文语言与编码(t *testing.T) {
+	raw := []byte(`{
+		"format":{"size":"4034696865","duration":"6109.024","bit_rate":"5283589","format_name":"matroska,webm"},
+		"streams":[
+			{"index":0,"codec_type":"video","codec_name":"hevc","width":1920,"height":800,"pix_fmt":"yuv420p10le","profile":"Main 10","color_range":"tv","color_transfer":"bt709","avg_frame_rate":"24/1","disposition":{"default":1}},
+			{"index":1,"codec_type":"audio","codec_name":"ac3","channels":2,"channel_layout":"stereo","sample_rate":"48000","disposition":{"default":1},"tags":{"language":"chi","title":"Mandarin"}},
+			{"index":2,"codec_type":"audio","codec_name":"dts","channels":6,"channel_layout":"5.1(side)","sample_rate":"48000","disposition":{"default":0},"tags":{"language":"chi","title":"Cantonese"}},
+			{"index":3,"codec_type":"subtitle","codec_name":"hdmv_pgs_subtitle","disposition":{"default":1},"tags":{"language":"chi","title":"chs"}},
+			{"index":4,"codec_type":"subtitle","codec_name":"hdmv_pgs_subtitle","disposition":{"default":0},"tags":{"language":"chi","title":"cht"}}
+		]
+	}`)
+	out, err := BuildMediaInfoJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r []MediaInfoOutput
+	json.Unmarshal(out, &r)
+	ms := r[0].MediaSourceInfo.MediaStreams
+
+	a1 := ms[1]
+	if a1.DisplayLanguage != "Chinese Simplified" || a1.DisplayTitle != "Chinese Simplified AC3 stereo" {
+		t.Errorf("普通话音轨不符：lang=%q title=%q", a1.DisplayLanguage, a1.DisplayTitle)
+	}
+	// 方言名不进标题，但仍保留在 Title 字段
+	if a1.Title != "Mandarin" {
+		t.Errorf("音频 Title 不应被改写：%q", a1.Title)
+	}
+	a2 := ms[2]
+	if a2.DisplayTitle != "Chinese Simplified DTS 5.1(side)" {
+		t.Errorf("粤语音轨不符：%q", a2.DisplayTitle)
+	}
+	s1 := ms[3]
+	if s1.DisplayLanguage != "Chinese Simplified" || s1.DisplayTitle != "Chinese Simplified PGSSUB" {
+		t.Errorf("简体字幕不符：lang=%q title=%q", s1.DisplayLanguage, s1.DisplayTitle)
+	}
+	s2 := ms[4]
+	if s2.DisplayLanguage != "Chinese Traditional" || s2.DisplayTitle != "Chinese Traditional PGSSUB" {
+		t.Errorf("繁体字幕不符：lang=%q title=%q", s2.DisplayLanguage, s2.DisplayTitle)
 	}
 }
