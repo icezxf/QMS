@@ -125,7 +125,7 @@ func StartMediaInfoSupplement(sp *models.ScrapePath, opts MediaInfoSupplementOpt
 
 	files := collectSupplementFiles(sp, opts)
 	if len(files) == 0 {
-		return nil, fmt.Errorf("没有可补充的记录：只处理已刮削完成（含已整理）且有网盘直链的条目，请先完成一次刮削")
+		return nil, fmt.Errorf("没有可补充的记录：该目录下没有带直链信息的视频，请先扫描一次该目录")
 	}
 
 	// 复用刮削的客户端初始化（115/OpenList/百度），保证取直链与在线播放同一条链路。
@@ -403,15 +403,43 @@ func mediaInfoFileName(file *models.ScrapeMediaFile) string {
 	return base + "-mediainfo.json"
 }
 
+// supplementDest 返回 json 的目标目录与目录 ID。
+//
+// 优先整理后的目录（已刮削/已整理的条目有 NewPathName 与对应 PathId）；
+// 缺失时退回视频当前所在目录，这样未识别、识别未刮削、刮削失败、重命名失败的
+// 条目也能把 json 补在视频旁边，而不是直接跳过。
 func supplementDest(file *models.ScrapeMediaFile) (string, string) {
 	if file.MediaType == models.MediaTypeTvShow {
 		pathID := file.NewSeasonPathId
 		if pathID == "" {
 			pathID = file.NewPathId
 		}
-		return file.GetDestFullSeasonPath(), pathID
+		if pathID != "" && file.NewPathName != "" {
+			return file.GetDestFullSeasonPath(), pathID
+		}
+		return sourceDir(file)
 	}
-	return file.GetDestFullMoviePath(), file.NewPathId
+	if file.NewPathId != "" && file.NewPathName != "" {
+		return file.GetDestFullMoviePath(), file.NewPathId
+	}
+	return sourceDir(file)
+}
+
+// sourceDir 视频当前所在目录。
+// 本地类型的 VideoPickCode 存的是视频绝对路径，直接取父目录；
+// 网盘类型用记录里的目录路径与目录 ID（PathId 即视频所在目录的 ID）。
+func sourceDir(file *models.ScrapeMediaFile) (string, string) {
+	if file.SourceType == models.SourceTypeLocal && file.VideoPickCode != "" {
+		dir := filepath.Dir(file.VideoPickCode)
+		return dir, dir
+	}
+	dir := file.Path
+	if dir == "" {
+		dir = file.SourcePath
+	} else if file.SourcePath != "" && !strings.HasPrefix(dir, file.SourcePath) {
+		dir = filepath.Join(file.SourcePath, dir)
+	}
+	return dir, file.PathId
 }
 
 // tmpDir 临时目录。放在 avscrape 下是刻意的：AV 上传通道收尾清理空目录时

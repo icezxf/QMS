@@ -1365,17 +1365,27 @@ func GetAllScrappedMedialFiles(scrapePathId uint, mediaType MediaType) []*Scrape
 	return DecodeScrapeMediaFile(scrapeMediaFiles)
 }
 
-// GetScrapedMediaFilesForMediaInfoSupplement 查询可用于补充 mediainfo.json 的已刮削记录。
+// GetScrapedMediaFilesForMediaInfoSupplement 查询可用于补充 mediainfo.json 的记录。
 //
-// 只读查询，不改动任何记录状态：合格范围是已刮削（scraped）与已整理（renamed），
-// 且必须有 pickcode 才能取到直链。不做 DecodeScrapeMediaFile（补充流程用不到
-// Media/Season/Episode 关联，避免逐条回表放大开销）。
+// 只读查询，不改动任何记录状态。补 json 与刮削结果无关，所以【不限刮削状态】：
+// 只要记录里有 pickcode（能取到直链）就纳入，未识别、识别未刮削、刮削失败、
+// 重命名失败的条目都可以补。仅排除两类：
+//   - 正在处理中的状态（scraping/renaming/rollbacking），避免与正在跑的任务抢同一目录
+//   - 用户明确忽略的条目（ignore）
+//
+// 不做 DecodeScrapeMediaFile（补充流程用不到 Media/Season/Episode 关联，
+// 避免逐条回表放大开销）。
 func GetScrapedMediaFilesForMediaInfoSupplement(scrapePathId uint, mediaType MediaType) []*ScrapeMediaFile {
 	var scrapeMediaFiles []*ScrapeMediaFile
 	err := db.Db.Where(
-		"scrape_path_id = ? AND media_type = ? AND status IN ? AND video_pick_code != ''",
+		"scrape_path_id = ? AND media_type = ? AND video_pick_code != '' AND status NOT IN ?",
 		scrapePathId, mediaType,
-		[]ScrapeMediaStatus{ScrapeMediaStatusScraped, ScrapeMediaStatusRenamed},
+		[]ScrapeMediaStatus{
+			ScrapeMediaStatusScraping,
+			ScrapeMediaStatusRenaming,
+			ScrapeMediaStatusRollbacking,
+			ScrapeMediaStatusIgnore,
+		},
 	).Order("id asc").Find(&scrapeMediaFiles).Error
 	if err != nil {
 		helpers.AppLogger.Errorf("查询待补充媒体信息的记录失败：%v", err)
