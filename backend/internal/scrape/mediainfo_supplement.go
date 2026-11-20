@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -105,8 +106,8 @@ var (
 
 // StartMediaInfoSupplement 启动一次补充任务。
 //
-// 只处理该刮削路径下「已刮削 / 已整理」且有 pickcode 的记录；没有可处理记录时
-// 直接返回错误，避免前端点了按钮却看不到任何反馈。
+// 处理该刮削路径下除「正在处理 / 已忽略」以外的全部记录；没有可处理记录时，
+// 把该目录的记录分布一起带回前端，避免只显示一句无法定位问题的"没有记录"。
 func StartMediaInfoSupplement(sp *models.ScrapePath, opts MediaInfoSupplementOptions) (*MediaInfoSupplement, error) {
 	if sp == nil {
 		return nil, fmt.Errorf("刮削目录不存在")
@@ -125,7 +126,7 @@ func StartMediaInfoSupplement(sp *models.ScrapePath, opts MediaInfoSupplementOpt
 
 	files := collectSupplementFiles(sp, opts)
 	if len(files) == 0 {
-		return nil, fmt.Errorf("没有可补充的记录：该目录下没有带直链信息的视频，请先扫描一次该目录")
+		return nil, fmt.Errorf("%s", describeEmptySupplement(sp, opts))
 	}
 
 	// 复用刮削的客户端初始化（115/OpenList/百度），保证取直链与在线播放同一条链路。
@@ -198,6 +199,145 @@ func collectSupplementFiles(sp *models.ScrapePath, opts MediaInfoSupplementOptio
 		files = append(files, models.GetScrapedMediaFilesForMediaInfoSupplement(sp.ID, models.MediaTypeTvShow)...)
 	}
 	return files
+}
+
+// resolveOpenListRawURL 把 OpenList 返回的 raw_url 修正成 QMS 真正能请求的地址。
+//
+// 两种情况很常见，都会让 ffprobe 直接失败：
+//  1. raw_url 是相对路径（如 /d/xxx），需要拼 OpenList 的站点地址；
+//  2. raw_url 的 host 是 127.0.0.1 / localhost / 0.0.0.0（Alist 未设置站点 URL，
+//     或 OpenList 与 QMS 不在同一个网络命名空间），需要换成账号里配置的地址。
+func resolveOpenListRawURL(baseURL, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		return strings.TrimRight(baseURL, "/") + "/" + strings.TrimLeft(raw, "/")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	switch u.Hostname() {
+	case "127.0.0.1", "localhost", "0.0.0.0", "::1":
+		if b, err := url.Parse(baseURL); err == nil && b.Host != "" {
+			u.Scheme = b.Scheme
+			u.Host = b.Host
+			return u.String()
+		}
+	}
+	return raw
+}
+
+// describeEmptySupplement 把"一条都没有"翻译成能定位问题的提示。
+//
+// 三种常见原因：目录还没扫描过（0 条记录）、记录状态全部落在排除项里
+// （正在刮削/整理/回滚、或被忽略）、记录的媒体类型与本次勾选范围不一致。
+// 把统计一并回显，用户不用翻日志就能判断该先做什么。
+func describeEmptySupplement(sp *models.ScrapePath, opts MediaInfoSupplementOptions) string {
+	scope := models.DiagnoseMediaInfoSupplementScope(sp.ID)
+	if scope.Total == 0 {
+		return fmt.Sprintf("该刮削目录下没有任何扫描记录，请先扫描目录 %s 后再补充", sp.SourcePath)
+	}
+
+	detail := fmt.Sprintf("该目录共 %d 条记录（类型：%s；状态：%s）",
+		scope.Total,
+		formatScopeCounts(scope.ByMediaType, mediaTypeLabel),
+		formatScopeCounts(scope.ByStatus, mediaInfoStatusLabel),
+	)
+
+	// 本次勾选范围对应的记录数
+	inScope := 0
+	if opts.IncludeMovie {
+		inScope += scope.ByMediaType[string(models.MediaTypeMovie)]
+	}
+	if opts.IncludeTV {
+		inScope += scope.ByMediaType[string(models.MediaTypeTvShow)]
+	}
+	if inScope == 0 {
+		return detail + "，没有勾选范围内的电影/剧集记录，请确认处理范围与目录媒体类型是否一致"
+	}
+
+	excluded := 0
+	for _, s := range []models.ScrapeMediaStatus{
+		models.ScrapeMediaStatusScraping,
+		models.ScrapeMediaStatusRenaming,
+		models.ScrapeMediaStatusRollbacking,
+		models.ScrapeMediaStatusIgnore,
+	} {
+		excluded += scope.ByStatus[string(s)]
+	}
+	if excluded >= inScope {
+		return detail + "，这些记录都处于「正在处理中」或「已忽略」状态，取消忽略或等任务结束后再补充"
+	}
+	return detail + "，记录状态可能不是当前版本识别的值，请把这条提示发出来以便定位"
+}
+
+// formatScopeCounts 把分组统计格式化成「名称 数量」列表，数量从多到少。
+func formatScopeCounts(counts map[string]int, label func(string) string) string {
+	if len(counts) == 0 {
+		return "无"
+	}
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if counts[keys[i]] != counts[keys[j]] {
+			return counts[keys[i]] > counts[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s %d", label(k), counts[k]))
+	}
+	return strings.Join(parts, "、")
+}
+
+func mediaTypeLabel(t string) string {
+	switch models.MediaType(t) {
+	case models.MediaTypeMovie:
+		return "电影"
+	case models.MediaTypeTvShow:
+		return "剧集"
+	case models.MediaTypeOther:
+		return "其他"
+	}
+	if t == "" {
+		return "未知（空）"
+	}
+	return t
+}
+
+func mediaInfoStatusLabel(s string) string {
+	switch models.ScrapeMediaStatus(s) {
+	case models.ScrapeMediaStatusUnscanned:
+		return "未识别"
+	case models.ScrapeMediaStatusScanned:
+		return "已识别"
+	case models.ScrapeMediaStatusScraping:
+		return "刮削中"
+	case models.ScrapeMediaStatusScraped:
+		return "已刮削"
+	case models.ScrapeMediaStatusRenaming:
+		return "整理中"
+	case models.ScrapeMediaStatusRenamed:
+		return "已整理"
+	case models.ScrapeMediaStatusRenameFailed:
+		return "整理失败"
+	case models.ScrapeMediaStatusScrapeFailed:
+		return "刮削失败"
+	case models.ScrapeMediaStatusRollbacking:
+		return "回滚中"
+	case models.ScrapeMediaStatusIgnore:
+		return "已忽略"
+	}
+	if s == "" {
+		return "未知（空）"
+	}
+	return s
 }
 
 // Run 执行任务，直到处理完毕或被停止。
@@ -333,6 +473,9 @@ func (t *MediaInfoSupplement) probe(file *models.ScrapeMediaFile) (*helpers.FFpr
 		if t.base.v115Client == nil {
 			return nil, fmt.Errorf("115 客户端未初始化")
 		}
+		if strings.TrimSpace(file.VideoPickCode) == "" {
+			return nil, fmt.Errorf("记录里没有 pickcode，无法取直链（建议重新扫描该目录）")
+		}
 		direct := t.base.v115Client.GetDownloadUrl(context.Background(), file.VideoPickCode, v115open.DEFAULTUA, false)
 		if direct == "" {
 			return nil, fmt.Errorf("获取 115 下载直链失败（pickcode 可能已失效，建议重新扫描该目录）")
@@ -343,9 +486,29 @@ func (t *MediaInfoSupplement) probe(file *models.ScrapeMediaFile) (*helpers.FFpr
 		if t.base.openlistClient == nil {
 			return nil, fmt.Errorf("OpenList 客户端未初始化")
 		}
-		target = t.base.openlistClient.GetRawUrl(file.VideoPickCode)
+		// OpenList 没有 pickcode，扫描时是把「目录路径/文件名」写进 VideoPickCode。
+		// 老记录这两个字段可能为空，用 Path/TvshowPath + 文件名兜底拼一次，
+		// 避免出现"网盘里明明有视频却取不到直链"。
+		filePath := strings.TrimSpace(file.VideoPickCode)
+		if filePath == "" {
+			filePath = strings.TrimSpace(file.VideoFileId)
+		}
+		if filePath == "" {
+			dir := strings.TrimSpace(file.Path)
+			if dir == "" {
+				dir = strings.TrimSpace(file.TvshowPath)
+			}
+			if dir == "" {
+				dir = strings.TrimSpace(file.SourcePath)
+			}
+			filePath = filepath.Join(dir, file.VideoFilename)
+		}
+		if filePath == "" {
+			return nil, fmt.Errorf("缺少文件路径，无法向 OpenList 取直链（建议重新扫描该目录）")
+		}
+		target = resolveOpenListRawURL(t.base.openlistClient.BaseUrl, t.base.openlistClient.GetRawUrl(filePath))
 		if target == "" {
-			return nil, fmt.Errorf("获取 OpenList 直链失败")
+			return nil, fmt.Errorf("获取 OpenList 直链失败（路径：%s，可能文件已移动，或 OpenList 未返回 raw_url）", filePath)
 		}
 	default:
 		return nil, fmt.Errorf("该网盘类型（%s）暂不支持补充媒体信息", file.SourceType)

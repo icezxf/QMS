@@ -1367,18 +1367,22 @@ func GetAllScrappedMedialFiles(scrapePathId uint, mediaType MediaType) []*Scrape
 
 // GetScrapedMediaFilesForMediaInfoSupplement 查询可用于补充 mediainfo.json 的记录。
 //
-// 只读查询，不改动任何记录状态。补 json 与刮削结果无关，所以【不限刮削状态】：
-// 只要记录里有 pickcode（能取到直链）就纳入，未识别、识别未刮削、刮削失败、
-// 重命名失败的条目都可以补。仅排除两类：
+// 只读查询，不改动任何记录状态。补 json 与刮削结果、与有没有 pickcode 都无关：
+// 未识别、识别未刮削、刮削失败、重命名失败的条目都可以补。仅排除两类：
 //   - 正在处理中的状态（scraping/renaming/rollbacking），避免与正在跑的任务抢同一目录
 //   - 用户明确忽略的条目（ignore）
+//
+// 刻意【不再】按 video_pick_code 过滤：老记录的该字段可能是 NULL，SQL 里
+// 空值比较求值为 NULL，会把整批记录静默过滤掉，前端只能看到"没有可补充的记录"
+// 却查不出原因。直链能否取到，留到实际探测时逐条判断并给出具体失败原因
+// （本地/OpenList 类型本来就用路径当直链标识）。
 //
 // 不做 DecodeScrapeMediaFile（补充流程用不到 Media/Season/Episode 关联，
 // 避免逐条回表放大开销）。
 func GetScrapedMediaFilesForMediaInfoSupplement(scrapePathId uint, mediaType MediaType) []*ScrapeMediaFile {
 	var scrapeMediaFiles []*ScrapeMediaFile
 	err := db.Db.Where(
-		"scrape_path_id = ? AND media_type = ? AND video_pick_code != '' AND status NOT IN ?",
+		"scrape_path_id = ? AND media_type = ? AND status NOT IN ?",
 		scrapePathId, mediaType,
 		[]ScrapeMediaStatus{
 			ScrapeMediaStatusScraping,
@@ -1392,6 +1396,61 @@ func GetScrapedMediaFilesForMediaInfoSupplement(scrapePathId uint, mediaType Med
 		return nil
 	}
 	return scrapeMediaFiles
+}
+
+// MediaInfoSupplementScope 描述某个刮削路径下记录的分布，用于把
+// "没有可补充的记录" 变成能定位问题的提示（无记录 / 状态被排除 / 类型不符）。
+type MediaInfoSupplementScope struct {
+	Total         int            `json:"total"`           // 该路径下记录总数
+	ByStatus      map[string]int `json:"by_status"`       // 按状态分组计数
+	ByMediaType   map[string]int `json:"by_media_type"`   // 按媒体类型分组计数
+	EmptyPickCode int            `json:"empty_pick_code"` // 无 pickcode 的条数
+}
+
+// DiagnoseMediaInfoSupplementScope 统计某刮削路径下的记录分布，只读。
+func DiagnoseMediaInfoSupplementScope(scrapePathId uint) MediaInfoSupplementScope {
+	scope := MediaInfoSupplementScope{
+		ByStatus:    make(map[string]int),
+		ByMediaType: make(map[string]int),
+	}
+	var total int64
+	if err := db.Db.Model(&ScrapeMediaFile{}).Where("scrape_path_id = ?", scrapePathId).Count(&total).Error; err != nil {
+		helpers.AppLogger.Errorf("统计待补充媒体信息记录失败：%v", err)
+		return scope
+	}
+	scope.Total = int(total)
+	if total == 0 {
+		return scope
+	}
+
+	type groupRow struct {
+		Key   string
+		Count int
+	}
+	var statusRows []groupRow
+	db.Db.Model(&ScrapeMediaFile{}).
+		Select("status as key, count(*) as count").
+		Where("scrape_path_id = ?", scrapePathId).
+		Group("status").Scan(&statusRows)
+	for _, r := range statusRows {
+		scope.ByStatus[r.Key] = r.Count
+	}
+
+	var typeRows []groupRow
+	db.Db.Model(&ScrapeMediaFile{}).
+		Select("media_type as key, count(*) as count").
+		Where("scrape_path_id = ?", scrapePathId).
+		Group("media_type").Scan(&typeRows)
+	for _, r := range typeRows {
+		scope.ByMediaType[r.Key] = r.Count
+	}
+
+	var empty int64
+	db.Db.Model(&ScrapeMediaFile{}).
+		Where("scrape_path_id = ? AND COALESCE(video_pick_code, '') = ''", scrapePathId).
+		Count(&empty)
+	scope.EmptyPickCode = int(empty)
+	return scope
 }
 
 // 查询某一季的所有集
