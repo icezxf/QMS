@@ -332,12 +332,11 @@
       @closed="stopSupplementPolling"
     >
       <div style="font-size: 13px; color: #909399; line-height: 1.6; margin-bottom: 12px">
-        不限刮削状态：只要这个目录在 QMS 里有扫描记录（电影/剧集），就对该记录的视频
-        重新执行 ffprobe，生成 &lt;视频名&gt;-mediainfo.json 并上传：已整理的写到整理后目录，
-        未整理、刮削失败的写回视频所在目录（正在刮削/重命名的条目会跳过，避免冲突）。
+        不需要先扫描或刮削：直接列这个目录（含子目录）找视频，逐个 ffprobe 并生成
+        &lt;视频名&gt;-mediainfo.json。有刮削记录的写到整理后的目录，没有记录的写在视频所在目录。
         <br />
-        不会重写 NFO、不下载图片、不改文件名，也不改动刮削记录状态。探测走 QMS
-        现有的 115 反代与上传队列，并发请按网盘承受能力设置。
+        不会重写 NFO、不下载图片、不改文件名，也不会新增或改动刮削记录。探测走 QMS
+        现有的网盘反代与上传队列，并发请按网盘承受能力设置。
       </div>
 
       <el-form label-width="96px" size="small">
@@ -362,9 +361,32 @@
       <div v-if="supplementProgress" style="margin-top: 4px">
         <el-progress
           :percentage="supplementPercent"
-          :status="supplementProgress.running ? undefined : 'success'"
+          :indeterminate="supplementProgress.scanning"
+          :status="
+            supplementProgress.error
+              ? 'exception'
+              : supplementProgress.running
+                ? undefined
+                : 'success'
+          "
         />
-        <div style="font-size: 12px; color: #909399; margin-top: 8px">
+        <div
+          v-if="supplementProgress.scanning"
+          style="font-size: 12px; color: #606266; margin-top: 8px"
+        >
+          正在扫描目录、收集视频文件…
+        </div>
+        <el-alert
+          v-if="supplementProgress.error"
+          :title="supplementProgress.error"
+          type="warning"
+          :closable="false"
+          style="margin-top: 8px"
+        />
+        <div
+          v-if="!supplementProgress.scanning"
+          style="font-size: 12px; color: #909399; margin-top: 8px"
+        >
           总数 {{ supplementProgress.total }} · 成功 {{ supplementProgress.success }} · 跳过
           {{ supplementProgress.skipped }} · 失败 {{ supplementProgress.failed }}
         </div>
@@ -383,7 +405,10 @@
             :closable="false"
             style="margin-bottom: 4px"
           />
-          <div v-if="supplementProgress.failed > supplementErrors.length" style="font-size: 12px; color: #909399">
+          <div
+            v-if="supplementProgress.failed > supplementErrors.length"
+            style="font-size: 12px; color: #909399"
+          >
             仅显示前 {{ supplementErrors.length }} 条失败原因
           </div>
         </div>
@@ -719,7 +744,11 @@ let supplementTimer: ReturnType<typeof setInterval> | null = null
 
 const supplementPercent = computed(() => {
   const progress = supplementProgress.value
-  if (!progress || !progress.total) return 0
+  if (!progress) return 0
+  if (!progress.total) {
+    // 没有条目（全部已存在）或收集失败时，不该停在 0% 让人以为卡住
+    return progress.running ? 0 : 100
+  }
   return Math.min(100, Math.round((progress.done / progress.total) * 100))
 })
 

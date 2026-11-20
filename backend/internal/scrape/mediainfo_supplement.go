@@ -7,9 +7,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"qmediasync/internal/helpers"
@@ -71,6 +71,8 @@ type MediaInfoSupplementProgress struct {
 	Skipped      int      `json:"skipped"`
 	Failed       int      `json:"failed"`
 	Current      string   `json:"current"`
+	Scanning     bool     `json:"scanning"` // 是否正在列目录收集条目
+	Error        string   `json:"error"`    // 收集阶段失败的原因（如目录为空、网盘不可用）
 	StartedAt    int64    `json:"started_at"`
 	FinishedAt   int64    `json:"finished_at"`
 	Errors       []string `json:"errors"`
@@ -86,6 +88,10 @@ type MediaInfoSupplement struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	tmpSeq   int64  // 临时文件序号，见 processOne
+	scanning bool   // 是否正在列目录
+	scanErr  string // 收集阶段失败原因
 
 	mu         sync.Mutex
 	running    bool
@@ -106,8 +112,9 @@ var (
 
 // StartMediaInfoSupplement 启动一次补充任务。
 //
-// 处理该刮削路径下除「正在处理 / 已忽略」以外的全部记录；没有可处理记录时，
-// 把该目录的记录分布一起带回前端，避免只显示一句无法定位问题的"没有记录"。
+// 【不依赖扫描记录】：待补条目由「数据库记录 + 目录直读」两部分合并而成。
+// 目录直读直接列网盘/本地目录找视频，所以没扫描过、没刮削过、刮削失败的目录
+// 一样能补；数据库记录只是为了拿到整理后的目标目录，让 json 落在更准的位置。
 func StartMediaInfoSupplement(sp *models.ScrapePath, opts MediaInfoSupplementOptions) (*MediaInfoSupplement, error) {
 	if sp == nil {
 		return nil, fmt.Errorf("刮削目录不存在")
@@ -123,11 +130,6 @@ func StartMediaInfoSupplement(sp *models.ScrapePath, opts MediaInfoSupplementOpt
 		return nil, fmt.Errorf("该刮削目录已有补充任务在执行")
 	}
 	mediaInfoSupplementTasksMu.Unlock()
-
-	files := collectSupplementFiles(sp, opts)
-	if len(files) == 0 {
-		return nil, fmt.Errorf("%s", describeEmptySupplement(sp, opts))
-	}
 
 	// 复用刮削的客户端初始化（115/OpenList/百度），保证取直链与在线播放同一条链路。
 	sc := NewScrape(sp)
@@ -145,12 +147,16 @@ func StartMediaInfoSupplement(sp *models.ScrapePath, opts MediaInfoSupplementOpt
 			baiduPanClient: sc.BaiduPanClient,
 		},
 		options:   opts,
-		files:     files,
 		ctx:       ctx,
 		cancel:    cancel,
 		running:   true,
 		startedAt: time.Now().Unix(),
 	}
+
+	// 列目录可能很慢（网盘分页 + 风控队列），不能占着 HTTP 请求，
+	// 所以先返回、在后台收集，进度里用 scanning 标记当前阶段。
+	t.scanning = true
+
 	if err := os.MkdirAll(t.tmpDir(), 0777); err != nil {
 		cancel()
 		return nil, fmt.Errorf("创建临时目录失败：%w", err)
@@ -160,9 +166,9 @@ func StartMediaInfoSupplement(sp *models.ScrapePath, opts MediaInfoSupplementOpt
 	mediaInfoSupplementTasks[sp.ID] = t
 	mediaInfoSupplementTasksMu.Unlock()
 
-	helpers.AppLogger.Infof("[媒体信息补充] 目录 #%d %s 开始，待处理 %d 条，并发 %d，覆盖已有：%v",
-		sp.ID, sp.SourcePath, len(files), opts.Concurrency, opts.Overwrite)
-	go t.Run()
+	helpers.AppLogger.Infof("[媒体信息补充] 目录 #%d %s 开始收集，并发 %d，覆盖已有：%v",
+		sp.ID, sp.SourcePath, opts.Concurrency, opts.Overwrite)
+	go t.prepareAndRun()
 	return t, nil
 }
 
@@ -230,114 +236,49 @@ func resolveOpenListRawURL(baseURL, raw string) string {
 	return raw
 }
 
-// describeEmptySupplement 把"一条都没有"翻译成能定位问题的提示。
-//
-// 三种常见原因：目录还没扫描过（0 条记录）、记录状态全部落在排除项里
-// （正在刮削/整理/回滚、或被忽略）、记录的媒体类型与本次勾选范围不一致。
-// 把统计一并回显，用户不用翻日志就能判断该先做什么。
-func describeEmptySupplement(sp *models.ScrapePath, opts MediaInfoSupplementOptions) string {
-	scope := models.DiagnoseMediaInfoSupplementScope(sp.ID)
-	if scope.Total == 0 {
-		return fmt.Sprintf("该刮削目录下没有任何扫描记录，请先扫描目录 %s 后再补充", sp.SourcePath)
-	}
-
-	detail := fmt.Sprintf("该目录共 %d 条记录（类型：%s；状态：%s）",
-		scope.Total,
-		formatScopeCounts(scope.ByMediaType, mediaTypeLabel),
-		formatScopeCounts(scope.ByStatus, mediaInfoStatusLabel),
-	)
-
-	// 本次勾选范围对应的记录数
-	inScope := 0
-	if opts.IncludeMovie {
-		inScope += scope.ByMediaType[string(models.MediaTypeMovie)]
-	}
-	if opts.IncludeTV {
-		inScope += scope.ByMediaType[string(models.MediaTypeTvShow)]
-	}
-	if inScope == 0 {
-		return detail + "，没有勾选范围内的电影/剧集记录，请确认处理范围与目录媒体类型是否一致"
-	}
-
-	excluded := 0
-	for _, s := range []models.ScrapeMediaStatus{
-		models.ScrapeMediaStatusScraping,
-		models.ScrapeMediaStatusRenaming,
-		models.ScrapeMediaStatusRollbacking,
-		models.ScrapeMediaStatusIgnore,
-	} {
-		excluded += scope.ByStatus[string(s)]
-	}
-	if excluded >= inScope {
-		return detail + "，这些记录都处于「正在处理中」或「已忽略」状态，取消忽略或等任务结束后再补充"
-	}
-	return detail + "，记录状态可能不是当前版本识别的值，请把这条提示发出来以便定位"
-}
-
-// formatScopeCounts 把分组统计格式化成「名称 数量」列表，数量从多到少。
-func formatScopeCounts(counts map[string]int, label func(string) string) string {
-	if len(counts) == 0 {
-		return "无"
-	}
-	keys := make([]string, 0, len(counts))
-	for k := range counts {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		if counts[keys[i]] != counts[keys[j]] {
-			return counts[keys[i]] > counts[keys[j]]
+// prepareAndRun 先收集条目（数据库记录 + 目录直读），再进入处理循环。
+func (t *MediaInfoSupplement) prepareAndRun() {
+	// 收集阶段在独立 goroutine 里跑，panic 必须自己兜住，否则 running 会永远为 true，
+	// 之后这个目录再也点不动“开始补充”。
+	defer func() {
+		if r := recover(); r != nil {
+			t.mu.Lock()
+			t.scanning = false
+			t.running = false
+			t.scanErr = fmt.Sprintf("收集条目时发生异常：%v", r)
+			t.finishedAt = time.Now().Unix()
+			t.mu.Unlock()
+			helpers.AppLogger.Errorf("[媒体信息补充] 目录 #%d 收集异常：%v", t.scrapePath.ID, r)
 		}
-		return keys[i] < keys[j]
-	})
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, fmt.Sprintf("%s %d", label(k), counts[k]))
-	}
-	return strings.Join(parts, "、")
-}
+	}()
 
-func mediaTypeLabel(t string) string {
-	switch models.MediaType(t) {
-	case models.MediaTypeMovie:
-		return "电影"
-	case models.MediaTypeTvShow:
-		return "剧集"
-	case models.MediaTypeOther:
-		return "其他"
-	}
-	if t == "" {
-		return "未知（空）"
-	}
-	return t
-}
+	files, stats, preSkipped := t.collectSupplementTargets()
 
-func mediaInfoStatusLabel(s string) string {
-	switch models.ScrapeMediaStatus(s) {
-	case models.ScrapeMediaStatusUnscanned:
-		return "未识别"
-	case models.ScrapeMediaStatusScanned:
-		return "已识别"
-	case models.ScrapeMediaStatusScraping:
-		return "刮削中"
-	case models.ScrapeMediaStatusScraped:
-		return "已刮削"
-	case models.ScrapeMediaStatusRenaming:
-		return "整理中"
-	case models.ScrapeMediaStatusRenamed:
-		return "已整理"
-	case models.ScrapeMediaStatusRenameFailed:
-		return "整理失败"
-	case models.ScrapeMediaStatusScrapeFailed:
-		return "刮削失败"
-	case models.ScrapeMediaStatusRollbacking:
-		return "回滚中"
-	case models.ScrapeMediaStatusIgnore:
-		return "已忽略"
+	t.mu.Lock()
+	t.scanning = false
+	if len(files) == 0 && preSkipped == 0 {
+		// 用户主动停止时不要报"目录为空"，否则会误导
+		if t.ctx.Err() != nil {
+			t.running = false
+			t.finishedAt = time.Now().Unix()
+			t.mu.Unlock()
+			return
+		}
+		t.scanErr = describeScanEmpty(t.scrapePath, stats)
+		t.running = false
+		t.finishedAt = time.Now().Unix()
+		errMsg := t.scanErr
+		t.mu.Unlock()
+		helpers.AppLogger.Warnf("[媒体信息补充] 目录 #%d %s：%s", t.scrapePath.ID, t.scrapePath.SourcePath, errMsg)
+		return
 	}
-	if s == "" {
-		return "未知（空）"
-	}
-	return s
+	t.files = files
+	t.skipped = preSkipped
+	t.mu.Unlock()
+
+	helpers.AppLogger.Infof("[媒体信息补充] 目录 #%d %s 收集完成：待处理 %d 条，已存在跳过 %d 条（跳过 %d 个目录，%d 个文件）",
+		t.scrapePath.ID, t.scrapePath.SourcePath, len(files), preSkipped, stats.Dirs, stats.Files)
+	t.Run()
 }
 
 // Run 执行任务，直到处理完毕或被停止。
@@ -405,18 +346,22 @@ func (t *MediaInfoSupplement) processOne(file *models.ScrapeMediaFile) {
 		t.recordFailure(file, fmt.Errorf("无法确定视频文件名"))
 		return
 	}
+	// ID 为 0 表示这条来自目录直读，视频所在目录就是 json 的目标目录，
+	// 不需要再回查数据库、也不需要定位季子目录。
+	fromScan := file.ID == 0
 	destPath, destPathID := supplementDest(file)
-	if destPath == "" || destPathID == "" {
-		t.recordFailure(file, fmt.Errorf("缺少目标目录信息（NewPathId/NewSeasonPathId 为空）"))
+	// 只有 115 必须带目录 ID（上传要按 fid 定位），本地与 OpenList 用完整路径即可。
+	if destPath == "" || (t.scrapePath.SourceType == models.SourceType115 && destPathID == "") {
+		t.recordFailure(file, fmt.Errorf("无法确定 json 的目标目录（视频所在目录为空）"))
 		return
 	}
 	// 未整理的剧集记录里只有剧集根目录，视频通常在 Season xx 子目录下；
 	// json 必须与视频同目录才能被客户端读到，所以按文件名再定位一次。
-	if file.MediaType == models.MediaTypeTvShow && !hasDestTarget(file) {
+	if !fromScan && file.MediaType == models.MediaTypeTvShow && !hasDestTarget(file) {
 		destPath, destPathID = t.locateVideoDir(destPath, destPathID, filepath.Base(file.VideoFilename))
 	}
 
-	if !t.options.Overwrite {
+	if !fromScan && !t.options.Overwrite {
 		exists, err := t.alreadyExists(file, destPath, destPathID, fileName)
 		if err != nil {
 			helpers.AppLogger.Warnf("[媒体信息补充] 检查 %s 是否已存在失败，将直接覆盖：%v", fileName, err)
@@ -441,7 +386,9 @@ func (t *MediaInfoSupplement) processOne(file *models.ScrapeMediaFile) {
 		t.recordFailure(file, fmt.Errorf("生成媒体信息失败：%w", err))
 		return
 	}
-	localPath := filepath.Join(t.tmpDir(), fmt.Sprintf("%d-%s", file.ID, fileName))
+	// 临时文件名加自增序号：目录直读的条目 ID 都是 0，不同目录下的同名视频
+	// 会互相覆盖临时文件。
+	localPath := filepath.Join(t.tmpDir(), fmt.Sprintf("%d-%d-%s", t.scrapePath.ID, atomic.AddInt64(&t.tmpSeq, 1), fileName))
 	if err := os.WriteFile(localPath, content, 0644); err != nil {
 		t.recordFailure(file, fmt.Errorf("写入临时文件失败：%w", err))
 		return
@@ -474,7 +421,7 @@ func (t *MediaInfoSupplement) probe(file *models.ScrapeMediaFile) (*helpers.FFpr
 			return nil, fmt.Errorf("115 客户端未初始化")
 		}
 		if strings.TrimSpace(file.VideoPickCode) == "" {
-			return nil, fmt.Errorf("记录里没有 pickcode，无法取直链（建议重新扫描该目录）")
+			return nil, fmt.Errorf("该视频没有 pickcode，无法取直链（可在网盘里确认文件是否仍在原目录）")
 		}
 		direct := t.base.v115Client.GetDownloadUrl(context.Background(), file.VideoPickCode, v115open.DEFAULTUA, false)
 		if direct == "" {
@@ -705,6 +652,8 @@ func (t *MediaInfoSupplement) progress() MediaInfoSupplementProgress {
 		Skipped:      t.skipped,
 		Failed:       t.failed,
 		Current:      t.current,
+		Scanning:     t.scanning,
+		Error:        t.scanErr,
 		StartedAt:    t.startedAt,
 		FinishedAt:   t.finishedAt,
 		Errors:       errs,

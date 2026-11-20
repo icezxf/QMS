@@ -167,6 +167,8 @@ export interface MediaInfoSupplementProgress {
   skipped: number
   failed: number
   current: string
+  scanning: boolean
+  error: string
   started_at: number
   finished_at: number
   errors: string[]

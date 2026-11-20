@@ -1395,7 +1395,7 @@ func TmdbSearch(c *gin.Context) {
 
 // StartMediaInfoSupplement 为目录内记录单独补充 mediainfo.json
 // @Summary 补充媒体信息
-// @Description 不限刮削状态，对有直链的视频重新 ffprobe 并生成 -mediainfo.json，不重写 NFO、不改状态
+// @Description 不依赖扫描记录，直接列目录找视频并 ffprobe 生成 -mediainfo.json，不重写 NFO、不改状态
 // @Tags 刮削管理
 // @Accept json
 // @Produce json
