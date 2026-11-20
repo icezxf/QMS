@@ -270,6 +270,11 @@ func (t *MediaInfoSupplement) processOne(file *models.ScrapeMediaFile) {
 		t.recordFailure(file, fmt.Errorf("缺少目标目录信息（NewPathId/NewSeasonPathId 为空）"))
 		return
 	}
+	// 未整理的剧集记录里只有剧集根目录，视频通常在 Season xx 子目录下；
+	// json 必须与视频同目录才能被客户端读到，所以按文件名再定位一次。
+	if file.MediaType == models.MediaTypeTvShow && !hasDestTarget(file) {
+		destPath, destPathID = t.locateVideoDir(destPath, destPathID, filepath.Base(file.VideoFilename))
+	}
 
 	if !t.options.Overwrite {
 		exists, err := t.alreadyExists(file, destPath, destPathID, fileName)
@@ -410,36 +415,105 @@ func mediaInfoFileName(file *models.ScrapeMediaFile) string {
 // 条目也能把 json 补在视频旁边，而不是直接跳过。
 func supplementDest(file *models.ScrapeMediaFile) (string, string) {
 	if file.MediaType == models.MediaTypeTvShow {
-		pathID := file.NewSeasonPathId
-		if pathID == "" {
-			pathID = file.NewPathId
-		}
-		if pathID != "" && file.NewPathName != "" {
+		if hasDestTarget(file) {
+			pathID := file.NewSeasonPathId
+			if pathID == "" {
+				pathID = file.NewPathId
+			}
 			return file.GetDestFullSeasonPath(), pathID
 		}
 		return sourceDir(file)
 	}
-	if file.NewPathId != "" && file.NewPathName != "" {
+	if hasDestTarget(file) {
 		return file.GetDestFullMoviePath(), file.NewPathId
 	}
 	return sourceDir(file)
 }
 
+// hasDestTarget 判断记录是否有可用的「整理后目录」。
+func hasDestTarget(file *models.ScrapeMediaFile) bool {
+	if file.NewPathName == "" {
+		return false
+	}
+	if file.MediaType == models.MediaTypeTvShow {
+		return file.NewSeasonPathId != "" || file.NewPathId != ""
+	}
+	return file.NewPathId != ""
+}
+
 // sourceDir 视频当前所在目录。
 // 本地类型的 VideoPickCode 存的是视频绝对路径，直接取父目录；
 // 网盘类型用记录里的目录路径与目录 ID（PathId 即视频所在目录的 ID）。
+// 剧集扫描时 Path 通常为空，退回剧集目录；真正的季子目录由 locateVideoDir 再定位。
 func sourceDir(file *models.ScrapeMediaFile) (string, string) {
 	if file.SourceType == models.SourceTypeLocal && file.VideoPickCode != "" {
 		dir := filepath.Dir(file.VideoPickCode)
 		return dir, dir
 	}
-	dir := file.Path
+	dir, dirID := file.Path, file.PathId
 	if dir == "" {
-		dir = file.SourcePath
-	} else if file.SourcePath != "" && !strings.HasPrefix(dir, file.SourcePath) {
+		dir, dirID = file.TvshowPath, file.TvshowPathId
+	}
+	if dir == "" {
+		dir, dirID = file.SourcePath, file.SourcePathId
+	}
+	if file.SourcePath != "" && dir != "" && !strings.HasPrefix(dir, file.SourcePath) {
 		dir = filepath.Join(file.SourcePath, dir)
 	}
-	return dir, file.PathId
+	return dir, dirID
+}
+
+// locateVideoDir 在剧集根目录下按视频文件名定位真正所在目录（最多往下两层，
+// 通常是 Season xx）。未整理的剧集记录里只有剧集根目录，json 必须与视频同目录
+// 才能被客户端读到，所以这里做一次轻量列目录。
+//
+// 仅 115 支持列目录；其他来源或定位失败时原样返回根目录。
+func (t *MediaInfoSupplement) locateVideoDir(rootPath, rootID, videoName string) (string, string) {
+	if t.base.v115Client == nil || rootID == "" || videoName == "" {
+		return rootPath, rootID
+	}
+	files, err := t.listDir(rootID)
+	if err != nil {
+		helpers.AppLogger.Warnf("[媒体信息补充] 列出目录 %s 失败，按剧集根目录处理：%v", rootPath, err)
+		return rootPath, rootID
+	}
+	subDirs := make([]v115open.File, 0, 4)
+	for _, f := range files {
+		if f.FileName == videoName {
+			return rootPath, rootID
+		}
+		if f.FileCategory == v115open.TypeDir {
+			subDirs = append(subDirs, f)
+		}
+	}
+	// 只往下看一层，且限制数量，避免大目录把配额打满
+	if len(subDirs) > 8 {
+		subDirs = subDirs[:8]
+	}
+	for _, d := range subDirs {
+		sub, serr := t.listDir(d.FileId)
+		if serr != nil {
+			continue
+		}
+		for _, f := range sub {
+			if f.FileName == videoName {
+				return filepath.Join(rootPath, d.FileName), d.FileId
+			}
+		}
+	}
+	return rootPath, rootID
+}
+
+// listDir 列出 115 目录下的文件与子目录，最多取 200 条。
+func (t *MediaInfoSupplement) listDir(dirID string) ([]v115open.File, error) {
+	resp, err := t.base.v115Client.GetFsList(t.ctx, dirID, true, false, true, 0, mediaInfoSupplementListPageSize)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, nil
+	}
+	return resp.Data, nil
 }
 
 // tmpDir 临时目录。放在 avscrape 下是刻意的：AV 上传通道收尾清理空目录时
