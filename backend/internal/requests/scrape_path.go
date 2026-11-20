@@ -185,6 +185,44 @@ func validateScrapePathRenameType(sourceType models.SourceType, scrapeType model
 	return nil
 }
 
+// MediaInfoSupplementRequest 补充媒体信息（-mediainfo.json）请求。
+//
+// 只针对已经刮削完成的记录做二次探测，不涉及识别与元数据写入。
+// IncludeMovie/IncludeTV 用指针以区分“未传”（默认两者都处理）。
+type MediaInfoSupplementRequest struct {
+	ID           uint  `json:"id" form:"id"`
+	Overwrite    bool  `json:"overwrite" form:"overwrite"`
+	Concurrency  int   `json:"concurrency" form:"concurrency"`
+	IncludeMovie *bool `json:"include_movie" form:"include_movie"`
+	IncludeTV    *bool `json:"include_tv" form:"include_tv"`
+}
+
+// Validate 校验补充媒体信息请求。
+func (r MediaInfoSupplementRequest) Validate() error {
+	if err := validation.PositiveID("id", r.ID); err != nil {
+		return err
+	}
+	if r.Concurrency != 0 {
+		return validation.RangeInt("concurrency", r.Concurrency, 1, 3)
+	}
+	return nil
+}
+
+// ToOptions 转换为模块选项。
+func (r MediaInfoSupplementRequest) ToOptions() (overwrite bool, concurrency int, includeMovie, includeTV bool) {
+	overwrite = r.Overwrite
+	concurrency = r.Concurrency
+	includeMovie = true
+	includeTV = true
+	if r.IncludeMovie != nil {
+		includeMovie = *r.IncludeMovie
+	}
+	if r.IncludeTV != nil {
+		includeTV = *r.IncludeTV
+	}
+	return
+}
+
 // ToModel 转换为刮削路径模型。
 func (r SaveScrapePathRequest) ToModel() models.ScrapePath {
 	enableMediaInfoJson := true

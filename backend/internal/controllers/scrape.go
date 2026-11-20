@@ -13,6 +13,7 @@ import (
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
+	scrapepkg "qmediasync/internal/scrape"
 	"qmediasync/internal/synccron"
 
 	"github.com/gin-gonic/gin"
@@ -1390,4 +1391,101 @@ func TmdbSearch(c *gin.Context) {
 		return
 	}
 
+}
+
+// StartMediaInfoSupplement 为已刮削完成的记录单独补充 mediainfo.json
+// @Summary 补充媒体信息
+// @Description 只对已刮削/已整理的记录重新 ffprobe 并生成 -mediainfo.json，不重写 NFO、不改状态
+// @Tags 刮削管理
+// @Accept json
+// @Produce json
+// @Param req body requests.MediaInfoSupplementRequest true "补充参数"
+// @Success 200 {object} object
+// @Failure 200 {object} object
+// @Router /scrape/pathes/supplement-mediainfo [post]
+// @Security JwtAuth
+// @Security ApiKeyAuth
+func StartMediaInfoSupplement(c *gin.Context) {
+	var req requests.MediaInfoSupplementRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		return
+	}
+	if err := req.Validate(); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		return
+	}
+	scrapePath := models.GetScrapePathByID(req.ID)
+	if scrapePath == nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "刮削目录不存在", Data: nil})
+		return
+	}
+	overwrite, concurrency, includeMovie, includeTV := req.ToOptions()
+	_, err := scrapepkg.StartMediaInfoSupplement(scrapePath, scrapepkg.MediaInfoSupplementOptions{
+		Overwrite:    overwrite,
+		Concurrency:  concurrency,
+		IncludeMovie: includeMovie,
+		IncludeTV:    includeTV,
+	})
+	if err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "启动失败：" + err.Error(), Data: nil})
+		return
+	}
+	c.JSON(http.StatusOK, APIResponse[any]{
+		Code:    Success,
+		Message: "已开始补充媒体信息",
+		Data:    scrapepkg.GetMediaInfoSupplementProgress(scrapePath.ID),
+	})
+}
+
+// StopMediaInfoSupplement 停止补充媒体信息任务
+// @Summary 停止补充媒体信息
+// @Tags 刮削管理
+// @Accept json
+// @Produce json
+// @Success 200 {object} object
+// @Router /scrape/pathes/supplement-mediainfo/stop [post]
+// @Security JwtAuth
+// @Security ApiKeyAuth
+func StopMediaInfoSupplement(c *gin.Context) {
+	var req requests.PositiveIDRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		return
+	}
+	if err := req.Validate(); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		return
+	}
+	if !scrapepkg.StopMediaInfoSupplement(req.ID) {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "没有正在运行的补充任务", Data: nil})
+		return
+	}
+	c.JSON(http.StatusOK, APIResponse[any]{
+		Code:    Success,
+		Message: "停止信号已发送，正在探测的文件结束后退出",
+		Data:    scrapepkg.GetMediaInfoSupplementProgress(req.ID),
+	})
+}
+
+// GetMediaInfoSupplementStatus 查询补充媒体信息任务进度
+// @Summary 补充媒体信息进度
+// @Tags 刮削管理
+// @Produce json
+// @Param id query integer true "刮削目录 ID"
+// @Success 200 {object} object
+// @Router /scrape/pathes/supplement-mediainfo/status [get]
+// @Security JwtAuth
+// @Security ApiKeyAuth
+func GetMediaInfoSupplementStatus(c *gin.Context) {
+	id := uint(helpers.StringToInt(c.Query("id")))
+	if id == 0 {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "缺少刮削目录 id", Data: nil})
+		return
+	}
+	c.JSON(http.StatusOK, APIResponse[any]{
+		Code:    Success,
+		Message: "获取进度成功",
+		Data:    scrapepkg.GetMediaInfoSupplementProgress(id),
+	})
 }

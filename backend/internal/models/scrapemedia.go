@@ -1365,6 +1365,25 @@ func GetAllScrappedMedialFiles(scrapePathId uint, mediaType MediaType) []*Scrape
 	return DecodeScrapeMediaFile(scrapeMediaFiles)
 }
 
+// GetScrapedMediaFilesForMediaInfoSupplement 查询可用于补充 mediainfo.json 的已刮削记录。
+//
+// 只读查询，不改动任何记录状态：合格范围是已刮削（scraped）与已整理（renamed），
+// 且必须有 pickcode 才能取到直链。不做 DecodeScrapeMediaFile（补充流程用不到
+// Media/Season/Episode 关联，避免逐条回表放大开销）。
+func GetScrapedMediaFilesForMediaInfoSupplement(scrapePathId uint, mediaType MediaType) []*ScrapeMediaFile {
+	var scrapeMediaFiles []*ScrapeMediaFile
+	err := db.Db.Where(
+		"scrape_path_id = ? AND media_type = ? AND status IN ? AND video_pick_code != ''",
+		scrapePathId, mediaType,
+		[]ScrapeMediaStatus{ScrapeMediaStatusScraped, ScrapeMediaStatusRenamed},
+	).Order("id asc").Find(&scrapeMediaFiles).Error
+	if err != nil {
+		helpers.AppLogger.Errorf("查询待补充媒体信息的记录失败：%v", err)
+		return nil
+	}
+	return scrapeMediaFiles
+}
+
 // 查询某一季的所有集
 func GetScrapeMediaFileIdBySeasonId(seasonMediaId uint) []uint {
 	var episodeIds []uint

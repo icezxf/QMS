@@ -156,3 +156,61 @@ export async function validateScrapePathCron(
     }),
   )
 }
+
+/** 补充媒体信息（-mediainfo.json）进度 */
+export interface MediaInfoSupplementProgress {
+  scrape_path_id: number
+  running: boolean
+  total: number
+  done: number
+  success: number
+  skipped: number
+  failed: number
+  current: string
+  started_at: number
+  finished_at: number
+  errors: string[]
+}
+
+export interface MediaInfoSupplementPayload {
+  id: number
+  overwrite: boolean
+  concurrency: number
+  include_movie: boolean
+  include_tv: boolean
+}
+
+export async function startMediaInfoSupplement(
+  http: AxiosInstance,
+  payload: MediaInfoSupplementPayload,
+): Promise<MediaInfoSupplementProgress> {
+  return unwrapResponse(
+    await http.post<APIResponse<MediaInfoSupplementProgress>>(
+      `${SERVER_URL}/scrape/pathes/supplement-mediainfo`,
+      payload,
+    ),
+  )
+}
+
+export async function stopMediaInfoSupplement(
+  http: AxiosInstance,
+  id: number,
+): Promise<MediaInfoSupplementProgress> {
+  return unwrapResponse(
+    await http.post<APIResponse<MediaInfoSupplementProgress>>(
+      `${SERVER_URL}/scrape/pathes/supplement-mediainfo/stop`,
+      { id },
+    ),
+  )
+}
+
+export async function fetchMediaInfoSupplementStatus(
+  http: AxiosInstance,
+  id: number,
+): Promise<MediaInfoSupplementProgress> {
+  return unwrapResponse(
+    await http.get<APIResponse<MediaInfoSupplementProgress>>(
+      `${SERVER_URL}/scrape/pathes/supplement-mediainfo/status?id=${id}`,
+    ),
+  )
+}

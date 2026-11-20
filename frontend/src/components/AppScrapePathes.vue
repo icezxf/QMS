@@ -155,6 +155,17 @@
               </el-button>
 
               <el-button
+                type="info"
+                size="small"
+                plain
+                :icon="Document"
+                @click="openSupplementDialog(row)"
+                v-if="row.scrape_type !== 'only_rename' && row.media_type !== 'other'"
+              >
+                补媒体信息
+              </el-button>
+
+              <el-button
                 type="danger"
                 size="small"
                 plain
@@ -312,6 +323,86 @@
         </span>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="showSupplementDialog"
+      title="补充媒体信息 JSON"
+      width="560px"
+      :close-on-click-modal="false"
+      @closed="stopSupplementPolling"
+    >
+      <div style="font-size: 13px; color: #909399; line-height: 1.6; margin-bottom: 12px">
+        只对已刮削完成（含已整理）的条目重新执行 ffprobe，生成
+        &lt;视频名&gt;-mediainfo.json 并上传。
+        <br />
+        不会重写 NFO、不下载图片、不改文件名，也不改动刮削记录状态。探测走 QMS
+        现有的 115 反代与上传队列，并发请按网盘承受能力设置。
+      </div>
+
+      <el-form label-width="96px" size="small">
+        <el-form-item label="处理范围">
+          <el-checkbox v-model="supplementIncludeMovie">电影</el-checkbox>
+          <el-checkbox v-model="supplementIncludeTV">剧集（每集一个）</el-checkbox>
+        </el-form-item>
+        <el-form-item label="已有文件">
+          <el-switch v-model="supplementOverwrite" active-text="覆盖重做" inactive-text="跳过" />
+          <span style="margin-left: 8px; font-size: 12px; color: #909399">
+            目标目录已有同名 json 时
+          </span>
+        </el-form-item>
+        <el-form-item label="探测并发">
+          <el-input-number v-model="supplementConcurrency" :min="1" :max="3" :step="1" />
+          <span style="margin-left: 8px; font-size: 12px; color: #909399">
+            默认 1，过高容易触发网盘限流
+          </span>
+        </el-form-item>
+      </el-form>
+
+      <div v-if="supplementProgress" style="margin-top: 4px">
+        <el-progress
+          :percentage="supplementPercent"
+          :status="supplementProgress.running ? undefined : 'success'"
+        />
+        <div style="font-size: 12px; color: #909399; margin-top: 8px">
+          总数 {{ supplementProgress.total }} · 成功 {{ supplementProgress.success }} · 跳过
+          {{ supplementProgress.skipped }} · 失败 {{ supplementProgress.failed }}
+        </div>
+        <div
+          v-if="supplementProgress.current"
+          style="font-size: 12px; color: #606266; margin-top: 4px"
+        >
+          正在处理：{{ supplementProgress.current }}
+        </div>
+        <div v-if="supplementErrors.length" style="margin-top: 8px">
+          <el-alert
+            v-for="(err, index) in supplementErrors"
+            :key="index"
+            :title="err"
+            type="error"
+            :closable="false"
+            style="margin-bottom: 4px"
+          />
+          <div v-if="supplementProgress.failed > supplementErrors.length" style="font-size: 12px; color: #909399">
+            仅显示前 {{ supplementErrors.length }} 条失败原因
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button @click="showSupplementDialog = false">关闭</el-button>
+        <el-button
+          v-if="supplementProgress?.running"
+          type="danger"
+          :loading="supplementStopping"
+          @click="stopSupplement"
+        >
+          停止
+        </el-button>
+        <el-button v-else type="primary" :loading="supplementStarting" @click="startSupplement">
+          开始补充
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -332,8 +423,12 @@ import {
   toggleScrapePathCron,
   fetchScrapeSyncPathIDs,
   saveScrapeSyncPathIDs,
+  startMediaInfoSupplement,
+  stopMediaInfoSupplement,
+  fetchMediaInfoSupplementStatus,
   scrapePathErrorOptions,
   type ScrapePath as ScrapePathData,
+  type MediaInfoSupplementProgress,
 } from '@/api/scrapePaths'
 import { onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -360,6 +455,7 @@ import {
   Setting,
   Warning,
   Link,
+  Document,
 } from '@element-plus/icons-vue'
 import { formatTime } from '@/utils/timeUtils'
 import {
@@ -439,6 +535,7 @@ watch(
 onBeforeUnmount(() => {
   deactivatePathRefresh()
   syncPathRequestId += 1
+  stopSupplementPolling()
 })
 
 const reportError = (error: unknown, fallbackMessage: string) => {
@@ -605,6 +702,111 @@ const handleStop = async (row: ScrapePath) => {
     reportError(error, '停止刮削任务失败')
   } finally {
     row.scanning = false
+  }
+}
+
+const showSupplementDialog = ref(false)
+const supplementTarget = ref<ScrapePath | null>(null)
+const supplementOverwrite = ref(false)
+const supplementConcurrency = ref(1)
+const supplementIncludeMovie = ref(true)
+const supplementIncludeTV = ref(true)
+const supplementStarting = ref(false)
+const supplementStopping = ref(false)
+const supplementProgress = ref<MediaInfoSupplementProgress | null>(null)
+let supplementTimer: ReturnType<typeof setInterval> | null = null
+
+const supplementPercent = computed(() => {
+  const progress = supplementProgress.value
+  if (!progress || !progress.total) return 0
+  return Math.min(100, Math.round((progress.done / progress.total) * 100))
+})
+
+const supplementErrors = computed(() => supplementProgress.value?.errors ?? [])
+
+const stopSupplementPolling = () => {
+  if (supplementTimer !== null) {
+    clearInterval(supplementTimer)
+    supplementTimer = null
+  }
+}
+
+const pollSupplementStatus = async () => {
+  const target = supplementTarget.value
+  if (!target) return
+  try {
+    const progress = await fetchMediaInfoSupplementStatus(http, target.id)
+    supplementProgress.value = progress
+    if (!progress.running) {
+      stopSupplementPolling()
+    }
+  } catch {
+    // 轮询失败不打扰用户，下一轮继续
+  }
+}
+
+const startSupplementPolling = () => {
+  stopSupplementPolling()
+  supplementTimer = setInterval(() => {
+    void pollSupplementStatus()
+  }, 2000)
+}
+
+const openSupplementDialog = async (row: ScrapePath) => {
+  supplementTarget.value = row
+  supplementOverwrite.value = false
+  supplementConcurrency.value = 1
+  supplementIncludeMovie.value = row.media_type !== 'tvshow'
+  supplementIncludeTV.value = row.media_type === 'tvshow'
+  supplementProgress.value = null
+  showSupplementDialog.value = true
+  try {
+    const progress = await fetchMediaInfoSupplementStatus(http, row.id)
+    supplementProgress.value = progress
+    if (progress.running) {
+      startSupplementPolling()
+    }
+  } catch {
+    // 打不开进度不影响开始新任务
+  }
+}
+
+const startSupplement = async () => {
+  const target = supplementTarget.value
+  if (!target) return
+  if (!supplementIncludeMovie.value && !supplementIncludeTV.value) {
+    ElMessage.warning('请至少勾选一种处理范围')
+    return
+  }
+  try {
+    supplementStarting.value = true
+    supplementProgress.value = await startMediaInfoSupplement(http, {
+      id: target.id,
+      overwrite: supplementOverwrite.value,
+      concurrency: supplementConcurrency.value,
+      include_movie: supplementIncludeMovie.value,
+      include_tv: supplementIncludeTV.value,
+    })
+    ElMessage.success('补充任务已开始')
+    startSupplementPolling()
+  } catch (error) {
+    reportError(error, '启动补充任务失败')
+  } finally {
+    supplementStarting.value = false
+  }
+}
+
+const stopSupplement = async () => {
+  const target = supplementTarget.value
+  if (!target) return
+  try {
+    supplementStopping.value = true
+    supplementProgress.value = await stopMediaInfoSupplement(http, target.id)
+    ElMessage.success('停止信号已发送')
+  } catch (error) {
+    reportError(error, '停止补充任务失败')
+  } finally {
+    supplementStopping.value = false
   }
 }
 
